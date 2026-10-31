@@ -20,6 +20,7 @@ id_vision_lab_add_test_executable(visual_debug_tests
         visual_debug/endpoint_test.cpp
         visual_debug/client_server_test.cpp
         visual_debug/send_image_test.cpp
+        visual_debug/image_sender_test.cpp
     LIBRARIES
         visual_debug::visual_debug
         cppzmq

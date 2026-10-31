@@ -1,5 +1,7 @@
 #pragma once
 
+#include "visual_debug/image_description.h"
+
 #include <opencv2/core/mat.hpp>
 
 #include <chrono>
@@ -21,6 +23,7 @@ struct ImageMessage {
     // A frame of a live channel (the name is the channel's), not an image for the history.
     bool live = false;
     std::optional<SentTime> sentAt{};
+    ImageDescription description{};
 };
 
 } // namespace visual_debug

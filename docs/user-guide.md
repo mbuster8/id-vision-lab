@@ -558,6 +558,20 @@ instead; a `Client` has the same `sendLive`. It shares `sendImage`'s connection,
 the live channel `camera`, and stamps it with the time it was sent (the `live` and `sentAt` fields of the
 [wire format](wire-format.md)). A viewer that predates live channels shows it as an ordinary image.
 
+Both calls, and a `Client`'s `send` and `sendLive`, also take an `ImageDescription` as a third argument: the
+range the image's values nominally span from black to white, and for HDR video its transfer and primaries.
+A 10-bit image held in 16 bits, for example:
+
+```cpp
+visual_debug::sendImage(depthMap, "depth", {.valueRange = {0, 1023}});
+visual_debug::sendLive(frame, "phone", {.valueRange = {0, 65535},
+                                        .transfer = visual_debug::Transfer::Hlg,
+                                        .primaries = visual_debug::Primaries::Bt2020});
+```
+
+Every field is optional. The description travels in the `valueRange`, `transfer` and `primaries` header
+fields; a viewer that predates them ignores them.
+
 ### 2. A `Client` with your own options
 
 For more control, create one `visual_debug::Client` and keep it for the life of your program. This

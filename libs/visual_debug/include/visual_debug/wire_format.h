@@ -25,10 +25,12 @@ inline constexpr int kMaxChannels = 4;
 // The end of the year 9999 in milliseconds since the Unix epoch: the largest sentAt a header may carry.
 inline constexpr std::int64_t kMaxSentAtMilliseconds = 253402300799999;
 
-// The optional header fields of a live frame. A sentAt outside 0 to kMaxSentAtMilliseconds is left out.
+// The optional header fields. A sentAt outside 0 to kMaxSentAtMilliseconds, and an empty value range, are
+// left out.
 struct EncodeOptions {
     bool live = false;
     std::optional<SentTime> sentAt{};
+    ImageDescription description{};
 };
 
 struct EncodedMessage {

@@ -51,10 +51,18 @@ existing viewers. Jupyter kernels use the same split (JSON frames plus binary bu
 | `channels` | an integer from 1 to 4 |
 | `live` | optional: a JSON boolean. `true` marks a frame of a live channel (a camera or video stream) named by `name`; the viewer shows it in place of the channel's previous frame instead of adding it to the history |
 | `sentAt` | optional: an integer from 0 to 253402300799999 (the end of the year 9999), the sender's clock in whole milliseconds since the Unix epoch when it sent the message |
+| `valueRange` | optional: an array of two JSON numbers `[min, max]`, integers or not, with min < max: the values the image's black and white nominally sit at. Values may lie beyond it (a video's super-whites lie above its white). The viewer takes it as a hint for the range it displays |
+| `transfer` | optional: `"sdr"`, `"hlg"` (hybrid log-gamma, ARIB STD-B67) or `"pq"` (the perceptual quantiser, SMPTE ST 2084): how the values map to light |
+| `primaries` | optional: `"bt709"` or `"bt2020"`: the colour primaries of a colour image |
 
 A version 2 viewer that predates `live` ignores both optional fields and shows a live frame as an ordinary
 image; a sender that predates them sends neither. The C++ sender writes them for `sendLive` only, and leaves
 `sentAt` out if its clock reads before 1970 or after 9999 rather than send a value the viewer would refuse.
+
+The last three describe an image, still or live; a viewer that predates them ignores them. The C++ sender
+writes each only when the sender sets it (through the `ImageDescription` overloads of `sendImage`, `sendLive`
+and `Client`), after `sentAt`. It writes a whole-number range without a fraction (`[0,1023]`), and leaves out a
+range whose ends are equal, decreasing or not finite rather than send one the viewer would refuse.
 
 Element sizes: 1 byte for `8U` and `8S`, 2 for `16U` and `16S`, 4 for `32S` and `32F`, 8 for `64F`. The
 pixel frame may hold at most 512 MiB; the C++ sender refuses larger images before touching the network.
@@ -90,6 +98,13 @@ A live frame of a 640×480 colour channel named `camera`, as `visual_debug::send
 
 ```text
 {"protocol":"visual_debug","version":2,"type":"image","name":"camera","rows":480,"cols":640,"depth":"8U","channels":3,"live":true,"sentAt":1793366602517}
+```
+
+A 16-bit 3840×2160 frame of HLG video in a channel named `phone`, sent at the same moment as
+`sendLive(frame, "phone", {.valueRange = {0, 65535}, .transfer = Transfer::Hlg, .primaries = Primaries::Bt2020})`:
+
+```text
+{"protocol":"visual_debug","version":2,"type":"image","name":"phone","rows":2160,"cols":3840,"depth":"16U","channels":3,"live":true,"sentAt":1793366602517,"valueRange":[0,65535],"transfer":"hlg","primaries":"bt2020"}
 ```
 
 ## Validation
@@ -148,6 +163,9 @@ hostile header cannot make the reply itself fail to encode.
 | `channels out of range` | Missing, not an integer, or outside 1–4. |
 | `live is not a boolean` | `live` is present but not `true` or `false`. |
 | `sentAt out of range` | `sentAt` is present but not an integer, or outside 0–253402300799999. |
+| `valueRange is not two increasing numbers` | `valueRange` is present but not an array of exactly two JSON numbers with the first below the second. |
+| `transfer is not sdr, hlg or pq` | `transfer` is present but not one of those three strings, in lower case. |
+| `primaries is not bt709 or bt2020` | `primaries` is present but not one of those two strings, in lower case. |
 | `image too large` | The pixel data would exceed 512 MiB. |
 | `pixel frame has the wrong size` | The pixel frame's length does not match the header. |
 | `could not decode message` | Any other failure while decoding. |

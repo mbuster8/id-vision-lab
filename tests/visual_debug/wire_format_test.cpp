@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <ostream>
 #include <string>
 #include <thread>
@@ -22,8 +23,11 @@ using namespace std::chrono_literals;
 using visual_debug::DecodeError;
 using visual_debug::EncodedMessage;
 using visual_debug::EncodeError;
+using visual_debug::ImageDescription;
 using visual_debug::ImageMessage;
+using visual_debug::Primaries;
 using visual_debug::SentTime;
+using visual_debug::Transfer;
 
 constexpr SentTime kSentAt{1'700'000'000'123ms};
 
@@ -179,6 +183,80 @@ TEST(WireFormat, OmitsAnOutOfRangeSentAtOnEncode) {
             nlohmann::json::parse(encodeOrFail(image, "camera", {.live = true, .sentAt = sentAt}).header);
         EXPECT_EQ(header.at("live"), true);
         EXPECT_FALSE(header.contains("sentAt")) << sentAt.time_since_epoch().count();
+    }
+}
+
+// --- Image descriptions ------------------------------------------------------------------------------------
+
+// The call the user guide shows, so it must compile as written (a std::optional<ValueRange> would not).
+TEST(WireFormat, DescriptionCanBeWrittenInOneLine) {
+    const ImageDescription description{.valueRange = {0, 1023}, .transfer = Transfer::Hlg};
+
+    EXPECT_EQ(description.valueRange.max, 1023.0);
+    EXPECT_FALSE(description.valueRange.empty());
+    EXPECT_FALSE(description.primaries.has_value());
+}
+
+TEST(WireFormat, DescriptionRoundTrips) {
+    const cv::Mat image(2, 3, CV_16UC3, cv::Scalar::all(4096));
+
+    for (const auto transfer : {Transfer::Sdr, Transfer::Hlg, Transfer::Pq}) {
+        for (const auto primaries : {Primaries::Bt709, Primaries::Bt2020}) {
+            const ImageDescription description{
+                .valueRange = {4088.5, 59988}, .transfer = transfer, .primaries = primaries};
+
+            const auto decoded = roundTrip(image, "phone", {.live = true, .description = description});
+
+            EXPECT_EQ(decoded.description, description)
+                << static_cast<int>(transfer) << " " << static_cast<int>(primaries);
+        }
+    }
+}
+
+// The spelling and order docs/wire-format.md gives; a whole-number range is written without a fraction.
+TEST(WireFormat, WritesTheDescriptionAfterSentAt) {
+    const cv::Mat image(2, 3, CV_16UC1, cv::Scalar(9));
+    const ImageDescription description{
+        .valueRange = {0, 65535}, .transfer = Transfer::Hlg, .primaries = Primaries::Bt2020};
+
+    const auto encoded =
+        encodeOrFail(image, "camera", {.live = true, .sentAt = kSentAt, .description = description});
+
+    EXPECT_NE(encoded.header.find(R"("sentAt":1700000000123,"valueRange":[0,65535],"transfer":"hlg",)"
+                                  R"("primaries":"bt2020"})"),
+              std::string::npos)
+        << encoded.header;
+}
+
+TEST(WireFormat, NoDescriptionWritesNoFields) {
+    const cv::Mat image(2, 3, CV_8UC1, cv::Scalar(9));
+
+    const auto encoded = encodeOrFail(image, "camera", {.live = true, .sentAt = kSentAt});
+    const auto decoded = roundTrip(image, "camera");
+
+    for (const char* key : {"valueRange", "transfer", "primaries"}) {
+        EXPECT_EQ(encoded.header.find(key), std::string::npos) << key;
+    }
+    EXPECT_EQ(decoded.description, ImageDescription{});
+    EXPECT_TRUE(ImageDescription{}.valueRange.empty());
+}
+
+// Like an out-of-range sentAt: a range that cannot be carried is left out, and the rest still goes.
+TEST(WireFormat, UnsendableRangeIsLeftOut) {
+    const cv::Mat image(2, 3, CV_8UC1, cv::Scalar(9));
+    constexpr double kInfinity = std::numeric_limits<double>::infinity();
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+    for (const visual_debug::ValueRange range :
+         {visual_debug::ValueRange{1, 1}, visual_debug::ValueRange{2, 1}, visual_debug::ValueRange{kNaN, 1},
+          visual_debug::ValueRange{0, kInfinity}, visual_debug::ValueRange{-kInfinity, 0}}) {
+        EXPECT_TRUE(range.empty()) << range.min << " " << range.max;
+        const auto encoded =
+            encodeOrFail(image, "camera", {.description = {.valueRange = range, .transfer = Transfer::Pq}});
+        const auto header = nlohmann::json::parse(encoded.header);
+
+        EXPECT_FALSE(header.contains("valueRange")) << range.min << " " << range.max;
+        EXPECT_EQ(header.at("transfer"), "pq");
     }
 }
 
@@ -369,6 +447,10 @@ std::vector<RejectionCase> rejectionCases() {
     const std::string kChannels = "channels out of range";
     const std::string kLive = "live is not a boolean";
     const std::string kSentAtRange = "sentAt out of range";
+    const std::string kValueRange = "valueRange is not two increasing numbers";
+    const std::string kTransfer = "transfer is not sdr, hlg or pq";
+    const std::string kPrimaries = "primaries is not bt709 or bt2020";
+    using Json = nlohmann::ordered_json;
     return {
         {"NotJson", "not json", kValidPixelBytes, "header is not valid JSON"},
         {"InvalidUtf8", invalidUtf8, kValidPixelBytes, "header is not valid JSON"},
@@ -398,6 +480,19 @@ std::vector<RejectionCase> rejectionCases() {
         withField("FractionalSentAt", "sentAt", 1.5, kSentAtRange),
         withField("SentAtAsString", "sentAt", "5", kSentAtRange),
         withField("SentAtAsBoolean", "sentAt", true, kSentAtRange),
+        withField("RangeOfEqualEnds", "valueRange", Json::array({1, 1}), kValueRange),
+        withField("RangeDecreasing", "valueRange", Json::array({2, 1}), kValueRange),
+        withField("RangeOfOneNumber", "valueRange", Json::array({0}), kValueRange),
+        withField("RangeOfThreeNumbers", "valueRange", Json::array({0, 1, 2}), kValueRange),
+        withField("RangeWithAString", "valueRange", Json::array({"0", 1}), kValueRange),
+        withField("RangeWithABoolean", "valueRange", Json::array({false, 1}), kValueRange),
+        withField("RangeAsNumber", "valueRange", 5, kValueRange),
+        withField("RangeAsNull", "valueRange", nullptr, kValueRange),
+        withField("TransferInCapitals", "transfer", "HLG", kTransfer),
+        withField("UnknownTransfer", "transfer", "linear", kTransfer),
+        withField("TransferAsNumber", "transfer", 1, kTransfer),
+        withField("UnknownPrimaries", "primaries", "p3", kPrimaries),
+        withField("PrimariesAsBoolean", "primaries", true, kPrimaries),
         {"PixelsOneByteShort", validHeader().dump(), kValidPixelBytes - 1, "pixel frame has the wrong size"},
         {"PixelsOneByteLong", validHeader().dump(), kValidPixelBytes + 1, "pixel frame has the wrong size"},
         {"ImageOver512MiB", huge.dump(), 0, "image too large"},

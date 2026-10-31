@@ -41,4 +41,15 @@ SendResult sendLive(const cv::Mat& frame, std::string_view channel) noexcept {
     return sendThroughSharedClient([&](Client& client) { return client.sendLive(frame, channel); });
 }
 
+SendResult sendImage(const cv::Mat& image, std::string_view name,
+                     const ImageDescription& description) noexcept {
+    return sendThroughSharedClient([&](Client& client) { return client.send(image, name, description); });
+}
+
+SendResult sendLive(const cv::Mat& frame, std::string_view channel,
+                    const ImageDescription& description) noexcept {
+    return sendThroughSharedClient(
+        [&](Client& client) { return client.sendLive(frame, channel, description); });
+}
+
 } // namespace visual_debug

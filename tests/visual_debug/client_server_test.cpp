@@ -109,6 +109,27 @@ TEST(ClientServer, DeliversLiveFrameWithSentAt) {
     EXPECT_LE(*received.sentAt, after);
 }
 
+TEST(ClientServer, DescriptionReachesTheSink) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+    const visual_debug::ImageDescription description{.valueRange = {0, 1023},
+                                                     .transfer = visual_debug::Transfer::Pq,
+                                                     .primaries = visual_debug::Primaries::Bt2020};
+
+    EXPECT_EQ(client.sendLive(smallImage(), "camera", description), SendResult::Delivered);
+    EXPECT_EQ(client.send(smallImage(), "still", description), SendResult::Delivered);
+
+    ASSERT_TRUE(sink.waitForCount(2, 1s));
+    const auto messages = sink.messages();
+    EXPECT_TRUE(messages[0].live);
+    EXPECT_TRUE(messages[0].sentAt.has_value());
+    EXPECT_EQ(messages[0].description, description);
+    EXPECT_FALSE(messages[1].live);
+    EXPECT_EQ(messages[1].description, description);
+}
+
 TEST(ClientServer, StillsStayStills) {
     CollectingSink sink;
     Server server(sink, {.endpoint = kAnyLoopbackPort});

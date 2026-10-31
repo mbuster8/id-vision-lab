@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
 #include <optional>
+#include <utility>
 
 namespace visual_debug {
 namespace {
@@ -35,6 +37,60 @@ constexpr std::array<DepthInfo, 7> kDepths{{
     {CV_32F, "32F", 4},
     {CV_64F, "64F", 8},
 }};
+
+// The names are part of the wire contract, like the depths'.
+constexpr std::array<std::pair<Transfer, std::string_view>, 3> kTransfers{{
+    {Transfer::Sdr, "sdr"},
+    {Transfer::Hlg, "hlg"},
+    {Transfer::Pq, "pq"},
+}};
+constexpr std::array<std::pair<Primaries, std::string_view>, 2> kPrimaries{{
+    {Primaries::Bt709, "bt709"},
+    {Primaries::Bt2020, "bt2020"},
+}};
+
+template <typename Enum, std::size_t N>
+std::string_view nameOf(const std::array<std::pair<Enum, std::string_view>, N>& table, Enum value) {
+    const auto it =
+        std::find_if(table.begin(), table.end(), [&](const auto& entry) { return entry.first == value; });
+    return it == table.end() ? std::string_view{} : it->second;
+}
+
+template <typename Enum, std::size_t N>
+std::optional<Enum> valueNamed(const std::array<std::pair<Enum, std::string_view>, N>& table,
+                               const Json& field) {
+    if (!field.is_string()) {
+        return std::nullopt;
+    }
+    const auto& name = field.get_ref<const std::string&>();
+    const auto it =
+        std::find_if(table.begin(), table.end(), [&](const auto& entry) { return entry.second == name; });
+    return it == table.end() ? std::nullopt : std::optional<Enum>(it->first);
+}
+
+// A whole number goes out without a fraction, so a range reads as the codes it spans: [0,1023], not
+// [0.0,1023.0]. Beyond 2^53 a double holds only whole numbers anyway, and is written as one.
+nlohmann::ordered_json rangeField(const ValueRange& range) {
+    constexpr double kLargestExactInteger = 9007199254740992.0; // 2^53
+    auto field = nlohmann::ordered_json::array();
+    for (const double value : {range.min, range.max}) {
+        if (value == std::trunc(value) && std::abs(value) <= kLargestExactInteger) {
+            field.push_back(static_cast<std::int64_t>(value));
+        } else {
+            field.push_back(value);
+        }
+    }
+    return field;
+}
+
+// Two JSON numbers, integers or not, with min < max. JSON cannot carry a number that is not finite.
+std::optional<ValueRange> readRange(const Json& field) {
+    if (!field.is_array() || field.size() != 2 || !field[0].is_number() || !field[1].is_number()) {
+        return std::nullopt;
+    }
+    const ValueRange range{.min = field[0].get<double>(), .max = field[1].get<double>()};
+    return range.empty() ? std::nullopt : std::optional<ValueRange>(range);
+}
 
 const DepthInfo* findDepth(int depth) {
     const auto it =
@@ -231,6 +287,28 @@ std::variant<ImageMessage, DecodeError> decodeChecked(std::string_view headerTex
         sentAt = SentTime{std::chrono::milliseconds(*milliseconds)};
     }
 
+    // The image description: all three optional, on any image.
+    ImageDescription description;
+    if (const auto field = header.find("valueRange"); field != header.end()) {
+        const auto range = readRange(*field);
+        if (!range) {
+            return DecodeError{"valueRange is not two increasing numbers"};
+        }
+        description.valueRange = *range;
+    }
+    if (const auto field = header.find("transfer"); field != header.end()) {
+        description.transfer = valueNamed(kTransfers, *field);
+        if (!description.transfer) {
+            return DecodeError{"transfer is not sdr, hlg or pq"};
+        }
+    }
+    if (const auto field = header.find("primaries"); field != header.end()) {
+        description.primaries = valueNamed(kPrimaries, *field);
+        if (!description.primaries) {
+            return DecodeError{"primaries is not bt709 or bt2020"};
+        }
+    }
+
     const auto expectedBytes = pixelByteCount(*rows, *cols, *channels, *depth);
     if (expectedBytes > kMaxPixelBytes) {
         return DecodeError{"image too large"};
@@ -242,10 +320,13 @@ std::variant<ImageMessage, DecodeError> decodeChecked(std::string_view headerTex
     // cv::Mat has no read-only view type; the clone is the only access, and gives the image its own pixels.
     const cv::Mat view(*rows, *cols, CV_MAKETYPE(depth->depth, *channels),
                        const_cast<std::byte*>(pixels.data()));
-    return ImageMessage{.name = nameText, .image = view.clone(), .live = live, .sentAt = sentAt};
+    return ImageMessage{
+        .name = nameText, .image = view.clone(), .live = live, .sentAt = sentAt, .description = description};
 }
 
 } // namespace
+
+bool ValueRange::empty() const { return !(std::isfinite(min) && std::isfinite(max) && min < max); }
 
 std::string sanitiseName(std::string_view name) { return truncateUtf8(toValidUtf8(name), kMaxNameBytes); }
 
@@ -288,6 +369,16 @@ std::variant<EncodedMessage, EncodeError> encode(const cv::Mat& image, std::stri
         if (milliseconds >= 0 && milliseconds <= kMaxSentAtMilliseconds) {
             header["sentAt"] = milliseconds;
         }
+    }
+    const auto& description = options.description;
+    if (!description.valueRange.empty()) {
+        header["valueRange"] = rangeField(description.valueRange);
+    }
+    if (description.transfer) {
+        header["transfer"] = nameOf(kTransfers, *description.transfer);
+    }
+    if (description.primaries) {
+        header["primaries"] = nameOf(kPrimaries, *description.primaries);
     }
 
     EncodedMessage message;

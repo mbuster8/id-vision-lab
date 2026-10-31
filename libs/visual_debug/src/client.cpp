@@ -31,7 +31,8 @@ class Client::Impl {
 public:
     explicit Impl(ClientOptions options) : m_options(std::move(options)) {}
 
-    SendResult send(const cv::Mat& image, std::string_view name, bool live) {
+    SendResult send(const cv::Mat& image, std::string_view name, bool live,
+                    const ImageDescription& description) {
         // Cheap checks first: while no viewer is available, an image is never encoded, so a region of
         // interest is not copied on every frame.
         if (!isSupportedImage(image)) {
@@ -53,11 +54,10 @@ public:
             return SendResult::ViewerUnavailable;
         }
 
-        EncodeOptions options;
+        EncodeOptions options{.description = description};
         if (live) {
-            options = {.live = true,
-                       .sentAt =
-                           std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now())};
+            options.live = true;
+            options.sentAt = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
         }
         const auto encoded = encode(image, name, options);
         if (std::holds_alternative<EncodeError>(encoded)) {
@@ -135,16 +135,27 @@ Client::Client(ClientOptions options) : m_impl(std::make_unique<Impl>(std::move(
 Client::~Client() = default;
 
 SendResult Client::send(const cv::Mat& image, std::string_view name) noexcept {
-    return sendGuarded(image, name, false);
+    return sendGuarded(image, name, false, {});
 }
 
 SendResult Client::sendLive(const cv::Mat& frame, std::string_view channel) noexcept {
-    return sendGuarded(frame, channel, true);
+    return sendGuarded(frame, channel, true, {});
 }
 
-SendResult Client::sendGuarded(const cv::Mat& image, std::string_view name, bool live) noexcept {
+SendResult Client::send(const cv::Mat& image, std::string_view name,
+                        const ImageDescription& description) noexcept {
+    return sendGuarded(image, name, false, description);
+}
+
+SendResult Client::sendLive(const cv::Mat& frame, std::string_view channel,
+                            const ImageDescription& description) noexcept {
+    return sendGuarded(frame, channel, true, description);
+}
+
+SendResult Client::sendGuarded(const cv::Mat& image, std::string_view name, bool live,
+                               const ImageDescription& description) noexcept {
     try {
-        return m_impl->send(image, name, live);
+        return m_impl->send(image, name, live, description);
     } catch (...) {
         // A debugging aid must never take the host application down: ZeroMQ errors, a malformed reply or
         // running out of memory while copying a large image all end here.
