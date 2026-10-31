@@ -683,6 +683,7 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     }
     if (m_liveChannel) {
         m_liveChannel.reset();
+        m_sink.protectLiveChannel(std::nullopt);
         m_sidebar->liveChannels()->setSelected(std::nullopt);
     }
     m_currentId = id;
@@ -807,6 +808,7 @@ void MainWindow::showLiveChannel(const std::string& name) {
     }
     m_currentId.reset();
     m_liveChannel = name;
+    m_sink.protectLiveChannel(name); // never closed to make room while in view
     m_thumbnails->clearChoice();
     m_sidebar->liveChannels()->setSelected(QString::fromStdString(name));
     m_infoBar->displayControl()->setState(m_displaySettings.get(name), channel->shown.channels() == 1);
@@ -910,6 +912,7 @@ void MainWindow::forgetLiveChannel(const std::string& name) {
 
 void MainWindow::leaveLiveChannel() {
     m_liveChannel.reset();
+    m_sink.protectLiveChannel(std::nullopt);
     m_sidebar->liveChannels()->setSelected(std::nullopt);
     if (m_lastHistoryId && m_history.find(*m_lastHistoryId) != nullptr) {
         selectAndShow(*m_lastHistoryId);
@@ -1030,6 +1033,7 @@ void MainWindow::showImageText(const viewer_core::ReceivedImage& entry) {
 void MainWindow::clearView() {
     m_currentId.reset();
     m_liveChannel.reset();
+    m_sink.protectLiveChannel(std::nullopt);
     m_sidebar->liveChannels()->setSelected(std::nullopt);
     m_imageView->clear();
     m_infoBar->clear();

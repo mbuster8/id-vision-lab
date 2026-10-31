@@ -79,6 +79,9 @@ public:
     LiveBatch takeLiveFrames();
     // Frees the channel's place and drops its waiting frame. A later frame opens it again. Thread-safe.
     void closeLiveChannel(const std::string& name);
+    // The channel in view, which is never closed to make room however long it is quiet; nullopt for none.
+    // Thread-safe.
+    void protectLiveChannel(std::optional<std::string> name);
 
 signals:
     void imageReceived(visual_debug::ImageMessage message);
@@ -97,7 +100,7 @@ private:
 
     visual_debug::Acceptance takeLiveFrame(visual_debug::ImageMessage message); // with m_mutex held
     bool roomFor(const std::string& name, std::size_t bytes) const;
-    // Closes the channel idle longest, but never `keep`; false when none is idle.
+    // Closes the channel idle longest, but never `keep` or the protected one; false when none is idle.
     bool evictLongestIdle(Clock::time_point now, const std::string& keep);
     bool noteLiveNews(); // true when the UI must be told
 
@@ -107,6 +110,7 @@ private:
     int m_pending = 0;
     std::map<std::string, int> m_rejections; // reasons are a handful of fixed texts
     std::vector<LiveChannel> m_liveChannels; // in the order they opened
+    std::optional<std::string> m_protected;  // the channel in view
     LiveBatch m_liveNews;                    // refused and evicted names; frames stay with their channels
     bool m_liveNewsSignalled = false;
 };

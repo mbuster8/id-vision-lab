@@ -1798,6 +1798,7 @@ TEST(MainWindowTest, LiveRowsTakeEveryDepth) {
 TEST(MainWindowTest, IdleChannelMakesRoomInTheWindow) {
     ClockedWindow clocked;
     MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage()); // in view, so no channel is
     for (int i = 1; i <= 8; ++i) {
         feedLive(window, "cam" + std::to_string(i), liveFrame(i));
     }
@@ -1812,7 +1813,28 @@ TEST(MainWindowTest, IdleChannelMakesRoomInTheWindow) {
     const QStringList names = livePanelOf(window)->channelNames();
     EXPECT_FALSE(names.contains(QStringLiteral("cam1")));
     EXPECT_TRUE(names.contains(QStringLiteral("cam9")));
-    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("cam9")); // cam1 was shown
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+}
+
+// (R2) The channel in view, frozen on a frame someone is studying, is never the one closed to make room.
+TEST(MainWindowTest, ChannelInViewIsNeverReplaced) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (int i = 1; i <= 8; ++i) {
+        feedLive(window, "cam" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    ASSERT_EQ(window.shownLiveChannel(), std::optional<std::string>("cam1"));
+    action(window, "actionFreeze")->trigger();
+    clocked.now += viewer_core::kIdleAfter;
+
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::Taken);
+    QApplication::processEvents();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [cam9] replaced idle channel [cam2]")),
+              nullptr);
+    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("cam1"));
+    EXPECT_TRUE(action(window, "actionFreeze")->isChecked());
 }
 
 // --- Freeze and Snapshot ----------------------------------------------------------------------------------

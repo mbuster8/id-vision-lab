@@ -282,6 +282,23 @@ TEST(QtImageSink, EvictsTheLongestIdleForANewChannel) {
     EXPECT_EQ(namesOf(batch.frames).back(), "c8");
 }
 
+// (R2) The channel in view is never closed to make room, however long it has been quiet.
+TEST(QtImageSink, NeverEvictsTheProtectedChannel) {
+    auto now = std::chrono::steady_clock::time_point{} + 1h;
+    QtImageSink sink([&now] { return now; });
+    openChannels(sink, QtImageSink::kMaxLiveChannels);
+    sink.takeLiveFrames();
+    sink.protectLiveChannel("c0");
+    now += viewer_core::kIdleAfter;
+
+    EXPECT_EQ(sink.onImageReceived(liveFrame("c8")), Acceptance::Taken);
+    EXPECT_EQ(sink.takeLiveFrames().evicted, std::vector<std::string>{"c1"});
+
+    sink.protectLiveChannel(std::nullopt);
+    EXPECT_EQ(sink.onImageReceived(liveFrame("c9")), Acceptance::Taken);
+    EXPECT_EQ(sink.takeLiveFrames().evicted, std::vector<std::string>{"c0"});
+}
+
 // The window and the sink agree on when a channel is idle: 3 s, as the owner chose.
 TEST(QtImageSink, EvictsAChannelIdleForThreeSeconds) {
     auto now = std::chrono::steady_clock::time_point{} + 1h;

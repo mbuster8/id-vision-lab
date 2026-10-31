@@ -87,7 +87,8 @@ bool QtImageSink::roomFor(const std::string& name, std::size_t bytes) const {
 bool QtImageSink::evictLongestIdle(Clock::time_point now, const std::string& keep) {
     auto longestIdle = m_liveChannels.end();
     for (auto open = m_liveChannels.begin(); open != m_liveChannels.end(); ++open) {
-        if (open->name != keep && now - open->lastArrival >= viewer_core::kIdleAfter &&
+        if (open->name != keep && open->name != m_protected &&
+            now - open->lastArrival >= viewer_core::kIdleAfter &&
             (longestIdle == m_liveChannels.end() || open->lastArrival < longestIdle->lastArrival)) {
             longestIdle = open;
         }
@@ -119,6 +120,11 @@ QtImageSink::LiveBatch QtImageSink::takeLiveFrames() {
 void QtImageSink::closeLiveChannel(const std::string& name) {
     const std::lock_guard lock(m_mutex);
     std::erase_if(m_liveChannels, [&name](const LiveChannel& open) { return open.name == name; });
+}
+
+void QtImageSink::protectLiveChannel(std::optional<std::string> name) {
+    const std::lock_guard lock(m_mutex);
+    m_protected = std::move(name);
 }
 
 void QtImageSink::markHandled() {
