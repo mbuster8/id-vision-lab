@@ -48,11 +48,16 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             pipeline
             visual_debug::visual_debug
             GTest::gtest_main)
+    # video_file_test.cpp writes and reads clips, so these tests need OpenCV's videoio, as live_sender does.
+    find_package(OpenCV REQUIRED COMPONENTS videoio)
     id_vision_lab_add_test_executable(live_sender_tests
         SOURCES
             examples/live_sender_test.cpp
+            examples/video_file_test.cpp
         LIBRARIES
             live_sender_lib
+            live_sender_video
+            opencv_videoio
             visual_debug::visual_debug
             cppzmq
             nlohmann_json::nlohmann_json

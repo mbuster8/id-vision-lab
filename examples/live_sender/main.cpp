@@ -12,6 +12,7 @@
 // arguments or an unreadable source.
 
 #include "live_sender.h"
+#include "video_file.h"
 
 #include "visual_debug/client.h"
 
@@ -92,7 +93,7 @@ bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
             return capture.open(camera->index);
         }
         const auto& file = std::get<live_sender::FileSource>(arguments.source);
-        if (!capture.open(file.path)) {
+        if (!live_sender::openVideoFile(capture, file.path)) {
             return false;
         }
         const double fps = capture.get(cv::CAP_PROP_FPS);
