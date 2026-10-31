@@ -54,9 +54,8 @@ void StorageController::store(const viewer_core::ReceivedImage& entry) {
     if (!isStored(entry)) {
         return;
     }
-    call([id = entry.id, name = entry.name, original = entry.original](StorageWorker& worker) {
-        worker.store(id, name, original);
-    });
+    call([id = entry.id, name = entry.name, original = entry.original,
+          tags = entry.origin.tags](StorageWorker& worker) { worker.store(id, name, original, tags); });
 }
 
 void StorageController::remove(viewer_core::ImageId id) {

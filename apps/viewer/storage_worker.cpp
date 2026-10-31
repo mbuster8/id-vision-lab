@@ -25,7 +25,8 @@ StorageWorker::StorageWorker(const QString& imagesFolder, QObject* parent)
     qRegisterMetaType<StoredImage>(); // loaded crosses to the UI thread by a queued connection
 }
 
-void StorageWorker::store(viewer_core::ImageId id, const std::string& name, const cv::Mat& original) {
+void StorageWorker::store(viewer_core::ImageId id, const std::string& name, const cv::Mat& original,
+                          const viewer_core::ImageTags& tags) {
     if (!keepImagesSetting()) {
         forget();
         return;
@@ -33,7 +34,7 @@ void StorageWorker::store(viewer_core::ImageId id, const std::string& name, cons
     if (m_keys.contains(id)) {
         return;
     }
-    const QString key = m_store.write(name, original);
+    const QString key = m_store.write(name, original, tags);
     report(!key.isEmpty(), tr("Cannot store [%1]").arg(QString::fromStdString(name)));
     if (!key.isEmpty()) {
         m_keys.emplace(id, key);

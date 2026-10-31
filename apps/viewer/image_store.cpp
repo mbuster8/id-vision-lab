@@ -1,6 +1,7 @@
 #include "image_store.h"
 
 #include "epoch_time.h"
+#include "image_tags_conversion.h"
 #include "private_files.h"
 
 #include "visual_debug/wire_format.h"
@@ -129,8 +130,9 @@ std::optional<visual_debug::ImageMessage> readImageFile(const QString& path) {
 
 ImageStore::ImageStore(QString imagesFolder) : m_folder(std::move(imagesFolder)) {}
 
-QString ImageStore::write(const std::string& name, const cv::Mat& original) {
-    const auto encoded = visual_debug::encode(original, name);
+QString ImageStore::write(const std::string& name, const cv::Mat& original,
+                          const viewer_core::ImageTags& tags) {
+    const auto encoded = visual_debug::encode(original, name, {.description = toDescription(tags)});
     const auto* message = std::get_if<visual_debug::EncodedMessage>(&encoded);
     if (message == nullptr) {
         return {};
@@ -195,7 +197,7 @@ ImageStore::LoadResult ImageStore::load(const std::function<bool(StoredImage&&)>
     for (const QJsonValue& value : images.toArray()) {
         const QJsonObject entry = value.toObject();
         const QString key = entry.value(QStringLiteral("key")).toString();
-        const std::optional<viewer_core::ImageOrigin> origin = originFrom(entry);
+        std::optional<viewer_core::ImageOrigin> origin = originFrom(entry);
         if (!isValidKey(key) || seen.contains(key) || !origin) {
             ++result.skipped;
             continue;
@@ -213,6 +215,7 @@ ImageStore::LoadResult ImageStore::load(const std::function<bool(StoredImage&&)>
         // The shown name obeys the wire format's rule, as a rename does; without one, the header's name.
         std::string name =
             visual_debug::sanitiseName(entry.value(QStringLiteral("name")).toString().toStdString());
+        origin->tags = toImageTags(message->description); // in the file's header, not the index
         stopped = !take({key, name.empty() ? std::move(message->name) : std::move(name), *origin,
                          std::move(message->image)});
     }

@@ -20,14 +20,22 @@ inline QString singleLine(QString text) {
     return text;
 }
 
-// "640×480 · 1 ch · 16S · 614.4 kB": the summary, then the size of the pixel data for a received image, or
-// the size on disk followed by " file" for an opened one. Decimal units, as Finder shows them. The info strip
-// and the sidebar's Details line both show it.
+// A number as the range controls write it, and as a range typed in them parses: a full stop whatever the
+// locale, up to ten significant digits.
+QString formattedNumber(double value);
+
+// "HLG · BT.2020 · 0–65535": what the sender said about an image, only the parts it said; empty for none.
+QString tagsText(const viewer_core::ImageTags& tags);
+
+// "640×480 · 1 ch · 16S · 614.4 kB": the summary and the tags, then the size of the pixel data for a received
+// image, or the size on disk followed by " file" for an opened one. Decimal units, as Finder shows them. The
+// info strip and the sidebar's Details line both show it.
 QString imageDetails(const viewer_core::ReceivedImage& image, const QLocale& locale = QLocale());
 
 // "live · 1920×1080 · 3 ch · 8U · 30 fps in · 30 drawn · 12 dropped · 18 ms": the state ("frozen" before
-// "idle" before "live"), the summary, frames arrived and drawn in the last second, frames the viewer dropped,
-// and the shown frame's age, left out without a sentAt. The info strip shows it for a live channel.
+// "idle" before "live"), the summary and the shown frame's tags, frames arrived and drawn in the last second,
+// frames the viewer dropped, and the shown frame's age, left out without a sentAt. The info strip shows it
+// for a live channel.
 QString liveDetails(const QString& summary, const viewer_core::LiveChannel& channel,
                     const viewer_core::LiveStats& stats);
 

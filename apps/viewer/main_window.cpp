@@ -13,6 +13,7 @@
 #include "image_file.h"
 #include "image_info_bar.h"
 #include "image_sidebar.h"
+#include "image_tags_conversion.h"
 #include "image_view.h"
 #include "live_channel_panel.h"
 #include "outline_icons.h"
@@ -249,10 +250,12 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(m_ui->actionSnapshot, &QAction::triggered, this, &MainWindow::takeSnapshot);
     displayControl->setAutoRangeProvider([this] {
         if (const auto* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
-            return viewer_core::autoRange(channel->shown); // the frame on screen, frozen or not
+            // The frame on screen, frozen or not.
+            return viewer_core::autoRange(channel->shown, channel->shownTags);
         }
         const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr;
-        return entry != nullptr ? viewer_core::autoRange(entry->original) : viewer_core::DisplayRange{};
+        return entry != nullptr ? viewer_core::autoRange(entry->original, entry->origin.tags)
+                                : viewer_core::DisplayRange{};
     });
     connect(displayControl, &DisplaySettingsControl::settingsChanged, this,
             &MainWindow::changeDisplaySettings);
@@ -543,7 +546,9 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
 void MainWindow::onImageReceived(const visual_debug::ImageMessage& message) {
     addImage(message.name, message.image,
-             {.source = viewer_core::ImageSource::Received, .arrivedAt = message.receivedAt});
+             {.source = viewer_core::ImageSource::Received,
+              .arrivedAt = message.receivedAt,
+              .tags = toImageTags(message.description)});
     m_sink.markHandled();
 }
 
@@ -600,9 +605,9 @@ void MainWindow::renameImage(viewer_core::ImageId id, QString name) {
         return;
     }
     const QString oldName = singleLine(QString::fromStdString(entry->name));
-    // The display settings go with the name.
-    const viewer_core::DisplaySettings settings = m_displaySettings.get(entry->name);
-    setDisplaySettings(entry->name, {});
+    // The display settings go with the name; the old name is left with none, not with an explicit Auto.
+    const std::optional<viewer_core::DisplaySettings> settings = m_displaySettings.find(entry->name);
+    setDisplaySettings(entry->name, std::nullopt);
     setDisplaySettings(cut, settings);
     m_history.rename(id, std::move(cut));
     log(LogKind::Info,
@@ -713,17 +718,23 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     m_currentId = id;
     m_lastHistoryId = id;
     m_imageView->setImage(shownPicture(*entry));
-    m_infoBar->displayControl()->setState(m_displaySettings.get(entry->name),
+    m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
                                           entry->original.channels() == 1);
     showImageText(*entry);
     updateEditActions();
 }
 
 QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry) const {
-    const viewer_core::DisplaySettings settings = m_displaySettings.get(entry.name);
-    return qt_common::toQImage(settings == viewer_core::DisplaySettings{}
-                                   ? entry.display
-                                   : viewer_core::toDisplayImage(entry.original, settings));
+    const viewer_core::DisplaySettings settings = settingsFor(entry.name, entry.origin.tags);
+    return qt_common::toQImage(
+        settings == viewer_core::defaultSettings(entry.origin.tags)
+            ? entry.display
+            : viewer_core::toDisplayImage(entry.original, settings, {.tags = entry.origin.tags}));
+}
+
+viewer_core::DisplaySettings MainWindow::settingsFor(const std::string& name,
+                                                     const viewer_core::ImageTags& tags) const {
+    return m_displaySettings.find(name).value_or(viewer_core::defaultSettings(tags));
 }
 
 // For the shown image's name, so every image of that name, and later arrivals, look the same: in the view
@@ -744,25 +755,32 @@ void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& setti
 
 // Also forgets what was drawn with the name's old settings: its thumbnails, made again when next painted, and
 // its live row's picture, made again at the next tick.
-void MainWindow::setDisplaySettings(const std::string& name, const viewer_core::DisplaySettings& settings) {
-    m_displaySettings.set(name, settings);
+void MainWindow::setDisplaySettings(const std::string& name,
+                                    const std::optional<viewer_core::DisplaySettings>& settings) {
+    if (settings) {
+        m_displaySettings.set(name, *settings);
+    } else {
+        m_displaySettings.forget(name);
+    }
     m_thumbnails->refreshThumbnails(QString::fromStdString(name));
     m_rowPictures.erase(name);
 }
 
-// A thumbnail with its name's display settings, made at its own size; nothing for the default ones, whose
-// picture the history already holds.
+// A thumbnail with its name's display settings, made at its own size; nothing for its tags' default ones,
+// whose picture the history already holds.
 cv::Mat MainWindow::thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) const {
     const auto* entry = m_history.find(id);
     if (entry == nullptr) {
         return {};
     }
-    const viewer_core::DisplaySettings settings = m_displaySettings.get(entry->name);
-    if (settings == viewer_core::DisplaySettings{}) {
+    const viewer_core::DisplaySettings settings = settingsFor(entry->name, entry->origin.tags);
+    if (settings == viewer_core::defaultSettings(entry->origin.tags)) {
         return {};
     }
-    return viewer_core::toDisplayImage(entry->original, settings,
-                                       cv::Size(deviceSize.width(), deviceSize.height()));
+    return viewer_core::toDisplayImage(
+        entry->original, settings,
+        {.size = cv::Size(std::max(deviceSize.width(), 1), std::max(deviceSize.height(), 1)),
+         .tags = entry->origin.tags});
 }
 
 // --- Live channels ----------------------------------------------------------------------------------------
@@ -801,7 +819,8 @@ void MainWindow::takeLiveFrames() {
                             .image = std::move(frame.message.image),
                             .receivedAt = frame.message.receivedAt,
                             .sentAt = frame.message.sentAt,
-                            .replaced = frame.replaced},
+                            .replaced = frame.replaced,
+                            .tags = toImageTags(frame.message.description)},
                            now);
         const bool muted = m_mutedChannels.contains(name);
         if (result.started) {
@@ -858,7 +877,8 @@ void MainWindow::showLiveChannel(const std::string& name) {
     m_sink.protectLiveChannel(name); // never closed to make room while in view
     m_thumbnails->clearChoice();
     m_sidebar->liveChannels()->setSelected(QString::fromStdString(name));
-    m_infoBar->displayControl()->setState(m_displaySettings.get(name), channel->shown.channels() == 1);
+    m_infoBar->displayControl()->setState(settingsFor(name, channel->shownTags),
+                                          channel->shown.channels() == 1);
     m_ui->actionFreeze->setChecked(channel->frozen); // each channel is frozen or not by itself
     m_pixelLabel->clear();
     drawLiveFrame(ImageView::KeepView::No);
@@ -884,7 +904,8 @@ bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
     const cv::Mat& frame = channel->shown;
     m_infoBar->displayControl()->setSingleChannel(frame.channels() == 1); // frames may change their count
     m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
-                              frame, m_displaySettings.get(channel->name), liveDrawnSize(frame, keep))),
+                              frame, settingsFor(channel->name, channel->shownTags),
+                              {.size = liveDrawnSize(frame, keep), .tags = channel->shownTags})),
                           keep, QSize(frame.cols, frame.rows));
     return true;
 }
@@ -946,7 +967,8 @@ void MainWindow::tick(Clock::time_point now) {
 }
 
 // The row's picture is the channel's newest frame, the one set aside while frozen included, converted at the
-// row's size: a 4K frame costs a row no more than a small one.
+// row's size: a 4K frame costs a row no more than a small one. With the shown frame's tags: a stream does not
+// change them between frames.
 void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now) {
     auto& [madeAtFrame, picture] = m_rowPictures[channel.name];
     const cv::Mat& newest = channel.newest.empty() ? channel.shown : channel.newest;
@@ -955,8 +977,9 @@ void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::t
         const int height =
             std::max(1, static_cast<int>(std::lround(LiveChannelPanel::kRowHeight * devicePixelRatioF())));
         picture = qt_common::toQImage(viewer_core::toDisplayImage(
-            newest, m_displaySettings.get(channel.name),
-            viewer_core::sizeWithin(newest.size(), cv::Size(newest.cols, height))));
+            newest, settingsFor(channel.name, channel.shownTags),
+            {.size = viewer_core::sizeWithin(newest.size(), cv::Size(newest.cols, height)),
+             .tags = channel.shownTags}));
         madeAtFrame = channel.received;
     }
     m_sidebar->liveChannels()->updateChannel(
@@ -1051,11 +1074,12 @@ void MainWindow::takeSnapshot() {
         name = snapshotName(channelName, milliseconds);
     }
     const std::string snapshot = name.toStdString();
-    setDisplaySettings(snapshot, m_displaySettings.get(channel->name));
+    setDisplaySettings(snapshot, m_displaySettings.find(channel->name));
     addImage(snapshot, channel->shown,
              {.source = viewer_core::ImageSource::LiveSnapshot,
               .fileBytes = std::nullopt,
-              .arrivedAt = channel->shownReceivedAt});
+              .arrivedAt = channel->shownReceivedAt,
+              .tags = channel->shownTags});
 }
 
 QImage MainWindow::livePicture() const {
@@ -1063,8 +1087,8 @@ QImage MainWindow::livePicture() const {
     if (channel == nullptr || channel->shown.empty()) {
         return {};
     }
-    return qt_common::toQImage(
-        viewer_core::toDisplayImage(channel->shown, m_displaySettings.get(channel->name)));
+    return qt_common::toQImage(viewer_core::toDisplayImage(
+        channel->shown, settingsFor(channel->name, channel->shownTags), {.tags = channel->shownTags}));
 }
 
 void MainWindow::copyLiveFrame() {

@@ -21,6 +21,8 @@ add_library(viewer_ui STATIC
     image_sidebar.h
     image_store.cpp
     image_store.h
+    image_tags_conversion.cpp
+    image_tags_conversion.h
     image_view.cpp
     image_view.h
     live_channel_panel.cpp

@@ -1,5 +1,7 @@
 #include "display_settings_control.h"
 
+#include "display_text.h"
+
 #include <QAction>
 #include <QActionGroup>
 #include <QDoubleValidator>
@@ -28,8 +30,6 @@ using viewer_core::ColourMap;
 using viewer_core::DisplayRange;
 using viewer_core::RangeMode;
 
-constexpr int kNumberPrecision = 10; // enough for a 32-bit integer and a float's digits
-
 std::size_t indexOf(RangeMode mode) { return static_cast<std::size_t>(mode); }
 std::size_t indexOf(ColourMap colours) { return static_cast<std::size_t>(colours); }
 
@@ -56,9 +56,6 @@ QString coloursName(ColourMap colours) {
     }
     return DisplaySettingsControl::tr("Grey");
 }
-
-// Numbers with a full stop whatever the system's locale, so a range typed as in the pixel readout parses.
-QString formatted(double value) { return QLocale::c().toString(value, 'g', kNumberPrecision); }
 
 std::optional<double> parsed(const QString& text) {
     bool ok = false;
@@ -103,8 +100,8 @@ public:
 
     // With its top-right corner at topRight, moved left or up as needed to stay within bounds (global).
     void open(const DisplayRange& range, const QPoint& topRight, const QRect& bounds) {
-        m_minimum->setText(formatted(range.min));
-        m_maximum->setText(formatted(range.max));
+        m_minimum->setText(formattedNumber(range.min));
+        m_maximum->setText(formattedNumber(range.max));
         updateApply();
         adjustSize();
         show(); // first, so that the frame, if the platform gives a popup one, counts in its size
@@ -269,7 +266,8 @@ void DisplaySettingsControl::showSettings() {
     m_rangeButton->setToolTip(
         m_settings.mode == RangeMode::Auto
             ? tr("Each picture from its own minimum to its maximum")
-            : tr("%1 to %2").arg(formatted(m_settings.range.min), formatted(m_settings.range.max)));
+            : tr("%1 to %2")
+                  .arg(formattedNumber(m_settings.range.min), formattedNumber(m_settings.range.max)));
     m_coloursButton->setText(tr("Colours: %1 ▾").arg(coloursName(m_settings.colours)));
     m_rangeActions[indexOf(m_settings.mode)]->setChecked(true);
     m_coloursActions[indexOf(m_settings.colours)]->setChecked(true);

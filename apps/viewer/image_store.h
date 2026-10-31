@@ -22,7 +22,8 @@ struct StoredImage {
 
 // The images a viewer keeps between sessions, in its data folder's images folder:
 // - one file per image, "<key>.vdimg": "VDIMG1\n", the header's length as a little-endian uint32, the wire
-//   format's header, then the pixel bytes, so every depth is kept exactly;
+//   format's header (which holds the image's tags as its description), then the pixel bytes, so every depth
+//   is kept exactly;
 // - "index.json", newest first, with what the header does not hold: the shown name, the source, the times.
 // Loading validates every file with visual_debug::decode, as the server does a received image. The store
 // only touches files, so it may run on any thread, one at a time.
@@ -31,7 +32,7 @@ public:
     explicit ImageStore(QString imagesFolder);
 
     // The new image's key, or empty when it cannot be encoded or written.
-    QString write(const std::string& name, const cv::Mat& original);
+    QString write(const std::string& name, const cv::Mat& original, const viewer_core::ImageTags& tags = {});
     bool remove(const QString& key); // false too for a key the store would never make
     // Metadata only (the pixels stay in their files); replaces the index at once.
     bool writeIndex(const std::vector<StoredImage>& newestFirst);

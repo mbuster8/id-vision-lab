@@ -1443,9 +1443,14 @@ cv::Mat liveFrame(int value, cv::Size size = {40, 30}) { return cv::Mat(size, CV
 visual_debug::Acceptance
 feedLive(MainWindow& window, const std::string& channel, const cv::Mat& frame,
          std::chrono::system_clock::time_point receivedAt = std::chrono::system_clock::now(),
-         std::optional<visual_debug::SentTime> sentAt = std::nullopt) {
-    return window.sinkForTests().onImageReceived(
-        {.name = channel, .image = frame, .receivedAt = receivedAt, .live = true, .sentAt = sentAt});
+         std::optional<visual_debug::SentTime> sentAt = std::nullopt,
+         const visual_debug::ImageDescription& description = {}) {
+    return window.sinkForTests().onImageReceived({.name = channel,
+                                                  .image = frame,
+                                                  .receivedAt = receivedAt,
+                                                  .live = true,
+                                                  .sentAt = sentAt,
+                                                  .description = description});
 }
 
 LiveChannelPanel* livePanelOf(MainWindow& window) { return sidebarOf(window)->liveChannels(); }
@@ -2004,6 +2009,96 @@ TEST(MainWindowTest, SnapshotKeepsTheChannelsSettings) {
     ASSERT_TRUE(panelOf(*window)->selectImage(1));
 
     EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Turbo ▾"));
+}
+
+// --- Image tags
+// ---------------------------------------------------------------------------------------------
+
+const visual_debug::ImageDescription kHlgDescription{.valueRange = {0, 65535},
+                                                     .transfer = visual_debug::Transfer::Hlg,
+                                                     .primaries = visual_debug::Primaries::Bt2020};
+const viewer_core::ImageTags kHlgTags{.valueRange = {0, 65535},
+                                      .transfer = viewer_core::Transfer::Hlg,
+                                      .primaries = viewer_core::Primaries::Bt2020};
+
+// Hands a still to the window's sink as the server's thread would, then lets the window take it.
+void feedStill(MainWindow& window, const std::string& name, const cv::Mat& image,
+               const visual_debug::ImageDescription& description) {
+    window.sinkForTests().onImageReceived({.name = name,
+                                           .image = image,
+                                           .receivedAt = std::chrono::system_clock::now(),
+                                           .description = description});
+    QApplication::processEvents();
+}
+
+QString expectedSize(std::uint64_t bytes) {
+    return QLocale().formattedDataSize(static_cast<qint64>(bytes), 1, QLocale::DataSizeSIFormat);
+}
+
+// 16384 of 0-65535 is a quarter: grey 64. Without the hint, a constant image is black.
+TEST(MainWindowTest, ReceivedHintSetsTheAutoRange) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+
+    feedStill(*window, "depth", cv::Mat(40, 40, CV_16UC1, cv::Scalar(16384)), {.valueRange = {0, 65535}});
+
+    EXPECT_EQ(viewedGrey(*window), 64);
+    EXPECT_EQ(thumbnailGrey(*window, 1), 64);
+}
+
+TEST(MainWindowTest, InfoStripNamesTheTags) {
+    const auto window = makeTestWindow();
+
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+
+    EXPECT_EQ(infoDetails(*window), QString::fromUtf8("40×30 · 3 ch · 16U · HLG · BT.2020 · 0–65535 · ") +
+                                        expectedSize(40 * 30 * 3 * 2));
+}
+
+TEST(MainWindowTest, LiveFrameKeepsItsTags) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+
+    feedLive(window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(
+        infoDetails(window).contains(QString::fromUtf8("40×30 · 3 ch · 16U · HLG · BT.2020 · 0–65535 · ")))
+        << infoDetails(window).toStdString();
+}
+
+TEST(MainWindowTest, SnapshotKeepsTheTags) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+
+    action(*window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    EXPECT_TRUE(infoDetails(*window).contains(QStringLiteral("HLG · BT.2020")))
+        << infoDetails(*window).toStdString();
+}
+
+TEST(MainWindowTest, KeptImagesKeepTheirTags) {
+    const QTemporaryDir root;
+    setKeepImagesSetting(true);
+    {
+        const auto window = makeRestoredWindow(root.path());
+        ASSERT_NE(window, nullptr);
+        window->addImage("phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), {.tags = kHlgTags});
+        ASSERT_TRUE(waitForStoredFiles(root.path(), 1));
+    }
+
+    const auto window = makeRestoredWindow(root.path());
+    ASSERT_NE(window, nullptr);
+    ASSERT_EQ(panelOf(*window)->listedIds().size(), 1U);
+    ASSERT_TRUE(panelOf(*window)->selectImage(panelOf(*window)->listedIds().front()));
+
+    EXPECT_TRUE(infoDetails(*window).contains(QStringLiteral("HLG · BT.2020")))
+        << infoDetails(*window).toStdString();
 }
 
 TEST(MainWindowTest, FreezeStopsRedrawsWhileCounting) {
