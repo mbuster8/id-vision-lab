@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,9 @@
 
 namespace {
 
+using viewer_core::DisplaySettings;
+using viewer_core::RangeMode;
+using viewer_core::sizeWithin;
 using viewer_core::toDisplayImage;
 
 cv::Vec4b displayPixel(const cv::Mat& image, int row = 0, int col = 0) {
@@ -118,6 +122,90 @@ TEST(DisplayConverter, RejectsUnsupportedInput) {
     for (const auto& [label, image] : images) {
         EXPECT_THROW((void)toDisplayImage(image), std::invalid_argument) << label;
     }
+}
+
+// --- At the size it is drawn ------------------------------------------------------------------------------
+
+TEST(DisplayConverter, DrawnSizeHasThatSize) {
+    const cv::Mat image(480, 640, CV_8UC3, cv::Scalar(10, 20, 30));
+
+    const cv::Mat drawn = toDisplayImage(image, DisplaySettings{}, cv::Size(64, 48));
+
+    EXPECT_EQ(drawn.size(), cv::Size(64, 48));
+    EXPECT_EQ(drawn.type(), CV_8UC4);
+    EXPECT_EQ(drawn.at<cv::Vec4b>(24, 32), cv::Vec4b(30, 20, 10, 255));
+}
+
+TEST(DisplayConverter, DrawnSizeNeverEnlarges) {
+    const cv::Mat image(48, 64, CV_8UC1, cv::Scalar(7));
+
+    EXPECT_EQ(toDisplayImage(image, DisplaySettings{}, cv::Size(1000, 1000)).size(), cv::Size(64, 48));
+}
+
+// Auto stretches the whole image's range, not the shrunk picture's: one bright pixel, averaged away when
+// shrinking, still sets the top, so the picture looks the same at every size.
+TEST(DisplayConverter, DrawnSizeKeepsTheWholeImagesRange) {
+    cv::Mat image(1000, 1000, CV_16UC1, cv::Scalar(0));
+    image.at<std::uint16_t>(0, 0) = 1000;
+    image(cv::Rect(500, 500, 400, 400)).setTo(500);
+
+    const cv::Mat drawn = toDisplayImage(image, DisplaySettings{}, cv::Size(100, 100));
+
+    const int grey = drawn.at<cv::Vec4b>(70, 70)[0];
+    EXPECT_GE(grey, 127);
+    EXPECT_LE(grey, 128);
+}
+
+TEST(DisplayConverter, DrawnSizeTakesEveryDepth) {
+    for (const int depth : {CV_8U, CV_8S, CV_16U, CV_16S, CV_32S, CV_32F, CV_64F}) {
+        for (const int channels : {1, 3}) {
+            const cv::Mat image(480, 640, CV_MAKETYPE(depth, channels), cv::Scalar::all(depth + 1));
+            EXPECT_EQ(toDisplayImage(image, DisplaySettings{}, cv::Size(64, 48)).size(), cv::Size(64, 48))
+                << depth << " " << channels;
+        }
+    }
+}
+
+// A NaN stays one dark pixel among its neighbours; averaging the original would make its whole block NaN, and
+// so black.
+TEST(DisplayConverter, DrawnSizeKeepsNonFiniteValuesSmall) {
+    cv::Mat image(100, 100, CV_32FC1, cv::Scalar(1.0f));
+    image.at<float>(50, 50) = 0.0f;
+    image.at<float>(0, 0) = std::numeric_limits<float>::quiet_NaN();
+
+    for (const viewer_core::ColourMap colours :
+         {viewer_core::ColourMap::Grey, viewer_core::ColourMap::Turbo}) {
+        const cv::Mat drawn = toDisplayImage(image, DisplaySettings{.colours = colours}, cv::Size(10, 10));
+        const cv::Mat whole = toDisplayImage(image, DisplaySettings{.colours = colours});
+        const cv::Vec4b bright = whole.at<cv::Vec4b>(1, 1);
+        const cv::Vec4b corner = drawn.at<cv::Vec4b>(0, 0);
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(corner[c], bright[c] * 0.99, 2.0) << static_cast<int>(colours) << " " << c;
+        }
+    }
+}
+
+// (R6) A range whose span does not fit in a double still maps linearly.
+TEST(DisplayConverter, WideFixedRangeStillMapsLinearly) {
+    cv::Mat image(1, 3, CV_64FC1);
+    image.at<double>(0, 0) = -1e308;
+    image.at<double>(0, 1) = 0.0;
+    image.at<double>(0, 2) = 1e308;
+    const DisplaySettings settings{.mode = RangeMode::Fixed, .range = {-1e308, 1e308}};
+
+    const cv::Mat display = toDisplayImage(image, settings);
+
+    EXPECT_EQ(display.at<cv::Vec4b>(0, 0)[0], 0);
+    EXPECT_GE(display.at<cv::Vec4b>(0, 1)[0], 127);
+    EXPECT_LE(display.at<cv::Vec4b>(0, 1)[0], 128);
+    EXPECT_EQ(display.at<cv::Vec4b>(0, 2)[0], 255);
+}
+
+TEST(SizeWithin, KeepsTheAspect) {
+    EXPECT_EQ(sizeWithin({4000, 3000}, {1024, 1024}), cv::Size(1024, 768));
+    EXPECT_EQ(sizeWithin({3000, 4000}, {1024, 1024}), cv::Size(768, 1024));
+    EXPECT_EQ(sizeWithin({64, 48}, {1024, 1024}), cv::Size(64, 48)); // never larger
+    EXPECT_EQ(sizeWithin({10000, 1}, {100, 100}), cv::Size(100, 1)); // never empty
 }
 
 } // namespace

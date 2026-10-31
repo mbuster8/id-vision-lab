@@ -19,6 +19,15 @@ cv::Mat toDisplayImage(const cv::Mat& image);
 // infinities are black (0, 0, 0, 255) whatever the map.
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings);
 
+// The same at `size`, each side clamped to the image's own and at least 1: for a picture drawn smaller than
+// the image, at a fraction of the cost. Values are mapped to 8 bits at full size, with the whole image's
+// range for Auto, then shrunk by area averaging, then coloured; so the picture looks as the full one would,
+// and a NaN or infinity stays one dark pixel among its neighbours instead of blackening its whole block.
+cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, cv::Size size);
+
+// The largest size of the image's shape within `bounds`, never larger than the image, each side at least 1.
+cv::Size sizeWithin(cv::Size image, cv::Size bounds);
+
 // The range Auto uses for this image: 0-255 for 8U, otherwise the minimum and maximum of its finite values
 // across all channels. Throws std::invalid_argument for an image toDisplayImage cannot show.
 DisplayRange autoRange(const cv::Mat& image);

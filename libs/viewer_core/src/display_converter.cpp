@@ -3,6 +3,8 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -54,12 +56,21 @@ DisplayRange finiteRange(const Plane& plane) {
 }
 
 // range.min becomes 0 and range.max 255, with values outside clipped. An empty range is black, and so are
-// non-finite values.
+// non-finite values. Half-spans, so that a range as wide as -1e308 to 1e308 does not overflow to infinity.
 cv::Mat toEightBit(const Plane& plane, const DisplayRange& range, int channels) {
     cv::Mat result;
-    const double span = range.max - range.min;
-    if (span > 0.0) {
-        plane.values.convertTo(result, CV_8U, 255.0 / span, -range.min * 255.0 / span);
+    const double halfSpan = range.max / 2.0 - range.min / 2.0;
+    if (halfSpan > 0.0) {
+        const double scale = 127.5 / halfSpan;
+        // Straight to 8 bits, OpenCV scales in single precision, where a scale outside float's range would
+        // become 0 or infinity: such a scale goes through double precision first.
+        if (scale >= std::numeric_limits<float>::min() && scale <= std::numeric_limits<float>::max()) {
+            plane.values.convertTo(result, CV_8U, scale, -range.min * scale);
+        } else {
+            cv::Mat scaled;
+            plane.values.convertTo(scaled, CV_64F, scale, -range.min * scale);
+            scaled.convertTo(result, CV_8U);
+        }
     } else {
         result = cv::Mat::zeros(plane.values.size(), CV_8U);
     }
@@ -94,16 +105,29 @@ cv::Mat toRgba(const cv::Mat& eightBit) {
     return display;
 }
 
-cv::Mat colourMapped(const cv::Mat& eightBit, ColourMap colours, const cv::Mat& finite) {
+// `finiteShare` is, per pixel, the share of finite values it stands for, 0 to 255 (the finite mask at full
+// size). Every map gives 0 a colour of its own, so the colour is made from the finite values alone and then
+// darkened by the share of the others: they stay black, as in grey.
+cv::Mat colourMapped(cv::Mat eightBit, ColourMap colours, const cv::Mat& finiteShare) {
+    if (!finiteShare.empty()) {
+        cv::divide(eightBit, finiteShare, eightBit, 255.0); // the mean of the finite values; 0 where none
+    }
     cv::Mat bgr;
     cv::applyColorMap(eightBit, bgr, colours == ColourMap::Turbo ? cv::COLORMAP_TURBO : cv::COLORMAP_VIRIDIS);
+    if (!finiteShare.empty()) {
+        cv::Mat share;
+        cv::cvtColor(finiteShare, share, cv::COLOR_GRAY2BGR);
+        cv::multiply(bgr, share, bgr, 1.0 / 255.0);
+    }
     cv::Mat display;
     cv::cvtColor(bgr, display, cv::COLOR_BGR2RGBA);
-    // Every map gives 0 a colour of its own, so non-finite values would no longer stand out as black.
-    if (!finite.empty()) {
-        display.setTo(cv::Scalar(0, 0, 0, 255), ~finite);
-    }
     return display;
+}
+
+cv::Mat shrunk(const cv::Mat& image, cv::Size size) {
+    cv::Mat small;
+    cv::resize(image, small, size, 0, 0, cv::INTER_AREA);
+    return small;
 }
 
 } // namespace
@@ -112,6 +136,13 @@ cv::Mat toDisplayImage(const cv::Mat& image) { return toDisplayImage(image, Disp
 
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings) {
     checkSupported(image);
+    return toDisplayImage(image, settings, image.size());
+}
+
+cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, cv::Size size) {
+    checkSupported(image);
+    const cv::Size drawn(std::clamp(size.width, 1, image.cols), std::clamp(size.height, 1, image.rows));
+    const bool coloured = image.channels() == 1 && settings.colours != ColourMap::Grey;
     cv::Mat eightBit;
     cv::Mat finite;
     if (settings.mode == RangeMode::Auto && image.depth() == CV_8U) {
@@ -122,10 +153,24 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings) {
         eightBit = toEightBit(plane, range, image.channels());
         finite = plane.finite;
     }
-    if (image.channels() == 1 && settings.colours != ColourMap::Grey) {
+    // 8-bit planes shrink the same for every depth, 8S and 32S included, which OpenCV cannot average.
+    if (drawn != image.size()) {
+        eightBit = shrunk(eightBit, drawn);
+        if (coloured && !finite.empty()) {
+            finite = shrunk(finite, drawn);
+        }
+    }
+    if (coloured) {
         return colourMapped(eightBit, settings.colours, finite);
     }
     return toRgba(eightBit);
+}
+
+cv::Size sizeWithin(cv::Size image, cv::Size bounds) {
+    const double scale = std::min({1.0, static_cast<double>(bounds.width) / std::max(1, image.width),
+                                   static_cast<double>(bounds.height) / std::max(1, image.height)});
+    return {std::max(1, static_cast<int>(std::lround(image.width * scale))),
+            std::max(1, static_cast<int>(std::lround(image.height * scale)))};
 }
 
 DisplayRange autoRange(const cv::Mat& image) {
