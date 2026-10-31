@@ -26,7 +26,7 @@ enum class ImageSource { Received, OpenedFile, LiveSnapshot };
 // Where an entry came from, and its times. The times live here so that storage keeps them with the rest.
 struct ImageOrigin {
     ImageSource source = ImageSource::Received;
-    std::optional<std::uint64_t> fileBytes;             // size on disk, for an opened file
+    std::optional<std::uint64_t> fileBytes{};           // size on disk, for an opened file
     std::chrono::system_clock::time_point arrivedAt{};  // received or opened
     std::chrono::system_clock::time_point modifiedAt{}; // last rename or duplication; arrivedAt until then
 };
