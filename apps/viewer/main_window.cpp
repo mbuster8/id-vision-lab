@@ -26,12 +26,14 @@
 #include "viewer_core/save_name.h"
 #include "visual_debug/wire_format.h"
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -280,6 +282,7 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
             });
     connect(m_ui->actionDelete, &QAction::triggered, this, onShownImage(&MainWindow::deleteImage));
     connect(qApp, &QApplication::focusChanged, this, &MainWindow::updateEditActions);
+    qApp->installEventFilter(this); // Space for a focused button, before the Freeze shortcut
     connect(m_ui->actionPauseServer, &QAction::triggered, this, &MainWindow::togglePause);
     connect(m_ui->actionStopServer, &QAction::triggered, this, &MainWindow::toggleRunning);
     connect(m_serverControls, &ServerControls::pauseClicked, this, &MainWindow::togglePause);
@@ -509,12 +512,28 @@ void MainWindow::setLogOpen(bool open) {
 // Child widgets outlive this window's members, and destroying them moves focus and ends a rename: stop them,
 // and the focus signal, reaching into a destroyed history.
 MainWindow::~MainWindow() {
+    qApp->removeEventFilter(this);
     disconnect(qApp, &QApplication::focusChanged, this, nullptr);
     m_sidebar->liveChannels()->disconnect(this);
     m_thumbnails->disconnect(this);
     m_infoBar->disconnect(this);
     m_imageView->disconnect(this);
     m_storage.reset();
+}
+
+// Space is the Freeze shortcut, which would otherwise take it from a button that has the keyboard focus (with
+// macOS keyboard navigation on, for one). Accepting the override sends the key to the button instead.
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const auto* button = qobject_cast<QAbstractButton*>(watched);
+        if (button != nullptr && button->window() == this && key->key() == Qt::Key_Space &&
+            key->modifiers() == Qt::NoModifier) {
+            event->accept();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::onImageReceived(const visual_debug::ImageMessage& message) {

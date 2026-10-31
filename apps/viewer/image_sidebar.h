@@ -49,6 +49,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    bool stepAcrossLiveRows(int key); // Up or Down on the thumbnails; false leaves the key to the list
     void addShowActions(QMenu* menu) const;
     void addSortActions(QMenu* menu) const;
     void loadShownFields();

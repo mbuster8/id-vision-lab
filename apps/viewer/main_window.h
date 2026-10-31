@@ -89,6 +89,9 @@ public:
 signals:
     void restoreFinished(); // the stored images are back, or there were none to restore
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override; // on the application
+
 private:
     void startUp();
     void startServer();

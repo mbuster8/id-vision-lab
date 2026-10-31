@@ -299,6 +299,9 @@ void LiveChannelPanel::setSelected(const std::optional<QString>& name) {
     m_selected = name && rowOf(*name) != nullptr ? name : std::nullopt;
     for (LiveChannelRow* row : m_rows) {
         row->setSelected(m_selected == row->name());
+        if (m_selected == row->name()) {
+            m_scroll->ensureWidgetVisible(row, 0, 0);
+        }
     }
 }
 
@@ -310,6 +313,23 @@ QStringList LiveChannelPanel::channelNames() const {
         names << row->name();
     }
     return names;
+}
+
+QStringList LiveChannelPanel::selectableChannels() const {
+    QStringList names;
+    for (const LiveChannelRow* row : m_rows) {
+        if (!row->state().muted) {
+            names << row->name();
+        }
+    }
+    return names;
+}
+
+void LiveChannelPanel::chooseChannel(const QString& name) {
+    if (rowOf(name) != nullptr) {
+        setSelected(name);
+        emit channelSelected(name);
+    }
 }
 
 std::unique_ptr<QMenu> LiveChannelPanel::createContextMenu(const QString& name) {

@@ -40,6 +40,8 @@
 #include <QPoint>
 #include <QPushButton>
 #include <QRectF>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -1388,6 +1390,10 @@ void chooseLiveRow(MainWindow& window, const QString& name) {
     QTest::mouseClick(liveRowOf(window, name), Qt::LeftButton);
 }
 
+void clickMute(MainWindow& window, const QString& name) {
+    liveRowOf(window, name)->findChild<QToolButton*>(QStringLiteral("liveMute"))->click();
+}
+
 QString readoutText(MainWindow& window) {
     return window.findChild<QLabel*>(QStringLiteral("pixelReadout"))->text();
 }
@@ -2010,6 +2016,143 @@ TEST(MainWindowTest, ArrowKeysStillStepAfterPanning) {
     EXPECT_EQ(window->shownLiveChannel(), std::nullopt);
 }
 
+// --- The arrow keys across live rows and history (F8) -----------------------------------------------------
+
+// Channels camera and edges, and stills a (1) then b (2), so b is listed first; camera in view and the
+// keyboard on the thumbnails.
+std::unique_ptr<MainWindow> windowWithChannelsAndStills() {
+    auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("a", makeImage());
+    window->addImage("b", makeImage());
+    feedLive(*window, "camera", liveFrame(1));
+    feedLive(*window, "edges", liveFrame(2));
+    QApplication::processEvents();
+    chooseLiveRow(*window, QStringLiteral("camera"));
+    panelOf(*window)->setFocus();
+    return window;
+}
+
+void press(MainWindow& window, Qt::Key key) { QTest::keyClick(panelOf(window), key); }
+
+// The live rows, then the thumbnails as listed, are one list; nothing happens past either end.
+TEST(MainWindowTest, ArrowKeysMoveThroughLiveRowsAndHistory) {
+    const auto window = windowWithChannelsAndStills();
+    const auto shown = [&window]() -> std::string {
+        if (const auto channel = window->shownLiveChannel()) {
+            return *channel;
+        }
+        return window->shownImageId() ? "image " + std::to_string(*window->shownImageId()) : "nothing";
+    };
+    ASSERT_EQ(shown(), "camera");
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "edges");
+    EXPECT_EQ(livePanelOf(*window)->selectedChannel(), QStringLiteral("edges"));
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "image 2");
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "image 1");
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "image 1");
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "image 2");
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "edges");
+    EXPECT_EQ(panelOf(*window)->currentImageId(), std::nullopt);
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "camera");
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "camera");
+    EXPECT_TRUE(panelOf(*window)->hasFocus());
+}
+
+TEST(MainWindowTest, ArrowKeysSkipMutedRows) {
+    const auto window = windowWithChannelsAndStills();
+    clickMute(*window, QStringLiteral("edges"));
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(2));
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+}
+
+// With no history the keys still move among the channels, and from an empty view Down goes to the first.
+TEST(MainWindowTest, ArrowKeysWorkWithAnEmptyHistory) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    feedLive(*window, "camera", liveFrame(1));
+    feedLive(*window, "edges", liveFrame(2));
+    QApplication::processEvents();
+    panelOf(*window)->setFocus();
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+
+    clickMute(*window, QStringLiteral("camera")); // the view is empty now
+    ASSERT_EQ(window->shownLiveChannel(), std::nullopt);
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+}
+
+// The keys follow what the sidebar lists: here the search hides b.
+TEST(MainWindowTest, ArrowKeysFollowTheListedOrder) {
+    const auto window = windowWithChannelsAndStills();
+    chooseLiveRow(*window, QStringLiteral("edges"));
+    sidebarOf(*window)->searchField()->setText(QStringLiteral("a"));
+    panelOf(*window)->setFocus();
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(1));
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+}
+
+// The Live group shows three rows; a key that moves to a fourth or fifth scrolls it into sight.
+TEST(MainWindowTest, ArrowKeysScrollTheLiveRowsIntoView) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    for (int i = 1; i <= 5; ++i) {
+        feedLive(*window, "c" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    panelOf(*window)->setFocus();
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("c1"));
+    // The rows' layout settles through posted events, long before a person presses a key.
+    auto* scroll = livePanelOf(*window)->findChild<QScrollArea*>();
+    ASSERT_TRUE(QTest::qWaitFor([scroll] { return scroll->verticalScrollBar()->maximum() > 0; }));
+
+    for (int i = 0; i < 4; ++i) {
+        press(*window, Qt::Key_Down);
+    }
+
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("c5"));
+    const QWidget* row = liveRowOf(*window, QStringLiteral("c5"));
+    EXPECT_TRUE(scroll->viewport()->rect().contains(
+        QRect(row->mapTo(scroll->viewport(), QPoint(0, 0)), row->size())));
+}
+
+// (R5) Space presses a button that has the keyboard focus, instead of freezing the channel in view.
+TEST(MainWindowTest, SpacePressesAFocusedButton) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    showCamera(*window, 1);
+    auto* button = window->findChild<QToolButton*>(QStringLiteral("logToggle"));
+    button->setFocusPolicy(Qt::StrongFocus); // as with macOS keyboard navigation turned on
+    button->setFocus();
+    QSignalSpy clicked(button, &QAbstractButton::clicked);
+
+    QTest::keyClick(button, Qt::Key_Space);
+
+    EXPECT_EQ(clicked.size(), 1);
+    EXPECT_FALSE(action(*window, "actionFreeze")->isChecked());
+}
+
 TEST(MainWindowTest, CopyImageTakesTheLiveFrame) {
     const auto window = makeTestWindow();
     showCamera(*window, 77);
@@ -2050,10 +2193,6 @@ TEST(MainWindowTest, SnapshotsAndLiveFramesAreNeverStored) {
 }
 
 // --- Mute -------------------------------------------------------------------------------------------------
-
-void clickMute(MainWindow& window, const QString& name) {
-    liveRowOf(window, name)->findChild<QToolButton*>(QStringLiteral("liveMute"))->click();
-}
 
 QString liveStateOf(MainWindow& window, const QString& name) {
     return liveRowOf(window, name)->findChild<QLabel*>(QStringLiteral("liveState"))->text();

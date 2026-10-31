@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <optional>
+#include <vector>
 
 namespace {
 
@@ -60,6 +62,7 @@ ImageSidebar::ImageSidebar(QWidget* parent)
     m_search->addAction(qt_common::makeOutlineIcon(qt_common::OutlineIcon::Search),
                         QLineEdit::LeadingPosition);
     m_search->installEventFilter(this);
+    m_thumbnails->installEventFilter(this);
 
     m_optionsButton->setObjectName(QStringLiteral("sidebarOptions"));
     m_optionsButton->setIcon(qt_common::makeOutlineIcon(qt_common::OutlineIcon::Options));
@@ -151,9 +154,52 @@ void ImageSidebar::populateViewMenu(QMenu* viewMenu) {
     addSortActions(viewMenu->addMenu(tr("Sort By")));
 }
 
+// Up and Down on the thumbnails move through one list: the live rows that can be shown, then the thumbnails
+// as listed. Within the thumbnails the list steps by itself; this handles the crossings, the live rows, and a
+// view with nothing chosen, where Down goes to the first entry. Nothing happens past either end. The keyboard
+// stays on the thumbnails.
+bool ImageSidebar::stepAcrossLiveRows(int key) {
+    const QStringList rows = m_live->selectableChannels();
+    const std::vector<viewer_core::ImageId> listed = m_thumbnails->listedIds();
+    if (const std::optional<QString> channel = m_live->selectedChannel()) {
+        const auto at = rows.indexOf(*channel);
+        if (key == Qt::Key_Down && at + 1 < rows.size()) {
+            m_live->chooseChannel(rows[at + 1]);
+        } else if (key == Qt::Key_Down && !listed.empty()) {
+            m_thumbnails->selectImage(listed.front());
+        } else if (key == Qt::Key_Up && at > 0) {
+            m_live->chooseChannel(rows[at - 1]);
+        }
+        return true;
+    }
+    if (const std::optional<viewer_core::ImageId> current = m_thumbnails->currentImageId()) {
+        if (key == Qt::Key_Up && !rows.isEmpty() && !listed.empty() && *current == listed.front()) {
+            m_live->chooseChannel(rows.back());
+            return true;
+        }
+        return false;
+    }
+    if (key == Qt::Key_Down && !rows.isEmpty()) {
+        m_live->chooseChannel(rows.front());
+    } else if (key == Qt::Key_Down && !listed.empty()) {
+        m_thumbnails->selectImage(listed.front());
+    }
+    return true;
+}
+
 // Esc clears the search, and in an empty field moves to the list. Enter and Down select the first listed
 // image and move to the list.
 bool ImageSidebar::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_thumbnails && event->type() == QEvent::KeyPress) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        // macOS marks the arrow keys as keypad keys.
+        const bool plain = (key->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier;
+        if (plain && (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) &&
+            stepAcrossLiveRows(key->key())) {
+            return true;
+        }
+        return QWidget::eventFilter(watched, event);
+    }
     if (watched != m_search || event->type() != QEvent::KeyPress) {
         return QWidget::eventFilter(watched, event);
     }

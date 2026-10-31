@@ -41,10 +41,13 @@ public:
     // Called on the window's tick, not per frame. A frozen row's dot still shows whether frames arrive, which
     // the rate tells. A muted row keeps the picture it had, greyed, and shows no rate.
     void updateChannel(const QString& name, const QImage& thumbnail, int framesPerSecond, LiveRowState state);
-    void removeChannel(const QString& name);              // hides the panel when the last goes
-    void setSelected(const std::optional<QString>& name); // quiet: emits nothing; an unknown name clears
+    void removeChannel(const QString& name); // hides the panel when the last goes
+    // Quiet: emits nothing; an unknown name clears. The row is scrolled into sight.
+    void setSelected(const std::optional<QString>& name);
     std::optional<QString> selectedChannel() const;
     QStringList channelNames() const;
+    QStringList selectableChannels() const;  // in order, without the muted ones, which cannot be shown
+    void chooseChannel(const QString& name); // as a click on its row does, for the keyboard
     // The row's right-click menu: Mute or Unmute, and Close while the channel is idle. The caller owns it.
     std::unique_ptr<QMenu> createContextMenu(const QString& name);
 
