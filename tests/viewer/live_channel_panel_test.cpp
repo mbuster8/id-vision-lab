@@ -194,6 +194,20 @@ TEST(LiveChannelPanel, ClickSelectsAndEmits) {
     EXPECT_EQ(shown.panel->selectedChannel(), QStringLiteral("edges"));
 }
 
+// (F7) A muted channel cannot be looked at, so its row does not light up as chosen when clicked.
+TEST(LiveChannelPanel, ClickOnAMutedRowDoesNothing) {
+    ShownPanel shown;
+    shown.panel->addChannel(QStringLiteral("camera"));
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {.muted = true});
+    QApplication::processEvents();
+    QSignalSpy selected(shown.panel, &LiveChannelPanel::channelSelected);
+
+    QTest::mouseClick(rowOf(*shown.panel, QStringLiteral("camera")), Qt::LeftButton);
+
+    EXPECT_TRUE(selected.isEmpty());
+    EXPECT_EQ(shown.panel->selectedChannel(), std::nullopt);
+}
+
 // Choosing a channel leaves the keyboard where it was, so the arrow keys still step through the thumbnails.
 TEST(LiveChannelPanel, ClickLeavesTheFocusWhereItWas) {
     QWidget window;

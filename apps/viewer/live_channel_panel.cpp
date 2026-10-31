@@ -345,8 +345,9 @@ std::unique_ptr<QMenu> LiveChannelPanel::createContextMenu(const QString& name) 
     return menu;
 }
 
-// A press anywhere on a row but its buttons chooses the channel: the labels pass presses on to the row. The
-// pointer coming and going shows and hides the row's mute button; a right-click opens its menu.
+// A press anywhere on a row but its buttons chooses the channel: the labels pass presses on to the row. A
+// muted row cannot be chosen. The pointer coming and going shows and hides the row's mute button; a
+// right-click opens its menu.
 bool LiveChannelPanel::eventFilter(QObject* watched, QEvent* event) {
     const auto found = std::find(m_rows.begin(), m_rows.end(), watched);
     if (found == m_rows.end()) {
@@ -356,9 +357,11 @@ bool LiveChannelPanel::eventFilter(QObject* watched, QEvent* event) {
     switch (event->type()) {
     case QEvent::MouseButtonPress:
         if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
-            const QString name = row->name();
-            setSelected(name);
-            emit channelSelected(name);
+            if (!row->state().muted) {
+                const QString name = row->name();
+                setSelected(name);
+                emit channelSelected(name);
+            }
             return true;
         }
         break;
