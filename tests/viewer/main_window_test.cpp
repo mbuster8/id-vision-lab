@@ -878,9 +878,10 @@ TEST(MainWindowTest, MenusAreInTheirOrder) {
               (QStringList{QStringLiteral("File"), QStringLiteral("Edit"), QStringLiteral("View"),
                            QStringLiteral("Image"), QStringLiteral("Server"), QStringLiteral("History"),
                            QStringLiteral("Help")}));
-    EXPECT_EQ(entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
-              (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"), QStringLiteral("-"),
-                           QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
+    EXPECT_EQ(
+        entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
+        (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"), QStringLiteral("Show Clipping"),
+                     QStringLiteral("-"), QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
     QStringList view{QStringLiteral("Show in Sidebar"), QStringLiteral("Sort By"), QStringLiteral("-"),
                      QStringLiteral("Show Log")};
     if (qt_common::canChooseAppearance()) {
@@ -1057,7 +1058,12 @@ TEST(MainWindowTest, ImageMenuMirrorsTheControl) {
     ASSERT_NE(range, nullptr);
     ASSERT_NE(colours, nullptr);
     EXPECT_NE(range, control->rangeMenu()); // a native menu has one parent
-    EXPECT_EQ(range->actions(), control->rangeMenu()->actions());
+    // The control's Range menu ends with Show Clipping, which the Image menu lists beside its Range menu.
+    QList<QAction*> rangeModes = control->rangeMenu()->actions();
+    ASSERT_GE(rangeModes.size(), 2);
+    EXPECT_EQ(rangeModes.takeLast(), action(*window, "actionShowClipping"));
+    EXPECT_TRUE(rangeModes.takeLast()->isSeparator());
+    EXPECT_EQ(range->actions(), rangeModes);
     EXPECT_EQ(colours->actions(), control->coloursMenu()->actions());
     EXPECT_FALSE(window->findChild<QMenu*>(QStringLiteral("menuImage"))->isEnabled()); // nothing shown
 
@@ -2149,6 +2155,53 @@ TEST(MainWindowTest, HlgLiveFrameShowsInHdrByDefault) {
 
     ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("phone"));
     EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: HDR ▾"));
+}
+
+// --- Clipping ---------------------------------------------------------------------------------------------
+
+QColor viewedColour(MainWindow& window) {
+    const QImage view = window.findChild<ImageView*>()->grab().toImage();
+    return view.pixelColor(view.width() / 2, view.height() / 2);
+}
+
+QColor thumbnailColour(MainWindow& window, ImageId id) {
+    const QImage thumbnail =
+        panelOf(window)->findChild<ThumbnailModel*>()->thumbnail(id, QSize(16, 16)).toImage();
+    return thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+}
+
+// White in 8 bits is at the top of Auto's 0-255, so clipped: magenta in the view, white everywhere else.
+TEST(MainWindowTest, ShowClippingMarksTheViewOnly) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("white", cv::Mat(40, 40, CV_8UC1, cv::Scalar(255)));
+    QAction* showClipping = action(*window, "actionShowClipping");
+    ASSERT_NE(showClipping, nullptr);
+    EXPECT_TRUE(showClipping->isCheckable());
+    EXPECT_EQ(showClipping->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+K")));
+    EXPECT_TRUE(displayControlOf(*window)->rangeMenu()->actions().contains(showClipping));
+
+    showClipping->trigger();
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewedColour(*window), QColor(255, 0, 255));
+    EXPECT_EQ(thumbnailColour(*window, 1), QColor(255, 255, 255));
+    EXPECT_EQ(copiedPicture(*window, 1).pixelColor(20, 20), QColor(255, 255, 255));
+    showClipping->trigger();
+    QApplication::processEvents();
+    EXPECT_EQ(viewedColour(*window), QColor(255, 255, 255));
+}
+
+TEST(MainWindowTest, ShowClippingMarksTheLiveFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", liveFrame(255));
+    QApplication::processEvents();
+
+    action(*window, "actionShowClipping")->trigger();
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewedColour(*window), QColor(255, 0, 255));
 }
 
 TEST(MainWindowTest, FreezeStopsRedrawsWhileCounting) {

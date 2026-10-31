@@ -26,6 +26,12 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings);
 // and a NaN or infinity stays one dark pixel among its neighbours instead of blackening its whole block.
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, cv::Size size);
 
+// Show Clipping's marks, in RGB: magenta at or above the top of the range in use, and at or below its bottom
+// blue in grey and colour pictures, white under a colour map. None is close to a colour any map uses.
+inline const cv::Vec3b kClippedAbove{255, 0, 255};
+inline const cv::Vec3b kClippedBelowGrey{0, 0, 255};
+inline const cv::Vec3b kClippedBelowMapped{255, 255, 255};
+
 // How to draw an image beyond its settings: at what size (empty: its own), and what its sender said about it.
 struct DisplayOptions {
     cv::Size size{};
@@ -34,7 +40,11 @@ struct DisplayOptions {
 };
 
 // The one the others call. With a value-range hint in the tags, Auto maps the hint as Fixed maps its range,
-// 8U included; Hold and Fixed keep their own range.
+// 8U included; Hold and Fixed keep their own range. With showClipping, a pixel any of whose channels is at or
+// beyond an end of the range in use is painted with the mark for that end (above wins), and a block of a
+// smaller picture takes the mark of any pixel in it. The range in use: Hold's and Fixed's own; Auto's hint,
+// or 0-255 for 8U, and nothing for other depths without a hint (stretched, they lose nothing); HDR's black
+// and the top of the scale (hdr_tone_map.h). NaN is never marked.
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, const DisplayOptions& options);
 
 // The largest size of the image's shape within `bounds`, never larger than the image, each side at least 1.

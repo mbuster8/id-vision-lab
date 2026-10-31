@@ -6,6 +6,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -307,6 +308,131 @@ TEST(DisplayConverter, HdrKeepsAlphaAndShowsTwoChannelsAsAuto) {
     EXPECT_EQ(cv::norm(toDisplayImage(twoChannels, kHdr, {.tags = kHlg}),
                        toDisplayImage(twoChannels, DisplaySettings{}, {.tags = kHlg}), cv::NORM_INF),
               0.0);
+}
+
+// --- Clipping ----------------------------------------------------------------------------------------------
+
+cv::Mat rowOf(int type, std::initializer_list<double> values) {
+    cv::Mat row(1, static_cast<int>(values.size()), type);
+    int x = 0;
+    for (const double value : values) {
+        row.col(x++).setTo(value);
+    }
+    return row;
+}
+
+cv::Vec3b rgbAt(const cv::Mat& display, int x, int y = 0) {
+    const cv::Vec4b pixel = display.at<cv::Vec4b>(y, x);
+    return {pixel[0], pixel[1], pixel[2]};
+}
+
+const viewer_core::DisplayOptions kShowClipping{.showClipping = true};
+
+TEST(DisplayConverter, ClippingMarksBothEnds) {
+    const cv::Mat display = toDisplayImage(rowOf(CV_8UC1, {0, 128, 255}), DisplaySettings{}, kShowClipping);
+
+    EXPECT_EQ(rgbAt(display, 0), viewer_core::kClippedBelowGrey);
+    EXPECT_EQ(rgbAt(display, 1), cv::Vec3b(128, 128, 128));
+    EXPECT_EQ(rgbAt(display, 2), viewer_core::kClippedAbove);
+}
+
+TEST(DisplayConverter, BelowIsWhiteUnderAColourMap) {
+    const cv::Mat display = toDisplayImage(
+        rowOf(CV_8UC1, {0, 128}), DisplaySettings{.colours = viewer_core::ColourMap::Turbo}, kShowClipping);
+
+    EXPECT_EQ(rgbAt(display, 0), viewer_core::kClippedBelowMapped);
+}
+
+// A clipped pixel stays visible however small the picture: its block is marked.
+TEST(DisplayConverter, ClippingSurvivesShrinking) {
+    cv::Mat image(100, 100, CV_8UC1, cv::Scalar(128));
+    image.at<uchar>(37, 55) = 255;
+
+    const cv::Mat display =
+        toDisplayImage(image, DisplaySettings{}, {.size = {10, 10}, .showClipping = true});
+
+    ASSERT_EQ(display.size(), cv::Size(10, 10));
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 10; ++x) {
+            EXPECT_EQ(rgbAt(display, x, y) == viewer_core::kClippedAbove, x == 5 && y == 3) << x << "," << y;
+        }
+    }
+}
+
+// Auto without a hint stretches the image's own extremes to black and white, losing nothing.
+TEST(DisplayConverter, StretchedAutoMarksNothing) {
+    const cv::Mat image = rowOf(CV_16UC1, {100, 200, 300});
+
+    EXPECT_EQ(cv::norm(toDisplayImage(image, DisplaySettings{}, kShowClipping), toDisplayImage(image),
+                       cv::NORM_INF),
+              0.0);
+}
+
+TEST(DisplayConverter, FixedMarksBeyondItsEnds) {
+    const DisplaySettings fixed{.mode = RangeMode::Fixed, .range = {0, 1}};
+
+    const cv::Mat display = toDisplayImage(
+        rowOf(CV_32FC1, {-1, 0.5, 2, std::numeric_limits<double>::quiet_NaN()}), fixed, kShowClipping);
+
+    EXPECT_EQ(rgbAt(display, 0), viewer_core::kClippedBelowGrey);
+    EXPECT_NE(rgbAt(display, 1), viewer_core::kClippedBelowGrey);
+    EXPECT_NE(rgbAt(display, 1), viewer_core::kClippedAbove);
+    EXPECT_EQ(rgbAt(display, 2), viewer_core::kClippedAbove);
+    EXPECT_EQ(rgbAt(display, 3), cv::Vec3b(0, 0, 0)); // NaN is never marked
+}
+
+// HDR's top is the camera's own clip; a super-white is not clipped there, though Auto with the hint clips it.
+TEST(DisplayConverter, HdrMarksTheScaleTop) {
+    const viewer_core::ImageTags tags{.valueRange = {4100, 60218},
+                                      .transfer = viewer_core::Transfer::Hlg,
+                                      .primaries = viewer_core::Primaries::Bt2020};
+    const cv::Mat image = rowOf(CV_16UC3, {65535, 64000, 4100, 30000});
+
+    const cv::Mat hdr = toDisplayImage(image, kHdr, {.tags = tags, .showClipping = true});
+    const cv::Mat automatic = toDisplayImage(image, DisplaySettings{}, {.tags = tags, .showClipping = true});
+
+    EXPECT_EQ(rgbAt(hdr, 0), viewer_core::kClippedAbove);
+    EXPECT_NE(rgbAt(hdr, 1), viewer_core::kClippedAbove);
+    EXPECT_EQ(rgbAt(hdr, 2), viewer_core::kClippedBelowGrey);
+    EXPECT_NE(rgbAt(hdr, 3), viewer_core::kClippedAbove);
+    EXPECT_EQ(rgbAt(automatic, 1), viewer_core::kClippedAbove);
+}
+
+double distance(const cv::Vec3b& a, const cv::Vec3b& b) {
+    return cv::norm(cv::Vec3d(a[0], a[1], a[2]) - cv::Vec3d(b[0], b[1], b[2]));
+}
+
+// Every entry of a map, as RGB.
+std::vector<cv::Vec3b> mapColours(viewer_core::ColourMap colours) {
+    cv::Mat ramp(1, 256, CV_8UC1);
+    for (int x = 0; x < 256; ++x) {
+        ramp.at<uchar>(0, x) = static_cast<uchar>(x);
+    }
+    const cv::Mat display = toDisplayImage(ramp, DisplaySettings{.colours = colours});
+    std::vector<cv::Vec3b> entries;
+    for (int x = 0; x < 256; ++x) {
+        entries.push_back(rgbAt(display, x));
+    }
+    return entries;
+}
+
+TEST(DisplayConverter, ClippingColoursStandOutFromTheMaps) {
+    using viewer_core::ColourMap;
+    const std::vector<std::pair<ColourMap, cv::Vec3b>> uses{
+        {ColourMap::Grey, viewer_core::kClippedAbove},
+        {ColourMap::Grey, viewer_core::kClippedBelowGrey},
+        {ColourMap::Turbo, viewer_core::kClippedAbove},
+        {ColourMap::Turbo, viewer_core::kClippedBelowMapped},
+        {ColourMap::Viridis, viewer_core::kClippedAbove},
+        {ColourMap::Viridis, viewer_core::kClippedBelowMapped}};
+
+    for (const auto& [colours, mark] : uses) {
+        for (const cv::Vec3b& entry : mapColours(colours)) {
+            EXPECT_GE(distance(mark, entry), 100.0) << static_cast<int>(colours) << " " << mark;
+        }
+    }
+    EXPECT_GE(distance(viewer_core::kClippedAbove, viewer_core::kClippedBelowGrey), 100.0);
+    EXPECT_GE(distance(viewer_core::kClippedAbove, viewer_core::kClippedBelowMapped), 100.0);
 }
 
 TEST(SizeWithin, KeepsTheAspect) {

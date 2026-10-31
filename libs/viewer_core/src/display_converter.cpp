@@ -3,11 +3,13 @@
 #include "viewer_core/hdr_tone_map.h"
 
 #include <opencv2/core.hpp>
+#include <opencv2/core/utility.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -193,6 +195,94 @@ cv::Mat toneMappedAtSize(const cv::Mat& image, const ImageTags& tags, cv::Size d
     return mapped;
 }
 
+// The values a picture cuts off: at or below `bottom`, at or above `top`.
+struct ClipRange {
+    double bottom;
+    double top;
+};
+
+// The HDR range cuts off below black and at the top of the scale, the camera's own clip: a super-white is
+// shown, not cut off. Auto cuts off beyond its hint, or 0 and 255 for 8U; without a hint other depths are
+// stretched from their own extremes, losing nothing. Hold and Fixed cut off beyond their own range, and an
+// empty range shows black, marked nowhere.
+std::optional<ClipRange> clippingRange(const cv::Mat& image, const DisplaySettings& settings,
+                                       const ImageTags& tags, bool hdr, bool automatic) {
+    if (hdr) {
+        const DisplayRange signal = hdrSignalRange(image.depth(), tags);
+        return ClipRange{signal.min, hdrScaleTop(image.depth(), signal)};
+    }
+    if (automatic) {
+        if (tags.hasValueRange()) {
+            return ClipRange{tags.valueRange.min, tags.valueRange.max};
+        }
+        return image.depth() == CV_8U ? std::optional(ClipRange{0.0, 255.0}) : std::nullopt;
+    }
+    if (!(settings.range.min < settings.range.max)) {
+        return std::nullopt;
+    }
+    return ClipRange{settings.range.min, settings.range.max};
+}
+
+constexpr uchar kMarkedBelow = 1;
+constexpr uchar kMarkedAbove = 2; // the larger, so that it wins wherever both meet
+
+// Per pixel, at full size: above when any channel is at or above the top, else below when any is at or below
+// the bottom. NaN fails every comparison, so it is never marked.
+cv::Mat clippingMarks(const cv::Mat& image, const ClipRange& range) {
+    const cv::Mat values = image.reshape(1);
+    const auto anyChannel = [&image](const cv::Mat& perValue) {
+        if (image.channels() == 1) {
+            return perValue;
+        }
+        std::vector<cv::Mat> channels;
+        cv::split(perValue.reshape(image.channels()), channels);
+        cv::Mat any = channels[0].clone();
+        for (std::size_t i = 1; i < channels.size(); ++i) {
+            cv::bitwise_or(any, channels[i], any);
+        }
+        return any;
+    };
+    cv::Mat above;
+    cv::Mat below;
+    cv::compare(values, range.top, above, cv::CMP_GE);
+    cv::compare(values, range.bottom, below, cv::CMP_LE);
+    cv::Mat marks = cv::Mat::zeros(image.size(), CV_8U);
+    marks.setTo(kMarkedBelow, anyChannel(below));
+    marks.setTo(kMarkedAbove, anyChannel(above));
+    return marks;
+}
+
+// Each block of the picture takes its largest mark, so one clipped pixel still marks its block however small
+// the picture is drawn; averaging would wash it out.
+cv::Mat largestPerBlock(const cv::Mat& marks, cv::Size size) {
+    if (marks.size() == size) {
+        return marks;
+    }
+    cv::Mat result(size, CV_8U);
+    cv::parallel_for_(cv::Range(0, size.height), [&](const cv::Range& rows) {
+        for (int y = rows.start; y < rows.end; ++y) {
+            const int top = y * marks.rows / size.height;
+            const int bottom = std::max(top + 1, (y + 1) * marks.rows / size.height);
+            auto* out = result.ptr<uchar>(y);
+            for (int x = 0; x < size.width; ++x) {
+                const int left = x * marks.cols / size.width;
+                const int right = std::max(left + 1, (x + 1) * marks.cols / size.width);
+                uchar largest = 0;
+                for (int row = top; row < bottom && largest < kMarkedAbove; ++row) {
+                    const auto* in = marks.ptr<uchar>(row);
+                    for (int col = left; col < right; ++col) {
+                        largest = std::max(largest, in[col]);
+                    }
+                }
+                out[x] = largest;
+            }
+        }
+    });
+    return result;
+}
+
+cv::Scalar opaque(const cv::Vec3b& rgb) { return {double(rgb[0]), double(rgb[1]), double(rgb[2]), 255.0}; }
+
 } // namespace
 
 cv::Mat toDisplayImage(const cv::Mat& image) { return toDisplayImage(image, DisplaySettings{}); }
@@ -240,10 +330,15 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, co
             }
         }
     }
-    if (coloured) {
-        return colourMapped(eightBit, settings.colours, finite);
+    cv::Mat display = coloured ? colourMapped(eightBit, settings.colours, finite) : toRgba(eightBit);
+    if (options.showClipping) {
+        if (const auto range = clippingRange(image, settings, options.tags, hdr, automatic)) {
+            const cv::Mat marks = largestPerBlock(clippingMarks(image, *range), drawn);
+            display.setTo(opaque(coloured ? kClippedBelowMapped : kClippedBelowGrey), marks == kMarkedBelow);
+            display.setTo(opaque(kClippedAbove), marks == kMarkedAbove);
+        }
     }
-    return toRgba(eightBit);
+    return display;
 }
 
 cv::Size sizeWithin(cv::Size image, cv::Size bounds) {

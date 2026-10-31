@@ -236,6 +236,12 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     for (QMenu* shared : {displayControl->rangeMenu(), displayControl->coloursMenu()}) {
         m_ui->menuImage->addMenu(shared->title())->addActions(shared->actions());
     }
+    // Show Clipping follows them, and ends the info strip's Range menu too: added there only now, so the
+    // Image menu's Range lists it once.
+    m_ui->menuImage->addAction(m_ui->actionShowClipping);
+    displayControl->rangeMenu()->addSeparator();
+    displayControl->rangeMenu()->addAction(m_ui->actionShowClipping);
+    connect(m_ui->actionShowClipping, &QAction::toggled, this, &MainWindow::setShowClipping);
     // Freeze and Snapshot act on the live channel in view. Space freezes from anywhere but a text field,
     // which takes printable keys before shortcuts.
     m_ui->actionFreeze->setShortcuts(
@@ -717,19 +723,30 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     }
     m_currentId = id;
     m_lastHistoryId = id;
-    m_imageView->setImage(shownPicture(*entry));
+    m_imageView->setImage(shownPicture(*entry, m_showClipping));
     m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
                                           entry->original.channels() == 1, entry->origin.tags.isHdr());
     showImageText(*entry);
     updateEditActions();
 }
 
-QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry) const {
+QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping) const {
     const viewer_core::DisplaySettings settings = settingsFor(entry.name, entry.origin.tags);
     return qt_common::toQImage(
-        settings == viewer_core::defaultSettings(entry.origin.tags)
+        settings == viewer_core::defaultSettings(entry.origin.tags) && !showClipping
             ? entry.display
-            : viewer_core::toDisplayImage(entry.original, settings, {.tags = entry.origin.tags}));
+            : viewer_core::toDisplayImage(entry.original, settings,
+                                          {.tags = entry.origin.tags, .showClipping = showClipping}));
+}
+
+// For the session, and for the view only: what is copied, saved or listed is never marked.
+void MainWindow::setShowClipping(bool show) {
+    m_showClipping = show;
+    if (m_liveChannel) {
+        paintLiveFrame(ImageView::KeepView::IfSameSize);
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        m_imageView->setImage(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize);
+    }
 }
 
 viewer_core::DisplaySettings MainWindow::settingsFor(const std::string& name,
@@ -750,7 +767,7 @@ void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& setti
         return;
     }
     setDisplaySettings(entry->name, settings);
-    m_imageView->setImage(shownPicture(*entry), ImageView::KeepView::IfSameSize);
+    m_imageView->setImage(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize);
 }
 
 // Also forgets what was drawn with the name's old settings: its thumbnails, made again when next painted, and
@@ -906,7 +923,9 @@ bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
     m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
     m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
                               frame, settingsFor(channel->name, channel->shownTags),
-                              {.size = liveDrawnSize(frame, keep), .tags = channel->shownTags})),
+                              {.size = liveDrawnSize(frame, keep),
+                               .tags = channel->shownTags,
+                               .showClipping = m_showClipping})),
                           keep, QSize(frame.cols, frame.rows));
     return true;
 }

@@ -115,8 +115,9 @@ private:
     void selectAndShow(viewer_core::ImageId id);
     void showImageText(const viewer_core::ReceivedImage& entry);
     // The picture the view, Copy Image and Save As show: the stored display picture, or one drawn with the
-    // display settings of the entry's name.
-    QImage shownPicture(const viewer_core::ReceivedImage& entry) const;
+    // display settings of the entry's name. Only the view's shows clipping.
+    QImage shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping = false) const;
+    void setShowClipping(bool show);
     void changeDisplaySettings(const viewer_core::DisplaySettings& settings);
     // The settings chosen for the name, or else the default for an image with these tags.
     viewer_core::DisplaySettings settingsFor(const std::string& name,
@@ -185,6 +186,7 @@ private:
     std::optional<viewer_core::ImageId> m_lastHistoryId; // shown again when the channel in its place closes
     viewer_core::LiveChannels m_live;
     std::optional<std::string> m_liveChannel; // shown instead of m_currentId
+    bool m_showClipping = false;              // for the view only, for this session
     // The rows' pictures, by channel, with the frame count each was made at: a picture is made again only
     // for a newer frame.
     std::map<std::string, std::pair<std::uint64_t, QImage>> m_rowPictures;
