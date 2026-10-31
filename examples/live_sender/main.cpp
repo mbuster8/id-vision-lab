@@ -1,8 +1,9 @@
-// Streams frames to the viewer as live channels: each frame as "camera", its Canny edges as "edges". The
-// program has no window of its own: the viewer is its screen, with Freeze, Snapshot and the display range.
+// Streams frames to the viewer as live channels: each frame as "camera", its Canny edges as "edges", or as
+// NAME and "NAME edges" with --name, so several can share a viewer. The program has no window of its own:
+// the viewer is its screen, with Freeze, Snapshot and the display range.
 //
 //     live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
-//                 [--endpoint <uri>]
+//                 [--name NAME] [--endpoint <uri>]
 //     live_sender --list-cameras
 //
 // Without a source it reads camera 0. A camera runs until Ctrl+C and a file until its end, unless --frames
@@ -42,8 +43,14 @@ constexpr auto kStopCheckInterval = 50ms; // how quickly Ctrl+C ends a wait betw
 
 constexpr const char* kUsage =
     "usage: live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N]\n"
-    "                   [--endpoint <uri>]\n"
+    "                   [--name NAME] [--endpoint <uri>]\n"
     "       live_sender --list-cameras\n";
+
+#if defined(__APPLE__)
+constexpr bool kCamerasNumberedWithoutGaps = true; // AVFoundation numbers the cameras it finds
+#else
+constexpr bool kCamerasNumberedWithoutGaps = false;
+#endif
 
 // Set by Ctrl+C. A signal handler may only touch a lock-free atomic.
 std::atomic<bool> stopRequested{false};
@@ -51,19 +58,25 @@ static_assert(std::atomic<bool>::is_always_lock_free);
 
 void requestStop(int) { stopRequested = true; }
 
+// OpenCV's logger warns for every camera number that does not open; the program says so itself. (Its
+// AVFoundation code also prints two lines of its own for such a number, which no setting silences.)
+void silenceOpenCv() { cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_SILENT); }
+
 int listCameras() {
-    // OpenCV logs a warning for every number that does not open; here the list is the whole output.
-    cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_SILENT);
-    int found = 0;
-    for (int index = 0; index < kCamerasToTry; ++index) {
+    silenceOpenCv();
+    const auto open = [](int index) -> std::optional<cv::Size> {
         cv::VideoCapture camera(index);
-        if (camera.isOpened()) {
-            std::cout << "--camera " << index << ": " << camera.get(cv::CAP_PROP_FRAME_WIDTH) << 'x'
-                      << camera.get(cv::CAP_PROP_FRAME_HEIGHT) << '\n';
-            ++found;
+        if (!camera.isOpened()) {
+            return std::nullopt;
         }
+        return cv::Size(static_cast<int>(camera.get(cv::CAP_PROP_FRAME_WIDTH)),
+                        static_cast<int>(camera.get(cv::CAP_PROP_FRAME_HEIGHT)));
+    };
+    const auto found = live_sender::listCameras(open, kCamerasToTry, kCamerasNumberedWithoutGaps);
+    for (const auto& [index, size] : found) {
+        std::cout << "--camera " << index << ": " << size.width << 'x' << size.height << '\n';
     }
-    if (found == 0) {
+    if (found.empty()) {
         std::cout << "No camera opened (numbers 0 to " << kCamerasToTry - 1 << " tried).\n";
     }
     return kExitAllDelivered;
@@ -75,6 +88,7 @@ bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
           std::optional<Clock::duration>& interval) {
     try {
         if (const auto* camera = std::get_if<live_sender::CameraSource>(&arguments.source)) {
+            silenceOpenCv(); // a number that does not open is reported below
             return capture.open(camera->index);
         }
         const auto& file = std::get<live_sender::FileSource>(arguments.source);
@@ -91,7 +105,7 @@ bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
     }
 }
 
-void printTally(const char* channel, const live_sender::ChannelTally& tally) {
+void printTally(const std::string& channel, const live_sender::ChannelTally& tally) {
     std::cout << channel << ": " << tally.sent << " sent, " << tally.delivered << " delivered";
     for (const auto& [result, times] : tally.failed) {
         std::cout << ", " << times << ' ' << visual_debug::toString(result);
@@ -157,14 +171,16 @@ int main(int argc, char* argv[]) {
 
     std::signal(SIGINT, requestStop);
     visual_debug::Client client(visual_debug::ClientOptions{.endpoint = arguments->endpoint});
-    const live_sender::Tally tally = live_sender::run(next, client, arguments->frames, waitAndContinue);
+    const live_sender::ChannelNames names = live_sender::channelNames(arguments->name);
+    const live_sender::Tally tally =
+        live_sender::run(next, client, arguments->frames, waitAndContinue, names);
 
     if (tally.camera.sent == 0 && !stopRequested) {
         std::cerr << "no frame could be read\n";
         return kExitUsageError;
     }
-    printTally("camera", tally.camera);
-    printTally("edges", tally.edges);
+    printTally(names.camera, tally.camera);
+    printTally(names.edges, tally.edges);
     const bool allDelivered =
         tally.camera.delivered == tally.camera.sent && tally.edges.delivered == tally.edges.sent;
     return allDelivered ? kExitAllDelivered : kExitNotDelivered;

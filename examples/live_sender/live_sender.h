@@ -9,7 +9,9 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace live_sender {
 
@@ -31,18 +33,37 @@ struct Arguments {
     std::variant<CameraSource, FileSource, PatternSource> source = CameraSource{};
     std::optional<int> frames; // stop after this many; otherwise at the source's end or on Ctrl+C
     std::string endpoint;      // visual_debug::defaultEndpoint() unless given
+    std::string name;          // the channels' name; empty for the default ones
     bool listCameras = false;
 };
 
 inline constexpr double kMinPatternFps = 0.1;
 inline constexpr double kMaxPatternFps = 1000.0;
 
-// live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N] [--endpoint <uri>]
+// live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N] [--name NAME]
+//             [--endpoint <uri>]
 // live_sender --list-cameras
 // Nothing for anything else: an unknown option, a missing or malformed value, two sources, --size or --fps
 // without --pattern, a pattern the viewer could not take or a rate outside kMinPatternFps to
-// kMaxPatternFps, or --list-cameras with other arguments.
+// kMaxPatternFps, a name that is empty or would not keep "NAME edges" whole on the wire (invalid UTF-8, or
+// more than visual_debug::kMaxNameBytes less 6 bytes), or --list-cameras with other arguments.
 std::optional<Arguments> parseArguments(int argc, char* argv[]);
+
+// The two channels a live_sender streams: the frames and their edges.
+struct ChannelNames {
+    std::string camera = "camera";
+    std::string edges = "edges";
+};
+
+// "camera" and "edges" for an empty name; otherwise NAME and "NAME edges", so several live_senders can share
+// a viewer.
+ChannelNames channelNames(const std::string& name);
+
+// The cameras that open among numbers 0 to count - 1, with their frame sizes; `open` tries one. With
+// stopAtFirstMissing, the first number that does not open ends the list: macOS numbers its cameras without
+// gaps, and OpenCV prints a complaint of its own for every number that does not open there.
+std::vector<std::pair<int, cv::Size>> listCameras(const std::function<std::optional<cv::Size>(int)>& open,
+                                                  int count, bool stopAtFirstMissing);
 
 // A BGR test picture that moves (a scrolling gradient, a disc crossing it, the frame number), so consecutive
 // indices give different frames and the edges channel has outlines to show. `index` from 0, size from 1×1.
@@ -81,8 +102,9 @@ struct Tally {
 
 // Until `frames` frames have been sent, `next` has none left, or `waitAndContinue` returns false: calls
 // `waitAndContinue` (which paces the frames and watches for Ctrl+C), reads a frame, and sends it as live
-// channel "camera" and its edges as live channel "edges".
+// channel names.camera and its edges as live channel names.edges.
 Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::ImageSender& sender,
-          std::optional<int> frames, const std::function<bool()>& waitAndContinue);
+          std::optional<int> frames, const std::function<bool()>& waitAndContinue,
+          const ChannelNames& names = ChannelNames{});
 
 } // namespace live_sender

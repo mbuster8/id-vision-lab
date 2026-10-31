@@ -110,6 +110,12 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
             }
         } else if (argument == "--endpoint" && hasValue) {
             arguments.endpoint = argv[++i];
+        } else if (argument == "--name" && hasValue) {
+            arguments.name = argv[++i];
+            const std::string edges = channelNames(arguments.name).edges;
+            if (arguments.name.empty() || visual_debug::sanitiseName(edges) != edges) {
+                return std::nullopt;
+            }
         } else if (argument == "--list-cameras") {
             arguments.listCameras = true;
         } else if (!argument.empty() && !argument.starts_with('-')) {
@@ -136,6 +142,27 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
         arguments.source = std::move(*source);
     }
     return arguments;
+}
+
+ChannelNames channelNames(const std::string& name) {
+    if (name.empty()) {
+        return {};
+    }
+    return {.camera = name, .edges = name + " edges"};
+}
+
+std::vector<std::pair<int, cv::Size>> listCameras(const std::function<std::optional<cv::Size>(int)>& open,
+                                                  int count, bool stopAtFirstMissing) {
+    std::vector<std::pair<int, cv::Size>> found;
+    for (int index = 0; index < count; ++index) {
+        const std::optional<cv::Size> size = open(index);
+        if (size) {
+            found.emplace_back(index, *size);
+        } else if (stopAtFirstMissing) {
+            break;
+        }
+    }
+    return found;
 }
 
 cv::Mat patternFrame(int index, cv::Size size) {
@@ -184,7 +211,8 @@ void FramePacer::sent(Clock::time_point now) {
 }
 
 Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::ImageSender& sender,
-          std::optional<int> frames, const std::function<bool()>& waitAndContinue) {
+          std::optional<int> frames, const std::function<bool()>& waitAndContinue,
+          const ChannelNames& names) {
     Tally tally;
     while (!frames || tally.camera.sent < *frames) {
         if (!waitAndContinue()) {
@@ -194,8 +222,8 @@ Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::Ima
         if (!frame) {
             break;
         }
-        count(tally.camera, sender.sendLive(*frame, "camera"));
-        count(tally.edges, sender.sendLive(edgesOf(*frame), "edges"));
+        count(tally.camera, sender.sendLive(*frame, names.camera));
+        count(tally.edges, sender.sendLive(edgesOf(*frame), names.edges));
     }
     return tally;
 }

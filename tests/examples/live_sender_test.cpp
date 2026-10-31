@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -142,6 +143,75 @@ TEST(LiveSender, ParsesEverySource) {
     for (const auto& words : rejected) {
         EXPECT_FALSE(parse(words)) << joined(words);
     }
+}
+
+// (F12) Several live_senders on one viewer, each under its own name.
+TEST(LiveSender, ParsesName) {
+    const auto named = parse({"--pattern", "--name", "cam1"});
+    ASSERT_TRUE(named);
+    EXPECT_EQ(named->name, "cam1");
+    EXPECT_EQ(parse({})->name, "");
+}
+
+// The edges channel is "NAME edges", so NAME may take at most 1024 - 6 bytes of valid UTF-8: the sender would
+// otherwise cut the suffix off at the wire format's limit, or grow the name by replacing bad bytes.
+TEST(LiveSender, NameLimits) {
+    EXPECT_FALSE(parse({"--name", ""}));
+    EXPECT_FALSE(parse({"--name"}));
+    EXPECT_TRUE(parse({"--name", std::string(1018, 'a')}));
+    EXPECT_FALSE(parse({"--name", std::string(1019, 'a')}));
+    EXPECT_FALSE(parse({"--name", "cam\xff"}));
+    EXPECT_FALSE(parse({"--list-cameras", "--name", "cam1"}));
+}
+
+TEST(LiveSender, ChannelNamesDefaultAndGiven) {
+    EXPECT_EQ(live_sender::channelNames("").camera, "camera");
+    EXPECT_EQ(live_sender::channelNames("").edges, "edges");
+    EXPECT_EQ(live_sender::channelNames("cam1").camera, "cam1");
+    EXPECT_EQ(live_sender::channelNames("cam1").edges, "cam1 edges");
+}
+
+TEST(LiveSender, RunSendsUnderTheGivenNames) {
+    RecordingSender sender;
+    int read = 0;
+
+    live_sender::run(patternSource(read), sender, 2, [] { return true; }, live_sender::channelNames("cam1"));
+
+    ASSERT_EQ(sender.calls.size(), 4u);
+    EXPECT_EQ(sender.calls[0].name, "cam1");
+    EXPECT_EQ(sender.calls[1].name, "cam1 edges");
+    EXPECT_EQ(sender.calls[2].name, "cam1");
+    EXPECT_EQ(sender.calls[3].name, "cam1 edges");
+}
+
+// (F11) macOS numbers its cameras without gaps, so the list stops at the first number that does not open:
+// every number tried past the last camera prints OpenCV's own complaint.
+TEST(LiveSender, CameraListStopsAtFirstMissing) {
+    int tried = 0;
+    const auto open = [&tried](int index) -> std::optional<cv::Size> {
+        ++tried;
+        return index < 2 ? std::optional(cv::Size(1920, 1080)) : std::nullopt;
+    };
+
+    const auto found = live_sender::listCameras(open, 10, true);
+
+    ASSERT_EQ(found.size(), 2u);
+    EXPECT_EQ(found[1], (std::pair{1, cv::Size(1920, 1080)}));
+    EXPECT_EQ(tried, 3);
+}
+
+TEST(LiveSender, CameraListTriesEveryNumberOtherwise) {
+    int tried = 0;
+    const auto open = [&tried](int index) -> std::optional<cv::Size> {
+        ++tried;
+        return index == 0 || index == 5 ? std::optional(cv::Size(640, 480)) : std::nullopt;
+    };
+
+    const auto found = live_sender::listCameras(open, 10, false);
+
+    ASSERT_EQ(found.size(), 2u);
+    EXPECT_EQ(found[1].first, 5);
+    EXPECT_EQ(tried, 10);
 }
 
 TEST(LiveSender, PatternMovesAndIsSendable) {
