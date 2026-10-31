@@ -143,6 +143,14 @@ QPainterPath shapePath(OutlineIcon shape) {
         path.addRoundedRect(QRectF(3.0, 7.5, 18.0, 12.0), 2.0, 2.0);
         path.addEllipse(QPointF(12.0, 13.5), 3.5, 3.5);
         break;
+    case OutlineIcon::EyeOff:
+        // An eye, its two lids and the pupil, struck through: not watched.
+        path.moveTo(2.5, 12.0);
+        path.quadTo(12.0, 3.0, 21.5, 12.0);
+        path.quadTo(12.0, 21.0, 2.5, 12.0);
+        path.addEllipse(QPointF(12.0, 12.0), 3.0, 3.0);
+        addPolyline(path, {{4.5, 4.5}, {19.5, 19.5}});
+        break;
     }
     return path;
 }

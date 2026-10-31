@@ -4,10 +4,12 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <memory>
 #include <optional>
 #include <vector>
 
 class QImage;
+class QMenu;
 class QScrollArea;
 class QVBoxLayout;
 class LiveChannelRow;
@@ -37,16 +39,20 @@ public:
 
     void addChannel(const QString& name); // appended; shows the panel. Nothing if the name is already here
     // Called on the window's tick, not per frame. A frozen row's dot still shows whether frames arrive, which
-    // the rate tells.
+    // the rate tells. A muted row keeps the picture it had, greyed, and shows no rate.
     void updateChannel(const QString& name, const QImage& thumbnail, int framesPerSecond, LiveRowState state);
     void removeChannel(const QString& name);              // hides the panel when the last goes
     void setSelected(const std::optional<QString>& name); // quiet: emits nothing; an unknown name clears
     std::optional<QString> selectedChannel() const;
     QStringList channelNames() const;
+    // The row's right-click menu: Mute or Unmute, and Close while the channel is idle. The caller owns it.
+    std::unique_ptr<QMenu> createContextMenu(const QString& name);
 
 signals:
     void channelSelected(QString name); // on every click on a row, even the selected one
     void closeRequested(QString name);
+    // From the row's mute button or menu. The row shows the change once the window updates it.
+    void muteRequested(QString name, bool muted);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

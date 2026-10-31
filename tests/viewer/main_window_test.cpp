@@ -2027,4 +2027,160 @@ TEST(MainWindowTest, SnapshotsAndLiveFramesAreNeverStored) {
     EXPECT_EQ(listedNames(*window), std::vector<QString>{QStringLiteral("still")});
 }
 
+// --- Mute -------------------------------------------------------------------------------------------------
+
+void clickMute(MainWindow& window, const QString& name) {
+    liveRowOf(window, name)->findChild<QToolButton*>(QStringLiteral("liveMute"))->click();
+}
+
+QString liveStateOf(MainWindow& window, const QString& name) {
+    return liveRowOf(window, name)->findChild<QLabel*>(QStringLiteral("liveState"))->text();
+}
+
+// The grey at the middle of a row's picture.
+int rowPictureGrey(MainWindow& window, const QString& name) {
+    const QImage picture =
+        liveRowOf(window, name)->findChild<QLabel*>(QStringLiteral("liveThumbnail"))->pixmap().toImage();
+    return picture.isNull() ? -1 : picture.pixelColor(picture.width() / 2, picture.height() / 2).red();
+}
+
+// (F7) A muted channel's frames are still taken and counted, so its sender is never slowed, but nothing is
+// drawn or logged for it until it is unmuted.
+TEST(MainWindowTest, MutedChannelStopsDrawingAndLogging) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(10));
+    feedLive(window, "edges", liveFrame(20));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("edges"));
+    window.tick(clocked.now);
+    ASSERT_EQ(rowPictureGrey(window, QStringLiteral("camera")), 10);
+
+    clickMute(window, QStringLiteral("camera"));
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(feedLive(window, "camera", liveFrame(100 + i)), visual_debug::Acceptance::Taken);
+        feedLive(window, "edges", liveFrame(30 + i));
+        QApplication::processEvents();
+    }
+    window.tick(clocked.now);
+
+    EXPECT_EQ(rowPictureGrey(window, QStringLiteral("camera")), 10);
+    EXPECT_FALSE(liveRowOf(window, QStringLiteral("camera"))
+                     ->findChild<QLabel*>(QStringLiteral("liveThumbnail"))
+                     ->isEnabled());
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("muted"));
+    EXPECT_TRUE(liveRowOf(window, QStringLiteral("camera"))
+                    ->findChild<QLabel*>(QStringLiteral("liveRate"))
+                    ->text()
+                    .isEmpty());
+    const ActivityLog* log = logOf(window);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Muted live channel [camera]")), 1);
+    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("edges"));
+
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Live channel [camera] idle")), 0);
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("muted · idle"));
+
+    clickMute(window, QStringLiteral("camera"));
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Unmuted live channel [camera]")), 1);
+}
+
+// (F7) Muting the channel in view gives the view back, as closing it does, and unfreezes it.
+TEST(MainWindowTest, MutingTheFrozenChannelInViewUnfreezesIt) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage());
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("camera"));
+    action(window, "actionFreeze")->trigger();
+    ASSERT_TRUE(action(window, "actionFreeze")->isChecked());
+
+    clickMute(window, QStringLiteral("camera"));
+
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(panelOf(window)->currentImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(livePanelOf(window)->selectedChannel(), std::nullopt);
+    EXPECT_FALSE(action(window, "actionFreeze")->isChecked());
+
+    clickMute(window, QStringLiteral("camera"));
+    window.tick(clocked.now);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("live"));
+}
+
+// (F7) A click on a muted row does nothing, and a muted channel never takes an empty view.
+TEST(MainWindowTest, MutedChannelIsNeverShown) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage());
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("camera"));
+
+    chooseLiveRow(window, QStringLiteral("camera"));
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+
+    ClockedWindow empty;
+    feedLive(*empty.window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    ASSERT_EQ(empty.window->shownLiveChannel(), std::optional<std::string>("camera"));
+    clickMute(*empty.window, QStringLiteral("camera"));
+    EXPECT_EQ(empty.window->shownLiveChannel(), std::nullopt);
+    feedLive(*empty.window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    EXPECT_EQ(empty.window->shownLiveChannel(), std::nullopt);
+    EXPECT_FALSE(empty.window->findChild<ImageView*>()->hasImage());
+}
+
+// (F7) Mute belongs to the name for the session: closed and back, the channel is still muted, and says
+// nothing.
+TEST(MainWindowTest, MuteLastsWhenTheChannelComesBack) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("camera"));
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    liveRowOf(window, QStringLiteral("camera"))
+        ->findChild<QToolButton*>(QStringLiteral("liveClose"))
+        ->click();
+    ASSERT_EQ(liveRowOf(window, QStringLiteral("camera")), nullptr);
+
+    feedLive(window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    ASSERT_NE(liveRowOf(window, QStringLiteral("camera")), nullptr);
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("muted"));
+    EXPECT_TRUE(liveRowOf(window, QStringLiteral("camera"))
+                    ->findChild<QToolButton*>(QStringLiteral("liveMute"))
+                    ->isChecked());
+    EXPECT_EQ(countEntries(*logOf(window), QStringLiteral("Live channel [camera] started")), 1);
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+}
+
+// (F7) A muted channel keeps its place among the eight, and once idle can make room like any other.
+TEST(MainWindowTest, MutedIdleChannelCanBeReplaced) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (int i = 1; i <= 8; ++i) {
+        feedLive(window, "cam" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("cam1"));
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::TooManyLiveChannels);
+    clocked.now += viewer_core::kIdleAfter;
+
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::Taken);
+    QApplication::processEvents();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [cam9] replaced idle channel [cam1]")),
+              nullptr);
+}
+
 } // namespace

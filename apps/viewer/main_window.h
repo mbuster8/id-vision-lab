@@ -123,6 +123,9 @@ private:
     void closeLiveChannel(const std::string& name); // the close button
     // Closed or evicted. A shown channel gives the view back to the image shown before it.
     void forgetLiveChannel(const std::string& name);
+    void leaveLiveChannel(); // the channel in view gives the view back to the image before it, or to nothing
+    // A muted channel's frames are counted but never converted or drawn; it never takes the view.
+    void setLiveMuted(const std::string& name, bool muted);
     void setLiveFrozen(bool frozen);
     void takeSnapshot();
     QImage livePicture() const; // the shown channel's frame as on screen; null without one
@@ -172,6 +175,7 @@ private:
     // The rows' pictures, by channel, with the frame count each was made at: a picture is made again only
     // for a newer frame.
     std::map<std::string, std::pair<std::uint64_t, QImage>> m_rowPictures;
+    std::set<std::string> m_mutedChannels;   // by name, for this session: closed and back, still muted
     std::set<std::string> m_refusedChannels; // logged once each, until the name starts a channel
     bool m_unnamedRefusals = false;          // refused beyond those, so the next rejection line counts them
     // Each channel's arrived and dropped totals when it last started, so its idle line counts that stretch.

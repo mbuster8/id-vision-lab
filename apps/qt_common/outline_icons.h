@@ -24,7 +24,8 @@ enum class OutlineIcon {
     Error,
     Folder,
     Send,
-    Camera
+    Camera,
+    EyeOff
 };
 
 // Strokes the shape at any size, in the application palette's colour at paint time, so the icon follows a

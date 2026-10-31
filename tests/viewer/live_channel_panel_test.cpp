@@ -2,12 +2,15 @@
 #include "live_channel_panel.h"
 #include "shades.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QColor>
+#include <QEnterEvent>
 #include <QGuiApplication>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -19,6 +22,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <optional>
 
 namespace {
@@ -51,6 +55,29 @@ QString textIn(const QWidget* row, const char* objectName) {
 
 QToolButton* closeButtonOf(const QWidget* row) {
     return row->findChild<QToolButton*>(QStringLiteral("liveClose"));
+}
+
+QToolButton* muteButtonOf(const QWidget* row) {
+    return row->findChild<QToolButton*>(QStringLiteral("liveMute"));
+}
+
+QStringList entryTexts(const QMenu& menu) {
+    QStringList texts;
+    for (const QAction* action : menu.actions()) {
+        if (!action->isSeparator()) {
+            texts << action->text();
+        }
+    }
+    return texts;
+}
+
+QAction* entryOf(const QMenu& menu, const QString& text) {
+    for (QAction* action : menu.actions()) {
+        if (action->text() == text) {
+            return action;
+        }
+    }
+    return nullptr;
 }
 
 QColor dotColourOf(const QWidget* row) {
@@ -215,6 +242,68 @@ TEST(LiveChannelPanel, CloseButtonEmits) {
     EXPECT_EQ(closeRequested.first().at(0).toString(), QStringLiteral("camera"));
     EXPECT_TRUE(selected.isEmpty());
     EXPECT_EQ(shown.panel->channelNames(), QStringList{QStringLiteral("camera")}); // the window decides
+}
+
+// (F7) The row's button and its right-click menu ask the window to mute; the window decides, and the row
+// shows what it decided.
+TEST(LiveChannelPanel, MuteButtonAndMenuRequestMute) {
+    ShownPanel shown;
+    shown.panel->addChannel(QStringLiteral("camera"));
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {});
+    shown.panel->setSelected(QStringLiteral("camera"));
+    QWidget* row = rowOf(*shown.panel, QStringLiteral("camera"));
+    QSignalSpy muteRequested(shown.panel, &LiveChannelPanel::muteRequested);
+    QSignalSpy closeRequested(shown.panel, &LiveChannelPanel::closeRequested);
+    EXPECT_EQ(muteButtonOf(row)->toolTip(), QStringLiteral("Mute this channel"));
+
+    muteButtonOf(row)->click();
+
+    ASSERT_EQ(muteRequested.size(), 1);
+    EXPECT_EQ(muteRequested.first().at(0).toString(), QStringLiteral("camera"));
+    EXPECT_TRUE(muteRequested.first().at(1).toBool());
+    EXPECT_FALSE(muteButtonOf(row)->isChecked()); // not until the window says so
+
+    const std::unique_ptr<QMenu> live = shown.panel->createContextMenu(QStringLiteral("camera"));
+    EXPECT_EQ(entryTexts(*live), (QStringList{QStringLiteral("Mute"), QStringLiteral("Close")}));
+    EXPECT_FALSE(entryOf(*live, QStringLiteral("Close"))->isEnabled()); // it would start again at once
+
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, {.idle = true, .muted = true});
+    EXPECT_TRUE(muteButtonOf(row)->isChecked());
+    EXPECT_EQ(muteButtonOf(row)->toolTip(), QStringLiteral("Unmute this channel"));
+    const std::unique_ptr<QMenu> muted = shown.panel->createContextMenu(QStringLiteral("camera"));
+    EXPECT_EQ(entryTexts(*muted), (QStringList{QStringLiteral("Unmute"), QStringLiteral("Close")}));
+    entryOf(*muted, QStringLiteral("Unmute"))->trigger();
+    ASSERT_EQ(muteRequested.size(), 2);
+    EXPECT_FALSE(muteRequested.last().at(1).toBool());
+    entryOf(*muted, QStringLiteral("Close"))->trigger();
+    ASSERT_EQ(closeRequested.size(), 1);
+    EXPECT_EQ(closeRequested.first().at(0).toString(), QStringLiteral("camera"));
+}
+
+// (F7, owner's choice) Like the thumbnails' icons: on the row under the pointer and the row in view; always
+// on a muted row, so its state stays in sight.
+TEST(LiveChannelPanel, MuteButtonShowsOnHoverSelectionOrMute) {
+    ShownPanel shown;
+    shown.panel->addChannel(QStringLiteral("camera"));
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {});
+    QWidget* row = rowOf(*shown.panel, QStringLiteral("camera"));
+    EXPECT_TRUE(muteButtonOf(row)->isHidden());
+
+    QEnterEvent enter(QPointF(5, 5), QPointF(5, 5), row->mapToGlobal(QPointF(5, 5)));
+    QApplication::sendEvent(row, &enter);
+    EXPECT_FALSE(muteButtonOf(row)->isHidden());
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(row, &leave);
+    EXPECT_TRUE(muteButtonOf(row)->isHidden());
+
+    shown.panel->setSelected(QStringLiteral("camera"));
+    EXPECT_FALSE(muteButtonOf(row)->isHidden());
+    shown.panel->setSelected(std::nullopt);
+    EXPECT_TRUE(muteButtonOf(row)->isHidden());
+
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {.muted = true});
+    EXPECT_FALSE(muteButtonOf(row)->isHidden());
+    EXPECT_TRUE(muteButtonOf(row)->isChecked());
 }
 
 TEST(LiveChannelPanel, HidesWhenTheLastRowGoes) {

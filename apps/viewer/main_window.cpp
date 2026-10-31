@@ -301,6 +301,8 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
             [this](const QString& name) { showLiveChannel(name.toStdString()); });
     connect(livePanel, &LiveChannelPanel::closeRequested, this,
             [this](const QString& name) { closeLiveChannel(name.toStdString()); });
+    connect(livePanel, &LiveChannelPanel::muteRequested, this,
+            [this](const QString& name, bool muted) { setLiveMuted(name.toStdString(), muted); });
     connect(m_thumbnails, &ThumbnailPanel::imageSelected, this, &MainWindow::showImage);
     connect(m_thumbnails, &ThumbnailPanel::actionRequested, this,
             [this](viewer_core::ImageId id, ThumbnailAction action) {
@@ -753,13 +755,20 @@ void MainWindow::takeLiveFrames() {
                             .sentAt = frame.message.sentAt,
                             .replaced = frame.replaced},
                            now);
+        const bool muted = m_mutedChannels.contains(name);
         if (result.started) {
-            log(LogKind::Info, tr("Live channel [%1] started").arg(singleLine(QString::fromStdString(name))));
+            if (!muted) {
+                log(LogKind::Info,
+                    tr("Live channel [%1] started").arg(singleLine(QString::fromStdString(name))));
+            }
             m_startCounts[name] = countsBefore;
             m_refusedChannels.erase(name);
             panel->addChannel(QString::fromStdString(name));
             updateLiveRow(*m_live.find(name), now);
             m_liveTimer->start();
+        }
+        if (muted) {
+            continue; // counted, never shown
         }
         if (!m_currentId && !m_liveChannel) {
             showLiveChannel(name); // the first channel, when nothing else is shown
@@ -793,7 +802,7 @@ void MainWindow::takeLiveFrames() {
 // frames to come keep the zoom.
 void MainWindow::showLiveChannel(const std::string& name) {
     const viewer_core::LiveChannel* channel = m_live.find(name);
-    if (channel == nullptr || m_liveChannel == name) {
+    if (channel == nullptr || m_liveChannel == name || m_mutedChannels.contains(name)) {
         return;
     }
     m_currentId.reset();
@@ -833,6 +842,9 @@ void MainWindow::showLiveText(Clock::time_point now) {
 
 void MainWindow::tick(Clock::time_point now) {
     for (const std::string& name : m_live.updateIdle(now)) {
+        if (m_mutedChannels.contains(name)) {
+            continue;
+        }
         const viewer_core::LiveChannel* channel = m_live.find(name);
         const auto [arrivedBefore, droppedBefore] = m_startCounts[name];
         log(LogKind::Info, tr("Live channel [%1] idle after %2 frames (%3 dropped)")
@@ -854,7 +866,8 @@ void MainWindow::tick(Clock::time_point now) {
 void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now) {
     auto& [madeAtFrame, picture] = m_rowPictures[channel.name];
     const cv::Mat& newest = channel.newest.empty() ? channel.shown : channel.newest;
-    if ((picture.isNull() || madeAtFrame != channel.received) && !newest.empty()) {
+    const bool muted = m_mutedChannels.contains(channel.name);
+    if (!muted && (picture.isNull() || madeAtFrame != channel.received) && !newest.empty()) {
         const int height =
             std::max(1, static_cast<int>(std::lround(LiveChannelPanel::kRowHeight * devicePixelRatioF())));
         cv::Mat small = newest;
@@ -870,9 +883,9 @@ void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::t
             qt_common::toQImage(viewer_core::toDisplayImage(small, m_displaySettings.get(channel.name)));
         madeAtFrame = channel.received;
     }
-    m_sidebar->liveChannels()->updateChannel(QString::fromStdString(channel.name), picture,
-                                             m_live.stats(channel.name, now).arrivedPerSecond,
-                                             {.idle = channel.idle, .frozen = channel.frozen});
+    m_sidebar->liveChannels()->updateChannel(
+        QString::fromStdString(channel.name), picture, m_live.stats(channel.name, now).arrivedPerSecond,
+        {.idle = channel.idle, .frozen = channel.frozen, .muted = muted});
 }
 
 // Only idle channels have a close button: a channel that is still sending would start again at once.
@@ -890,14 +903,42 @@ void MainWindow::forgetLiveChannel(const std::string& name) {
     m_rowPictures.erase(name);
     m_startCounts.erase(name);
     m_sidebar->liveChannels()->removeChannel(QString::fromStdString(name));
-    if (m_liveChannel != name) {
-        return;
+    if (m_liveChannel == name) {
+        leaveLiveChannel();
     }
+}
+
+void MainWindow::leaveLiveChannel() {
     m_liveChannel.reset();
+    m_sidebar->liveChannels()->setSelected(std::nullopt);
     if (m_lastHistoryId && m_history.find(*m_lastHistoryId) != nullptr) {
         selectAndShow(*m_lastHistoryId);
     } else {
         clearView();
+    }
+}
+
+// Mute belongs to the name for the session. Muting also unfreezes the channel, which cannot be looked at
+// while muted, and gives the view back if it was in it.
+void MainWindow::setLiveMuted(const std::string& name, bool muted) {
+    if (muted == m_mutedChannels.contains(name)) {
+        return;
+    }
+    const QString shown = singleLine(QString::fromStdString(name));
+    if (muted) {
+        m_mutedChannels.insert(name);
+        m_live.setFrozen(name, false);
+        if (m_liveChannel == name) {
+            leaveLiveChannel();
+        }
+        log(LogKind::Info, tr("Muted live channel [%1]").arg(shown));
+    } else {
+        m_mutedChannels.erase(name);
+        m_rowPictures.erase(name); // from before the mute: the newest frame takes its place
+        log(LogKind::Info, tr("Unmuted live channel [%1]").arg(shown));
+    }
+    if (const viewer_core::LiveChannel* channel = m_live.find(name)) {
+        updateLiveRow(*channel, m_clock());
     }
 }
 

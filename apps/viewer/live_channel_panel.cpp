@@ -5,6 +5,8 @@
 #include "outline_icons.h"
 #include "shades.h"
 
+#include <QAction>
+#include <QContextMenuEvent>
 #include <QEvent>
 #include <QFont>
 #include <QFrame>
@@ -12,11 +14,13 @@
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -81,7 +85,7 @@ class LiveChannelRow : public QWidget {
 public:
     explicit LiveChannelRow(const QString& name)
         : m_name(name), m_thumbnail(new QLabel), m_rate(new QLabel), m_dot(new StatusDot),
-          m_state(new QLabel), m_close(new QToolButton) {
+          m_state(new QLabel), m_mute(new QToolButton), m_close(new QToolButton) {
         setObjectName(QStringLiteral("liveRow_") + name);
         setAccessibleName(name);
         setFixedHeight(LiveChannelPanel::kRowHeight);
@@ -106,6 +110,19 @@ public:
         m_close->setAccessibleName(LiveChannelPanel::tr("Close %1").arg(name));
         m_close->hide();
 
+        m_mute->setObjectName(QStringLiteral("liveMute"));
+        m_mute->setIcon(qt_common::makeOutlineIcon(qt_common::OutlineIcon::EyeOff));
+        m_mute->setIconSize(QSize(kCloseIconSize, kCloseIconSize));
+        m_mute->setFixedSize(kCloseSize, kCloseSize);
+        m_mute->setAutoRaise(true);
+        m_mute->setCheckable(true);
+        m_mute->setAccessibleName(LiveChannelPanel::tr("Mute %1").arg(name));
+        // Shown on hover like the thumbnails' icons; its place stays, so the name does not jump as it comes.
+        QSizePolicy keepsItsPlace = m_mute->sizePolicy();
+        keepsItsPlace.setRetainSizeWhenHidden(true);
+        m_mute->setSizePolicy(keepsItsPlace);
+        showMuteButton();
+
         auto* status = new QHBoxLayout;
         status->setContentsMargins(0, 0, 0, 0);
         status->setSpacing(kSpacing);
@@ -123,14 +140,20 @@ public:
         layout->setSpacing(kSpacing);
         layout->addWidget(m_thumbnail);
         layout->addLayout(text, 1);
+        layout->addWidget(m_mute, 0, Qt::AlignVCenter);
         layout->addWidget(m_close, 0, Qt::AlignVCenter);
     }
 
     const QString& name() const { return m_name; }
+    const LiveRowState& state() const { return m_rowState; }
+    QToolButton* muteButton() const { return m_mute; }
     QToolButton* closeButton() const { return m_close; }
 
     void showState(const QImage& thumbnail, int framesPerSecond, LiveRowState state) {
-        if (thumbnail.isNull()) {
+        m_rowState = state;
+        if (state.muted) {
+            // The picture it had stays, greyed by the disabled label.
+        } else if (thumbnail.isNull()) {
             m_thumbnail->clear();
         } else {
             const qreal ratio = m_thumbnail->devicePixelRatioF();
@@ -139,6 +162,11 @@ public:
             pixmap.setDevicePixelRatio(ratio);
             m_thumbnail->setPixmap(pixmap);
         }
+        m_thumbnail->setEnabled(!state.muted);
+        m_mute->setChecked(state.muted);
+        m_mute->setToolTip(state.muted ? LiveChannelPanel::tr("Unmute this channel")
+                                       : LiveChannelPanel::tr("Mute this channel"));
+        showMuteButton();
         m_rate->setText(state.muted ? QString() : LiveChannelPanel::tr("%1 fps").arg(framesPerSecond));
         m_state->setText(liveStateText(state));
         // While frames arrive. A frozen row's word says "idle" once they stop; until then the dot tells
@@ -150,8 +178,14 @@ public:
     void setSelected(bool selected) {
         if (selected != m_selected) {
             m_selected = selected;
+            showMuteButton();
             update();
         }
+    }
+
+    void setHovered(bool hovered) {
+        m_hovered = hovered;
+        showMuteButton();
     }
 
 protected:
@@ -168,13 +202,20 @@ protected:
     }
 
 private:
+    // On the row under the pointer and the row in view, as the thumbnails show their icons; always on a muted
+    // row, so its state stays in sight.
+    void showMuteButton() { m_mute->setVisible(m_hovered || m_selected || m_rowState.muted); }
+
     QString m_name;
     QLabel* m_thumbnail;
     QLabel* m_rate;
     StatusDot* m_dot;
     QLabel* m_state;
+    QToolButton* m_mute;
     QToolButton* m_close;
+    LiveRowState m_rowState;
     bool m_selected = false;
+    bool m_hovered = false;
 };
 
 LiveChannelPanel::LiveChannelPanel(QWidget* parent)
@@ -215,6 +256,12 @@ void LiveChannelPanel::addChannel(const QString& name) {
     m_rowsLayout->insertWidget(static_cast<int>(m_rows.size()), row);
     row->installEventFilter(this);
     connect(row->closeButton(), &QToolButton::clicked, this, [this, name] { emit closeRequested(name); });
+    // The button only asks: it stays as the window last said until the window updates the row.
+    connect(row->muteButton(), &QToolButton::clicked, this, [this, row, name] {
+        const bool muted = row->state().muted;
+        row->muteButton()->setChecked(muted);
+        emit muteRequested(name, !muted);
+    });
     m_rows.push_back(row);
     fitHeight();
     show();
@@ -265,17 +312,47 @@ QStringList LiveChannelPanel::channelNames() const {
     return names;
 }
 
-// A press anywhere on a row but its close button chooses the channel: the labels pass presses on to the row.
+std::unique_ptr<QMenu> LiveChannelPanel::createContextMenu(const QString& name) {
+    // No parent: the caller owns the menu, and a parent would delete it a second time.
+    auto menu = std::make_unique<QMenu>();
+    const LiveChannelRow* row = rowOf(name);
+    const bool muted = row != nullptr && row->state().muted;
+    connect(menu->addAction(muted ? tr("Unmute") : tr("Mute")), &QAction::triggered, this,
+            [this, name, muted] { emit muteRequested(name, !muted); });
+    QAction* close = menu->addAction(tr("Close"));
+    close->setEnabled(row != nullptr && row->state().idle); // as the close button
+    connect(close, &QAction::triggered, this, [this, name] { emit closeRequested(name); });
+    return menu;
+}
+
+// A press anywhere on a row but its buttons chooses the channel: the labels pass presses on to the row. The
+// pointer coming and going shows and hides the row's mute button; a right-click opens its menu.
 bool LiveChannelPanel::eventFilter(QObject* watched, QEvent* event) {
-    if (event->type() == QEvent::MouseButtonPress &&
-        static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
-        const auto found = std::find(m_rows.begin(), m_rows.end(), watched);
-        if (found != m_rows.end()) {
-            const QString name = (*found)->name();
+    const auto found = std::find(m_rows.begin(), m_rows.end(), watched);
+    if (found == m_rows.end()) {
+        return QWidget::eventFilter(watched, event);
+    }
+    LiveChannelRow* row = *found;
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            const QString name = row->name();
             setSelected(name);
             emit channelSelected(name);
             return true;
         }
+        break;
+    case QEvent::Enter:
+        row->setHovered(true);
+        break;
+    case QEvent::Leave:
+        row->setHovered(false);
+        break;
+    case QEvent::ContextMenu:
+        createContextMenu(row->name())->exec(static_cast<QContextMenuEvent*>(event)->globalPos());
+        return true;
+    default:
+        break;
     }
     return QWidget::eventFilter(watched, event);
 }
