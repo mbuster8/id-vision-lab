@@ -29,7 +29,7 @@ public:
     // Device pixels per image pixel that a picture of an image this size, set with `keep`, will be drawn at;
     // 1 while the view has no size yet.
     double deviceScaleFor(QSize imageSize, KeepView keep) const;
-    QSize pictureSize() const;
+    const QImage& picture() const; // as set; null for none
 
 signals:
     void pixelHovered(int x, int y);

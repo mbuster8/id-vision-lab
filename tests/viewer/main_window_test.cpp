@@ -2127,7 +2127,7 @@ TEST(MainWindowTest, LiveFrameIsConvertedAtTheDrawnSize) {
     QApplication::processEvents();
     auto* view = window->findChild<ImageView*>();
 
-    const QSize picture = view->pictureSize();
+    const QSize picture = view->picture().size();
     EXPECT_LT(picture.width(), 4000);
     EXPECT_LE(picture.width(), static_cast<int>(std::ceil(view->width() * view->devicePixelRatioF())) + 1);
     QSignalSpy hovered(view, &ImageView::pixelHovered);
@@ -2163,11 +2163,33 @@ TEST(MainWindowTest, ZoomingInDrawsTheWholeFrame) {
     action(*window, "actionFreeze")->trigger();
     auto* view = window->findChild<ImageView*>();
 
-    for (int i = 0; i < 20 && view->pictureSize() != QSize(4000, 3000); ++i) {
+    for (int i = 0; i < 20 && view->picture().size() != QSize(4000, 3000); ++i) {
         zoomIn(*view, QRectF(view->rect()).center());
     }
 
-    EXPECT_EQ(view->pictureSize(), QSize(4000, 3000));
+    EXPECT_EQ(view->picture().size(), QSize(4000, 3000));
+}
+
+// Past 1:1 the picture is the whole frame already, so zooming further, or a resize, converts nothing again:
+// each step of a trackpad zoom would otherwise convert the whole frame.
+TEST(MainWindowTest, ZoomingPastOneToOneConvertsNothingAgain) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    action(*window, "actionFreeze")->trigger();
+    auto* view = window->findChild<ImageView*>();
+    for (int i = 0; i < 20 && view->picture().size() != QSize(4000, 3000); ++i) {
+        zoomIn(*view, QRectF(view->rect()).center());
+    }
+    ASSERT_EQ(view->picture().size(), QSize(4000, 3000));
+    const qint64 converted = view->picture().cacheKey();
+
+    zoomIn(*view, QRectF(view->rect()).center());
+    window->resize(window->width() + 40, window->height());
+    QApplication::processEvents();
+
+    EXPECT_EQ(view->picture().cacheKey(), converted);
 }
 
 // A resize redraws even a frozen frame at its new size, without counting it as a frame drawn.
@@ -2180,14 +2202,14 @@ TEST(MainWindowTest, ResizingRedrawsAFrozenFrame) {
     action(window, "actionFreeze")->trigger();
     window.tick(clocked.now);
     auto* view = window.findChild<ImageView*>();
-    const QSize before = view->pictureSize();
+    const QSize before = view->picture().size();
     const QString details = infoDetails(window);
 
     window.resize(1600, 1200);
     QApplication::processEvents();
     window.tick(clocked.now);
 
-    EXPECT_GT(view->pictureSize().width(), before.width());
+    EXPECT_GT(view->picture().size().width(), before.width());
     EXPECT_EQ(infoDetails(window), details); // the same frames drawn
 }
 

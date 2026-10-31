@@ -113,7 +113,7 @@ TEST_F(ImageViewTest, PictureStandsForTheImageSize) {
     ASSERT_EQ(hovered.size(), 1);
     EXPECT_NEAR(hovered.last().at(0).toInt(), 200, 2);
     EXPECT_NEAR(hovered.last().at(1).toInt(), 150, 2);
-    EXPECT_EQ(m_view.pictureSize(), QSize(100, 75));
+    EXPECT_EQ(m_view.picture().size(), QSize(100, 75));
 }
 
 // The scale the next picture will be drawn at, so the window can make it at that size.

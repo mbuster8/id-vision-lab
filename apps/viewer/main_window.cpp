@@ -333,9 +333,7 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(m_infoBar, &ImageInfoBar::renameRequested, this, &MainWindow::renameImage);
     connect(m_imageView, &ImageView::pixelHovered, this, &MainWindow::showPixel);
     connect(m_imageView, &ImageView::hoverLeft, m_pixelLabel, &QLabel::clear);
-    // A live frame was converted for the old scale; a frozen one would otherwise stay blurred or coarse.
-    connect(m_imageView, &ImageView::scaleChanged, this,
-            [this] { paintLiveFrame(ImageView::KeepView::IfSameSize); });
+    connect(m_imageView, &ImageView::scaleChanged, this, &MainWindow::redrawLiveFrameForScale);
     updateEditActions();
 
     switch (dataProblem) {
@@ -885,17 +883,35 @@ bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
     }
     const cv::Mat& frame = channel->shown;
     m_infoBar->displayControl()->setSingleChannel(frame.channels() == 1); // frames may change their count
-    const QSize frameSize(frame.cols, frame.rows);
-    const double scale = m_imageView->deviceScaleFor(frameSize, keep);
-    const cv::Size drawn =
-        scale < 1.0
-            ? viewer_core::sizeWithin(frame.size(), cv::Size(static_cast<int>(std::ceil(frame.cols * scale)),
-                                                             static_cast<int>(std::ceil(frame.rows * scale))))
-            : frame.size();
     m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
-                              frame, m_displaySettings.get(channel->name), drawn)),
-                          keep, frameSize);
+                              frame, m_displaySettings.get(channel->name), liveDrawnSize(frame, keep))),
+                          keep, QSize(frame.cols, frame.rows));
     return true;
+}
+
+// The size a live frame is converted at for a draw with `keep`: the drawn size when that is smaller than the
+// frame, else the frame's own.
+cv::Size MainWindow::liveDrawnSize(const cv::Mat& frame, ImageView::KeepView keep) const {
+    const double scale = m_imageView->deviceScaleFor(QSize(frame.cols, frame.rows), keep);
+    if (scale >= 1.0) {
+        return frame.size();
+    }
+    return viewer_core::sizeWithin(frame.size(), cv::Size(static_cast<int>(std::ceil(frame.cols * scale)),
+                                                          static_cast<int>(std::ceil(frame.rows * scale))));
+}
+
+// After a zoom, a fit or a resize: a frame converted for the old scale, a frozen one above all, would stay
+// blurred or coarse. Only when the size it is converted at changes, though: past 1:1 that is the whole frame
+// at every step, and converting it again for each step of a trackpad zoom would only cost.
+void MainWindow::redrawLiveFrameForScale() {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->shown.empty()) {
+        return;
+    }
+    const cv::Size drawn = liveDrawnSize(channel->shown, ImageView::KeepView::IfSameSize);
+    if (QSize(drawn.width, drawn.height) != m_imageView->picture().size()) {
+        paintLiveFrame(ImageView::KeepView::IfSameSize);
+    }
 }
 
 void MainWindow::showLiveText(Clock::time_point now) {

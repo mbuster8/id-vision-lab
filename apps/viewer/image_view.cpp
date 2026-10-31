@@ -74,7 +74,7 @@ double ImageView::deviceScaleFor(QSize imageSize, KeepView keep) const {
     return scale > 0.0 ? scale * devicePixelRatioF() : 1.0;
 }
 
-QSize ImageView::pictureSize() const { return m_image.size(); }
+const QImage& ImageView::picture() const { return m_image; }
 
 void ImageView::paintEvent(QPaintEvent*) {
     QPainter painter(this);
