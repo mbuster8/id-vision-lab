@@ -75,7 +75,7 @@ TEST(LiveChannelPanel, RowsKeepStartOrder) {
     shown.panel->addChannel(QStringLiteral("camera"));
     shown.panel->addChannel(QStringLiteral("mask"));
     shown.panel->addChannel(QStringLiteral("camera")); // already there
-    shown.panel->updateChannel(QStringLiteral("mask"), frame(), 30, LiveRowState::Active);
+    shown.panel->updateChannel(QStringLiteral("mask"), frame(), 30, {});
     QApplication::processEvents();
 
     EXPECT_EQ(shown.panel->channelNames(),
@@ -92,7 +92,7 @@ TEST(LiveChannelPanel, ShowsRateAndState) {
     const QWidget* row = rowOf(*shown.panel, QStringLiteral("camera"));
     ASSERT_NE(row, nullptr);
 
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, LiveRowState::Active);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {});
     EXPECT_EQ(textIn(row, "liveRate"), QStringLiteral("30 fps"));
     EXPECT_EQ(textIn(row, "liveState"), QStringLiteral("live"));
     EXPECT_EQ(dotColourOf(row), qt_common::accentColour(QGuiApplication::palette()));
@@ -101,32 +101,56 @@ TEST(LiveChannelPanel, ShowsRateAndState) {
     EXPECT_FALSE(thumbnail->pixmap().isNull());
     EXPECT_LE(thumbnail->height(), LiveChannelPanel::kRowHeight);
 
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, LiveRowState::Idle);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, {.idle = true});
     EXPECT_EQ(textIn(row, "liveRate"), QStringLiteral("0 fps"));
     EXPECT_EQ(textIn(row, "liveState"), QStringLiteral("idle"));
     EXPECT_NE(dotColourOf(row), qt_common::accentColour(QGuiApplication::palette()));
 
-    // Frozen says so; the dot still shows whether frames arrive.
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 25, LiveRowState::Frozen);
+    // Frozen says so; the dot still shows whether frames arrive, and the word whether they stopped.
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 25, {.frozen = true});
     EXPECT_EQ(textIn(row, "liveState"), QStringLiteral("frozen"));
     EXPECT_EQ(dotColourOf(row), qt_common::accentColour(QGuiApplication::palette()));
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, LiveRowState::Frozen);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, {.idle = true, .frozen = true});
+    EXPECT_EQ(textIn(row, "liveState"), QStringLiteral("frozen · idle"));
     EXPECT_NE(dotColourOf(row), qt_common::accentColour(QGuiApplication::palette()));
 }
 
-TEST(LiveChannelPanel, CloseOnlyOnIdleRows) {
+TEST(LiveChannelPanel, StateTexts) {
+    EXPECT_EQ(liveStateText({}), QStringLiteral("live"));
+    EXPECT_EQ(liveStateText({.idle = true}), QStringLiteral("idle"));
+    EXPECT_EQ(liveStateText({.frozen = true}), QStringLiteral("frozen"));
+    EXPECT_EQ(liveStateText({.idle = true, .frozen = true}), QStringLiteral("frozen · idle"));
+    EXPECT_EQ(liveStateText({.muted = true}), QStringLiteral("muted"));
+    EXPECT_EQ(liveStateText({.idle = true, .muted = true}), QStringLiteral("muted · idle"));
+}
+
+// (F3) The ✕ is there whenever no frames arrive, frozen or not: a frozen channel whose sender stopped can be
+// closed too.
+TEST(LiveChannelPanel, CloseShowsWheneverIdle) {
     ShownPanel shown;
     shown.panel->addChannel(QStringLiteral("camera"));
     const QWidget* row = rowOf(*shown.panel, QStringLiteral("camera"));
     EXPECT_TRUE(closeButtonOf(row)->isHidden());
 
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, LiveRowState::Active);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {});
     EXPECT_TRUE(closeButtonOf(row)->isHidden());
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, LiveRowState::Frozen);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 30, {.frozen = true});
     EXPECT_TRUE(closeButtonOf(row)->isHidden());
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, LiveRowState::Idle);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, {.idle = true});
     EXPECT_FALSE(closeButtonOf(row)->isHidden());
     EXPECT_FALSE(closeButtonOf(row)->toolTip().isEmpty());
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, {.idle = true, .frozen = true});
+    EXPECT_FALSE(closeButtonOf(row)->isHidden());
+}
+
+// (R4) A name with a line break stays on the row's one line, as in the info strip and the log.
+TEST(LiveChannelPanel, TitleIsOneLine) {
+    ShownPanel shown;
+    shown.panel->addChannel(QStringLiteral("cam\nera"));
+    const QWidget* row = rowOf(*shown.panel, QStringLiteral("cam\nera"));
+    ASSERT_NE(row, nullptr);
+
+    EXPECT_FALSE(textIn(row, "liveName").contains(QLatin1Char('\n')));
 }
 
 TEST(LiveChannelPanel, ClickSelectsAndEmits) {
@@ -181,7 +205,7 @@ TEST(LiveChannelPanel, SetSelectedIsQuiet) {
 TEST(LiveChannelPanel, CloseButtonEmits) {
     ShownPanel shown;
     shown.panel->addChannel(QStringLiteral("camera"));
-    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, LiveRowState::Idle);
+    shown.panel->updateChannel(QStringLiteral("camera"), frame(), 0, {.idle = true});
     QSignalSpy closeRequested(shown.panel, &LiveChannelPanel::closeRequested);
     QSignalSpy selected(shown.panel, &LiveChannelPanel::channelSelected);
 

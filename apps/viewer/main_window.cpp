@@ -870,11 +870,9 @@ void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::t
             qt_common::toQImage(viewer_core::toDisplayImage(small, m_displaySettings.get(channel.name)));
         madeAtFrame = channel.received;
     }
-    const LiveRowState state = channel.frozen ? LiveRowState::Frozen
-                               : channel.idle ? LiveRowState::Idle
-                                              : LiveRowState::Active;
     m_sidebar->liveChannels()->updateChannel(QString::fromStdString(channel.name), picture,
-                                             m_live.stats(channel.name, now).arrivedPerSecond, state);
+                                             m_live.stats(channel.name, now).arrivedPerSecond,
+                                             {.idle = channel.idle, .frozen = channel.frozen});
 }
 
 // Only idle channels have a close button: a channel that is still sending would start again at once.

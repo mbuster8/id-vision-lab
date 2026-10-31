@@ -1651,6 +1651,27 @@ TEST(MainWindowTest, ClosingTheShownChannelReturnsToTheHistory) {
     EXPECT_TRUE(infoBarOf(*empty.window)->isHidden());
 }
 
+// (F3) Freezing a channel and then losing its sender leaves a row that can still be closed.
+TEST(MainWindowTest, FrozenIdleChannelCanBeClosed) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    ASSERT_EQ(window.shownLiveChannel(), std::optional<std::string>("camera"));
+    window.findChild<QAction*>(QStringLiteral("actionFreeze"))->trigger();
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    QWidget* row = liveRowOf(window, QStringLiteral("camera"));
+    EXPECT_EQ(row->findChild<QLabel*>(QStringLiteral("liveState"))->text(), QStringLiteral("frozen · idle"));
+    auto* close = row->findChild<QToolButton*>(QStringLiteral("liveClose"));
+    ASSERT_FALSE(close->isHidden());
+
+    close->click();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Closed live channel [camera]")), nullptr);
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+}
+
 TEST(MainWindowTest, GoesIdleInTheWindow) {
     ClockedWindow clocked;
     MainWindow& window = *clocked.window;

@@ -12,7 +12,16 @@ class QScrollArea;
 class QVBoxLayout;
 class LiveChannelRow;
 
-enum class LiveRowState { Active, Idle, Frozen };
+// What a row says about its channel. Idle: no frame for viewer_core::kIdleAfter. Frozen: the view keeps one
+// frame while the others are counted. Muted: frames are counted but never drawn.
+struct LiveRowState {
+    bool idle = false;
+    bool frozen = false;
+    bool muted = false;
+};
+
+// "live", "idle", "frozen", "muted", with " · idle" after the last two when no frames arrive.
+QString liveStateText(LiveRowState state);
 
 // The Live group at the top of the sidebar: a row per live channel, in the order they started, each with the
 // newest frame, its frame rate and its state. Hidden while there is no channel. The panel only shows: the

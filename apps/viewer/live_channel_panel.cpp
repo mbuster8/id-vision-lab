@@ -1,5 +1,6 @@
 #include "live_channel_panel.h"
 
+#include "display_text.h"
 #include "eliding_label.h"
 #include "outline_icons.h"
 #include "shades.h"
@@ -63,19 +64,16 @@ private:
     bool m_active = true;
 };
 
-QString stateText(LiveRowState state) {
-    switch (state) {
-    case LiveRowState::Idle:
-        return LiveChannelPanel::tr("idle");
-    case LiveRowState::Frozen:
-        return LiveChannelPanel::tr("frozen");
-    case LiveRowState::Active:
-        break;
-    }
-    return LiveChannelPanel::tr("live");
-}
-
 } // namespace
+
+// Muting unfreezes a channel, so muted and frozen never meet.
+QString liveStateText(LiveRowState state) {
+    if (!state.muted && !state.frozen) {
+        return state.idle ? LiveChannelPanel::tr("idle") : LiveChannelPanel::tr("live");
+    }
+    const QString word = state.muted ? LiveChannelPanel::tr("muted") : LiveChannelPanel::tr("frozen");
+    return state.idle ? LiveChannelPanel::tr("%1 · idle").arg(word) : word;
+}
 
 // One channel: its newest frame, its name, and below the name its rate and state. Painted like a thumbnail
 // cell: the selection and hover greys, and a divider line underneath.
@@ -94,10 +92,10 @@ public:
         m_thumbnail->setAlignment(Qt::AlignCenter);
         auto* title = new ElidingLabel(Qt::ElideRight);
         title->setObjectName(QStringLiteral("liveName"));
-        title->setText(name);
+        title->setText(singleLine(name));
         m_rate->setObjectName(QStringLiteral("liveRate"));
         m_state->setObjectName(QStringLiteral("liveState"));
-        m_state->setText(stateText(LiveRowState::Active));
+        m_state->setText(liveStateText({}));
 
         m_close->setObjectName(QStringLiteral("liveClose"));
         m_close->setIcon(qt_common::makeOutlineIcon(qt_common::OutlineIcon::Clear));
@@ -141,11 +139,12 @@ public:
             pixmap.setDevicePixelRatio(ratio);
             m_thumbnail->setPixmap(pixmap);
         }
-        m_rate->setText(LiveChannelPanel::tr("%1 fps").arg(framesPerSecond));
-        m_state->setText(stateText(state));
-        m_dot->setActive(state == LiveRowState::Active ||
-                         (state == LiveRowState::Frozen && framesPerSecond > 0));
-        m_close->setVisible(state == LiveRowState::Idle);
+        m_rate->setText(state.muted ? QString() : LiveChannelPanel::tr("%1 fps").arg(framesPerSecond));
+        m_state->setText(liveStateText(state));
+        // While frames arrive. A frozen row's word says "idle" once they stop; until then the dot tells
+        // whether the frames it does not show still come.
+        m_dot->setActive(!state.muted && !state.idle && (!state.frozen || framesPerSecond > 0));
+        m_close->setVisible(state.idle); // a channel that is still sending would start again at once
     }
 
     void setSelected(bool selected) {
