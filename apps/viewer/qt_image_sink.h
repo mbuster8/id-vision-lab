@@ -39,12 +39,12 @@ public:
     static constexpr int kMaxPendingImages = 8;
     static constexpr std::chrono::milliseconds kMaxWaitForUi{200};
     // Open live channels; a frame for a new one beyond these is refused as "too many live channels",
-    // unless a channel has been idle for kLiveIdleAfter, which then makes room.
+    // unless a channel has been idle for viewer_core::kIdleAfter, as the window counts it, which then makes
+    // room.
     static constexpr int kMaxLiveChannels = 8;
     // The newest frames of all open channels together; any frame that would take them past it is refused
     // too, unless closing idle channels makes room.
     static constexpr std::size_t kMaxLiveBytes = std::size_t{1} << 30;
-    static constexpr std::chrono::seconds kLiveIdleAfter{5};
 
     // One channel's newest waiting frame, with how many older frames of it the sink dropped since the
     // last take.

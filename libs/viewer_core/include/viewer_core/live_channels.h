@@ -17,7 +17,7 @@ namespace viewer_core {
 // system_clock's own duration, which on libstdc++ is nanoseconds and ends in 2262, before the latest sentAt.
 using SentTime = std::chrono::sys_time<std::chrono::milliseconds>;
 
-inline constexpr std::chrono::seconds kIdleAfter{5};  // a channel without a frame for this long is idle
+inline constexpr std::chrono::seconds kIdleAfter{3};  // a channel without a frame for this long is idle
 inline constexpr std::chrono::seconds kRateWindow{1}; // frame rates count the frames of the last second
 
 // A frame the UI took from the sink: the newest of its channel, and how many older ones the sink replaced.

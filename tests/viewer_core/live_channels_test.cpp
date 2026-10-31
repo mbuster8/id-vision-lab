@@ -12,6 +12,7 @@
 namespace {
 
 using namespace std::chrono_literals;
+using viewer_core::kIdleAfter;
 using viewer_core::LiveChannel;
 using viewer_core::LiveChannels;
 using viewer_core::LiveFrameIn;
@@ -61,8 +62,8 @@ TEST(LiveChannels, KeepsStartOrder) {
     channels.receive(frameFor("camera"), kStart);
     channels.receive(frameFor("mask"), kStart);
     channels.receive(frameFor("camera"), kStart + 10ms);
-    channels.updateIdle(kStart + 5s);
-    channels.receive(frameFor("mask"), kStart + 6s);
+    channels.updateIdle(kStart + kIdleAfter);
+    channels.receive(frameFor("mask"), kStart + kIdleAfter + 1s);
 
     EXPECT_EQ(namesOf(channels), (std::vector<std::string>{"edges", "camera", "mask"}));
 }
@@ -98,23 +99,32 @@ TEST(LiveChannels, RatesFallToZeroAfterTheWindow) {
     EXPECT_EQ(channels.stats("nobody", kStart).arrivedPerSecond, 0);
 }
 
-TEST(LiveChannels, GoesIdleAfterFiveSecondsAndBackOnAFrame) {
+TEST(LiveChannels, GoesIdleAndBackOnAFrame) {
     LiveChannels channels;
     channels.receive(frameFor("camera"), kStart);
-    channels.receive(frameFor("edges"), kStart + 2s);
+    channels.receive(frameFor("edges"), kStart + 1s);
 
-    EXPECT_TRUE(channels.updateIdle(kStart + 4999ms).empty());
+    EXPECT_TRUE(channels.updateIdle(kStart + kIdleAfter - 1ms).empty());
     EXPECT_FALSE(channels.find("camera")->idle);
-    EXPECT_EQ(channels.updateIdle(kStart + 5s), (std::vector<std::string>{"camera"}));
+    EXPECT_EQ(channels.updateIdle(kStart + kIdleAfter), (std::vector<std::string>{"camera"}));
     EXPECT_TRUE(channels.find("camera")->idle);
     EXPECT_FALSE(channels.find("edges")->idle);
-    EXPECT_TRUE(channels.updateIdle(kStart + 6s).empty());
+    EXPECT_TRUE(channels.updateIdle(kStart + kIdleAfter + 500ms).empty());
 
-    const LiveChannels::ReceiveResult back = channels.receive(frameFor("camera"), kStart + 7s);
+    const LiveChannels::ReceiveResult back = channels.receive(frameFor("camera"), kStart + kIdleAfter + 2s);
 
     EXPECT_TRUE(back.started);
     EXPECT_FALSE(channels.find("camera")->idle);
-    EXPECT_EQ(channels.updateIdle(kStart + 7s), (std::vector<std::string>{"edges"}));
+    EXPECT_EQ(channels.updateIdle(kStart + kIdleAfter + 2s), (std::vector<std::string>{"edges"}));
+}
+
+// The owner's choice in the walkthrough: 3 s, not 5.
+TEST(LiveChannels, IdleAfterThreeSeconds) {
+    LiveChannels channels;
+    channels.receive(frameFor("camera"), kStart);
+
+    EXPECT_TRUE(channels.updateIdle(kStart + 2999ms).empty());
+    EXPECT_EQ(channels.updateIdle(kStart + 3s), (std::vector<std::string>{"camera"}));
 }
 
 TEST(LiveChannels, FreezeKeepsTheShownFrameWhileCounting) {
@@ -195,12 +205,13 @@ TEST(LiveChannels, CloseForgetsTheChannel) {
     EXPECT_FALSE(channels.close("camera"));
     EXPECT_EQ(channels.stats("camera", kStart).arrivedPerSecond, 0);
     channels.markDrawn("camera", kStart);
-    EXPECT_TRUE(channels.updateIdle(kStart + 4s).empty());
-    const LiveChannels::ReceiveResult reopened = channels.receive(frameFor("camera"), kStart + 4s);
+    const LiveChannels::SteadyTime later = kStart + kIdleAfter - 1s;
+    EXPECT_TRUE(channels.updateIdle(later).empty());
+    const LiveChannels::ReceiveResult reopened = channels.receive(frameFor("camera"), later);
     EXPECT_TRUE(reopened.started);
     EXPECT_EQ(channels.find("camera")->received, 1u);
     EXPECT_EQ(channels.find("camera")->dropped, 0u);
-    EXPECT_EQ(channels.stats("camera", kStart + 4s).arrivedPerSecond, 1);
+    EXPECT_EQ(channels.stats("camera", later).arrivedPerSecond, 1);
     EXPECT_EQ(namesOf(channels), (std::vector<std::string>{"edges", "camera"}));
 }
 

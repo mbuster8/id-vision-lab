@@ -1,5 +1,7 @@
 #include "qt_image_sink.h"
 
+#include "viewer_core/live_channels.h"
+
 #include <algorithm>
 #include <iterator>
 #include <utility>
@@ -85,7 +87,7 @@ bool QtImageSink::roomFor(const std::string& name, std::size_t bytes) const {
 bool QtImageSink::evictLongestIdle(Clock::time_point now, const std::string& keep) {
     auto longestIdle = m_liveChannels.end();
     for (auto open = m_liveChannels.begin(); open != m_liveChannels.end(); ++open) {
-        if (open->name != keep && now - open->lastArrival >= kLiveIdleAfter &&
+        if (open->name != keep && now - open->lastArrival >= viewer_core::kIdleAfter &&
             (longestIdle == m_liveChannels.end() || open->lastArrival < longestIdle->lastArrival)) {
             longestIdle = open;
         }

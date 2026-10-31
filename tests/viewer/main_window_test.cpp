@@ -1660,7 +1660,7 @@ TEST(MainWindowTest, GoesIdleInTheWindow) {
     QApplication::processEvents();
     const ActivityLog* log = logOf(window);
 
-    window.tick(clocked.now + 4s);
+    window.tick(clocked.now + viewer_core::kIdleAfter - 1s);
     EXPECT_EQ(countEntries(*log, QStringLiteral("idle")), 0);
     clocked.now += 6s;
     window.tick(clocked.now);

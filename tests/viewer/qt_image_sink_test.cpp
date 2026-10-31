@@ -1,5 +1,7 @@
 #include "qt_image_sink.h"
 
+#include "viewer_core/live_channels.h"
+
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QObject>
@@ -261,10 +263,13 @@ TEST(QtImageSink, EvictsTheLongestIdleForANewChannel) {
     QtImageSink sink([&now] { return now; });
     openChannels(sink, QtImageSink::kMaxLiveChannels);
     sink.takeLiveFrames();
-    // After 6 s, c0 had a frame 3 s ago and c2 to c7 just now: only c1 has been quiet for 5 s or more.
-    now += 3s;
+    // Two steps of just over half the idle time: c0 had a frame one step ago and c2 to c7 just now, so only
+    // c1 has been quiet long enough.
+    const auto step =
+        std::chrono::duration_cast<std::chrono::milliseconds>(viewer_core::kIdleAfter) / 2 + 1ms;
+    now += step;
     sink.onImageReceived(liveFrame("c0"));
-    now += 3s;
+    now += step;
     for (int i = 2; i < QtImageSink::kMaxLiveChannels; ++i) {
         sink.onImageReceived(liveFrame("c" + std::to_string(i)));
     }
@@ -275,6 +280,18 @@ TEST(QtImageSink, EvictsTheLongestIdleForANewChannel) {
     EXPECT_EQ(batch.evicted, std::vector<std::string>{"c1"});
     EXPECT_TRUE(batch.refused.empty());
     EXPECT_EQ(namesOf(batch.frames).back(), "c8");
+}
+
+// The window and the sink agree on when a channel is idle: 3 s, as the owner chose.
+TEST(QtImageSink, EvictsAChannelIdleForThreeSeconds) {
+    auto now = std::chrono::steady_clock::time_point{} + 1h;
+    QtImageSink sink([&now] { return now; });
+    openChannels(sink, QtImageSink::kMaxLiveChannels);
+    sink.takeLiveFrames();
+    now += 3s;
+
+    EXPECT_EQ(sink.onImageReceived(liveFrame("c8")), Acceptance::Taken);
+    EXPECT_EQ(sink.takeLiveFrames().evicted, std::vector<std::string>{"c0"});
 }
 
 } // namespace
