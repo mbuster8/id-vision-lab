@@ -604,8 +604,8 @@ void MainWindow::renameImage(viewer_core::ImageId id, QString name) {
     const QString oldName = singleLine(QString::fromStdString(entry->name));
     // The display settings go with the name.
     const viewer_core::DisplaySettings settings = m_displaySettings.get(entry->name);
-    m_displaySettings.set(entry->name, {});
-    m_displaySettings.set(cut, settings);
+    setDisplaySettings(entry->name, {});
+    setDisplaySettings(cut, settings);
     m_history.rename(id, std::move(cut));
     log(LogKind::Info,
         tr("Renamed [%1] to [%2]").arg(oldName, singleLine(QString::fromStdString(entry->name))));
@@ -732,9 +732,7 @@ QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry) const {
 // and in the thumbnails, which a still sharing a live channel's name has too.
 void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& settings) {
     if (m_liveChannel) {
-        m_displaySettings.set(*m_liveChannel, settings);
-        m_rowPictures.erase(*m_liveChannel); // drawn with the old settings
-        m_thumbnails->refreshThumbnails(QString::fromStdString(*m_liveChannel));
+        setDisplaySettings(*m_liveChannel, settings);
         drawLiveFrame(ImageView::KeepView::IfSameSize);
         return;
     }
@@ -742,9 +740,16 @@ void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& setti
     if (entry == nullptr) {
         return;
     }
-    m_displaySettings.set(entry->name, settings);
-    m_thumbnails->refreshThumbnails(QString::fromStdString(entry->name));
+    setDisplaySettings(entry->name, settings);
     m_imageView->setImage(shownPicture(*entry), ImageView::KeepView::IfSameSize);
+}
+
+// Also forgets what was drawn with the name's old settings: its thumbnails, made again when next painted, and
+// its live row's picture, made again at the next tick.
+void MainWindow::setDisplaySettings(const std::string& name, const viewer_core::DisplaySettings& settings) {
+    m_displaySettings.set(name, settings);
+    m_thumbnails->refreshThumbnails(QString::fromStdString(name));
+    m_rowPictures.erase(name);
 }
 
 // A thumbnail with its name's display settings, made at its own size; nothing for the default ones, whose
@@ -1030,7 +1035,7 @@ void MainWindow::takeSnapshot() {
         name = snapshotName(channelName, milliseconds);
     }
     const std::string snapshot = name.toStdString();
-    m_displaySettings.set(snapshot, m_displaySettings.get(channel->name));
+    setDisplaySettings(snapshot, m_displaySettings.get(channel->name));
     addImage(snapshot, channel->shown,
              {.source = viewer_core::ImageSource::LiveSnapshot,
               .fileBytes = std::nullopt,

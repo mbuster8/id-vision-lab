@@ -118,6 +118,7 @@ private:
     // display settings of the entry's name.
     QImage shownPicture(const viewer_core::ReceivedImage& entry) const;
     void changeDisplaySettings(const viewer_core::DisplaySettings& settings);
+    void setDisplaySettings(const std::string& name, const viewer_core::DisplaySettings& settings);
     cv::Mat thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) const; // for the thumbnails' maker
     void takeLiveFrames();
     void showLiveChannel(const std::string& name);

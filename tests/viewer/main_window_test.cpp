@@ -1025,6 +1025,30 @@ TEST(MainWindowTest, RenameCarriesTheSettings) {
     EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Viridis ▾"));
 }
 
+// (F5) A rename moves the settings from one name to another, so the thumbnails of both names change: the
+// image left with the old name turns grey, and one that already had the new name takes its settings.
+TEST(MainWindowTest, RenameRefreshesTheThumbnailsOfBothNames) {
+    const auto window = makeTestWindow();
+    window->addImage("a", ramp());
+    window->addImage("a", ramp());
+    window->addImage("z", ramp());
+    chooseColours(*window, 1); // Turbo for "z"
+    panelOf(*window)->selectImage(1);
+    chooseColours(*window, 2); // Viridis for "a"
+    const auto* model = panelOf(*window)->findChild<ThumbnailModel*>();
+    const auto middleOf = [model](ImageId id) {
+        const QImage thumbnail = model->thumbnail(id, QSize(40, 30)).toImage();
+        return thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+    };
+    ASSERT_TRUE(thumbnailIsColoured(*window, 2));
+    ASSERT_NE(middleOf(3), middleOf(1)); // drawn, in Turbo and Viridis
+
+    window->renameImage(1, QStringLiteral("z"));
+
+    EXPECT_FALSE(thumbnailIsColoured(*window, 2));
+    EXPECT_EQ(middleOf(3), middleOf(1));
+}
+
 TEST(MainWindowTest, ImageMenuMirrorsTheControl) {
     const auto window = makeTestWindow();
     DisplaySettingsControl* control = displayControlOf(*window);
@@ -2354,6 +2378,28 @@ int rowPictureGrey(MainWindow& window, const QString& name) {
     const QImage picture =
         liveRowOf(window, name)->findChild<QLabel*>(QStringLiteral("liveThumbnail"))->pixmap().toImage();
     return picture.isNull() ? -1 : picture.pixelColor(picture.width() / 2, picture.height() / 2).red();
+}
+
+// (F5) A still and a live channel of one name share its settings: changing them on the still redraws the
+// channel's row too, even while no new frame comes.
+TEST(MainWindowTest, StillsSettingsRedrawTheLiveRowOfItsName) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(100));
+    QApplication::processEvents();
+    window.addImage("camera", liveFrame(100));
+    panelOf(window)->selectImage(1); // the still, leaving the channel
+    ASSERT_EQ(rowPictureGrey(window, QStringLiteral("camera")), 100);
+
+    chooseColours(window, 1); // Turbo
+    window.tick(clocked.now);
+
+    const QImage picture = liveRowOf(window, QStringLiteral("camera"))
+                               ->findChild<QLabel*>(QStringLiteral("liveThumbnail"))
+                               ->pixmap()
+                               .toImage();
+    const QColor middle = picture.pixelColor(picture.width() / 2, picture.height() / 2);
+    EXPECT_TRUE(middle.red() != middle.green() || middle.green() != middle.blue());
 }
 
 // (F7) A muted channel's frames are still taken and counted, so its sender is never slowed, but nothing is
