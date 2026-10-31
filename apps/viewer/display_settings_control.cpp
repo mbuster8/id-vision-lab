@@ -11,9 +11,12 @@
 #include <QLocale>
 #include <QMenu>
 #include <QPushButton>
+#include <QRect>
+#include <QScreen>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -98,12 +101,18 @@ public:
         layout->addLayout(buttons);
     }
 
-    void open(const DisplayRange& range, const QPoint& globalPosition) {
+    // With its top-right corner at topRight, moved left or up as needed to stay within bounds (global).
+    void open(const DisplayRange& range, const QPoint& topRight, const QRect& bounds) {
         m_minimum->setText(formatted(range.min));
         m_maximum->setText(formatted(range.max));
         updateApply();
-        move(globalPosition);
-        show();
+        adjustSize();
+        show(); // first, so that the frame, if the platform gives a popup one, counts in its size
+        const QSize size = frameGeometry().size();
+        QPoint position(topRight.x() - size.width() + 1, topRight.y());
+        position.setX(std::max(bounds.left(), std::min(position.x(), bounds.right() - size.width() + 1)));
+        position.setY(std::max(bounds.top(), std::min(position.y(), bounds.bottom() - size.height() + 1)));
+        move(position);
         m_minimum->setFocus();
         m_minimum->selectAll();
     }
@@ -188,11 +197,15 @@ void DisplaySettingsControl::setState(const viewer_core::DisplaySettings& settin
         m_popup->hide(); // it was for the picture shown before
     }
     m_settings = settings;
+    setSingleChannel(singleChannel);
+    showSettings();
+}
+
+void DisplaySettingsControl::setSingleChannel(bool singleChannel) {
     m_coloursButton->setVisible(singleChannel);
     for (QAction* action : m_coloursActions) {
         action->setEnabled(singleChannel);
     }
-    showSettings();
 }
 
 void DisplaySettingsControl::setAutoRangeProvider(std::function<viewer_core::DisplayRange()> provider) {
@@ -233,7 +246,15 @@ void DisplaySettingsControl::openFixedPopup() {
     if (m_popup == nullptr) {
         m_popup = new FixedRangePopup(this, [this](DisplayRange range) { applyFixed(range); });
     }
-    m_popup->open(currentRange(), m_rangeButton->mapToGlobal(QPoint(0, m_rangeButton->height())));
+    // Right-aligned under the Range button, which sits at the info strip's right end, and inside the window
+    // and the screen.
+    QRect bounds = window()->geometry(); // the window's content, without its frame
+    if (const QScreen* screen = m_rangeButton->screen()) {
+        bounds &= screen->availableGeometry();
+    }
+    m_popup->open(currentRange(),
+                  m_rangeButton->mapToGlobal(QPoint(m_rangeButton->width() - 1, m_rangeButton->height())),
+                  bounds);
 }
 
 void DisplaySettingsControl::applyFixed(DisplayRange range) {

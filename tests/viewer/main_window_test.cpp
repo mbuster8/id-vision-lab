@@ -2060,6 +2060,23 @@ TEST(MainWindowTest, ArrowKeysStillStepAfterPanning) {
     EXPECT_EQ(window->shownLiveChannel(), std::nullopt);
 }
 
+// (R3) Colours are offered while the frame in view has one channel, frame by frame.
+TEST(MainWindowTest, ColoursFollowTheFramesChannelCount) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    const auto* colours = displayControlOf(*window)->findChild<QToolButton*>(QStringLiteral("coloursButton"));
+    ASSERT_FALSE(colours->isHidden());
+
+    feedLive(*window, "camera", cv::Mat(30, 40, CV_8UC3, cv::Scalar(1, 2, 3)));
+    QApplication::processEvents();
+    EXPECT_TRUE(colours->isHidden());
+
+    feedLive(*window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    EXPECT_FALSE(colours->isHidden());
+}
+
 // (F5) A snapshot's thumbnail looks as the channel did when it was taken.
 TEST(MainWindowTest, SnapshotThumbnailHasTheChannelsColours) {
     const auto window = makeTestWindow();

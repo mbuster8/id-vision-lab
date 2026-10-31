@@ -24,6 +24,8 @@ public:
     // Called when the shown image or channel changes, never per frame. Quiet: emits nothing. Colours are
     // offered for single-channel images only.
     void setState(const viewer_core::DisplaySettings& settings, bool singleChannel);
+    // Per live frame, which may change its channel count: shows or hides Colours, and nothing else.
+    void setSingleChannel(bool singleChannel);
     // Asked for the current Auto range only when Hold or Fixed… is chosen, so new frames never disturb it.
     void setAutoRangeProvider(std::function<viewer_core::DisplayRange()> provider);
     QMenu* rangeMenu() const; // the Image menu shows the same actions

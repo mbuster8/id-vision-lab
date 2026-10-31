@@ -879,6 +879,7 @@ bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
         return false;
     }
     const cv::Mat& frame = channel->shown;
+    m_infoBar->displayControl()->setSingleChannel(frame.channels() == 1); // frames may change their count
     const QSize frameSize(frame.cols, frame.rows);
     const double scale = m_imageView->deviceScaleFor(frameSize, keep);
     const cv::Size drawn =

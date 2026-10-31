@@ -169,6 +169,41 @@ TEST_F(DisplaySettingsControlTest, ColoursOnlyForSingleChannel) {
     EXPECT_EQ(m_emitted.size(), 1u); // setState is quiet
 }
 
+// (F6) The control sits at the info strip's right end; the popup opens right-aligned under the Range button
+// and stays inside the window, instead of running off its right edge.
+TEST(DisplaySettingsControlPopup, FixedPopupStaysInsideTheWindow) {
+    QWidget window;
+    window.resize(600, 300);
+    auto* control = new DisplaySettingsControl(&window);
+    control->setState(DisplaySettings{}, false); // the Range button alone: narrower than the popup
+    control->adjustSize();
+    control->move(window.width() - control->width(), 0);
+    window.show();
+
+    actionTitled(control->rangeMenu(), QStringLiteral("Fixed…"))->trigger();
+
+    const QWidget* popup = control->findChild<QWidget*>(QStringLiteral("fixedRangePopup"));
+    ASSERT_NE(popup, nullptr);
+    ASSERT_GT(popup->width(), control->width());
+    EXPECT_TRUE(window.geometry().contains(popup->frameGeometry()))
+        << popup->frameGeometry().x() << "," << popup->frameGeometry().y() << " " << popup->width() << "x"
+        << popup->height();
+}
+
+// (R3) Per frame, quietly: a live channel can change its channel count from one frame to the next.
+TEST_F(DisplaySettingsControlTest, SetSingleChannelOnlyShowsOrHidesColours) {
+    actionTitled(m_control.rangeMenu(), QStringLiteral("Fixed…"))->trigger();
+
+    m_control.setSingleChannel(false);
+    EXPECT_TRUE(button("coloursButton")->isHidden());
+    EXPECT_FALSE(actionTitled(m_control.coloursMenu(), QStringLiteral("Turbo"))->isEnabled());
+    m_control.setSingleChannel(true);
+    EXPECT_FALSE(button("coloursButton")->isHidden());
+
+    EXPECT_TRUE(popup()->isVisible()); // left open, unlike setState
+    EXPECT_TRUE(m_emitted.empty());
+}
+
 // New frames change what Auto would show, but never what is being typed.
 TEST_F(DisplaySettingsControlTest, FixedFieldsSurviveNewFrames) {
     openFixed();
