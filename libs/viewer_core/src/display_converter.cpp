@@ -155,21 +155,32 @@ cv::Mat shrunk(const cv::Mat& image, cv::Size size) {
 cv::Mat toDisplayImage(const cv::Mat& image) { return toDisplayImage(image, DisplaySettings{}); }
 
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings) {
-    checkSupported(image);
-    return toDisplayImage(image, settings, image.size());
+    return toDisplayImage(image, settings, DisplayOptions{});
 }
 
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, cv::Size size) {
+    // At least 1 on each side, so a zero size still means one pixel here, not the image's own size.
+    return toDisplayImage(image, settings,
+                          DisplayOptions{.size = {std::max(size.width, 1), std::max(size.height, 1)}});
+}
+
+cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, const DisplayOptions& options) {
     checkSupported(image);
-    const cv::Size drawn(std::clamp(size.width, 1, image.cols), std::clamp(size.height, 1, image.rows));
+    const cv::Size drawn = options.size == cv::Size{}
+                               ? image.size()
+                               : cv::Size(std::clamp(options.size.width, 1, image.cols),
+                                          std::clamp(options.size.height, 1, image.rows));
     const bool coloured = image.channels() == 1 && settings.colours != ColourMap::Grey;
+    const bool automatic = settings.mode == RangeMode::Auto;
+    const bool hinted = automatic && options.tags.hasValueRange();
     cv::Mat eightBit;
     cv::Mat finite;
-    if (settings.mode == RangeMode::Auto && image.depth() == CV_8U) {
+    if (automatic && !hinted && image.depth() == CV_8U) {
         eightBit = image;
     } else {
         const Plane plane = planeOf(image);
-        const DisplayRange range = settings.mode == RangeMode::Auto ? finiteRange(plane) : settings.range;
+        const DisplayRange range =
+            hinted ? options.tags.valueRange : (automatic ? finiteRange(plane) : settings.range);
         eightBit = toEightBit(plane, range, image.channels());
         finite = plane.finite;
     }
@@ -193,8 +204,11 @@ cv::Size sizeWithin(cv::Size image, cv::Size bounds) {
             std::max(1, static_cast<int>(std::lround(image.height * scale)))};
 }
 
-DisplayRange autoRange(const cv::Mat& image) {
+DisplayRange autoRange(const cv::Mat& image, const ImageTags& tags) {
     checkSupported(image);
+    if (tags.hasValueRange()) {
+        return tags.valueRange;
+    }
     if (image.depth() == CV_8U) {
         return {0.0, 255.0};
     }

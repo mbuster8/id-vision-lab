@@ -1,5 +1,7 @@
 #pragma once
 
+#include "viewer_core/image_tags.h"
+
 #include <opencv2/core/mat.hpp>
 
 #include <chrono>
@@ -27,6 +29,7 @@ struct LiveFrameIn {
     std::chrono::system_clock::time_point receivedAt{};
     std::optional<SentTime> sentAt{};
     std::uint64_t replaced = 0;
+    ImageTags tags{};
 };
 
 struct LiveChannel {
@@ -35,6 +38,7 @@ struct LiveChannel {
     cv::Mat newest; // empty unless frozen with a newer frame aside
     std::chrono::system_clock::time_point shownReceivedAt{};
     std::optional<SentTime> shownSentAt{};
+    ImageTags shownTags{};
     bool idle = false;
     bool frozen = false;
     std::uint64_t received = 0; // frames the UI took
@@ -84,6 +88,7 @@ private:
         SteadyTime lastArrival{};
         std::chrono::system_clock::time_point newestReceivedAt{};
         std::optional<SentTime> newestSentAt{};
+        ImageTags newestTags{};
     };
 
     std::optional<std::size_t> indexOf(const std::string& name) const;

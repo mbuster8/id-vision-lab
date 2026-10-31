@@ -164,6 +164,29 @@ TEST(LiveChannels, FreezeKeepsTheShownFrameWhileCounting) {
     EXPECT_FALSE(channels.setFrozen("nobody", true));
 }
 
+// A frame's tags travel with it: while frozen, the shown frame keeps its own, and unfreezing shows the
+// newest frame's.
+TEST(LiveChannels, ShownFrameKeepsItsTags) {
+    LiveChannels channels;
+    const viewer_core::ImageTags sdr{.valueRange = {0, 1023}};
+    const viewer_core::ImageTags hlg{.valueRange = {0, 65535}, .transfer = viewer_core::Transfer::Hlg};
+    LiveFrameIn first = frameFor("phone", 1);
+    first.tags = sdr;
+    LiveFrameIn second = frameFor("phone", 2);
+    second.tags = hlg;
+
+    channels.receive(first, kStart);
+    EXPECT_EQ(channels.find("phone")->shownTags, sdr);
+    channels.setFrozen("phone", true);
+    channels.receive(second, kStart + 10ms);
+    EXPECT_EQ(channels.find("phone")->shownTags, sdr);
+
+    EXPECT_TRUE(channels.setFrozen("phone", false));
+
+    EXPECT_EQ(valueOf(channels.find("phone")->shown), 2);
+    EXPECT_EQ(channels.find("phone")->shownTags, hlg);
+}
+
 TEST(LiveChannels, AgeComesFromSentAt) {
     LiveChannels channels;
     // The receive time's fraction of a millisecond is dropped, not rounded.

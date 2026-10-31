@@ -1,6 +1,7 @@
 #pragma once
 
 #include "viewer_core/display_settings.h"
+#include "viewer_core/image_tags.h"
 
 #include <opencv2/core/mat.hpp>
 
@@ -25,12 +26,24 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings);
 // and a NaN or infinity stays one dark pixel among its neighbours instead of blackening its whole block.
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, cv::Size size);
 
+// How to draw an image beyond its settings: at what size (empty: its own), and what its sender said about it.
+struct DisplayOptions {
+    cv::Size size{};
+    ImageTags tags{};
+    bool showClipping = false;
+};
+
+// The one the others call. With a value-range hint in the tags, Auto maps the hint as Fixed maps its range,
+// 8U included; Hold and Fixed keep their own range.
+cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, const DisplayOptions& options);
+
 // The largest size of the image's shape within `bounds`, never larger than the image, each side at least 1.
 cv::Size sizeWithin(cv::Size image, cv::Size bounds);
 
-// The range Auto uses for this image: 0-255 for 8U, otherwise the minimum and maximum of its finite values
-// across all channels. Throws std::invalid_argument for an image toDisplayImage cannot show.
-DisplayRange autoRange(const cv::Mat& image);
+// The range Auto uses for this image: the tags' value-range hint when they have one; otherwise 0-255 for 8U
+// and the minimum and maximum of its finite values across all channels for other depths. Throws
+// std::invalid_argument for an image toDisplayImage cannot show.
+DisplayRange autoRange(const cv::Mat& image, const ImageTags& tags = {});
 
 // The bytes toDisplayImage's result takes for this image, known without converting it.
 std::size_t displayBytes(const cv::Mat& image);

@@ -1,5 +1,6 @@
 #include "viewer_core/display_converter.h"
 #include "viewer_core/display_settings.h"
+#include "viewer_core/image_tags.h"
 
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
@@ -123,6 +124,91 @@ TEST(DisplaySettings, StoreRemembersPerName) {
     EXPECT_EQ(store.get("a"), turbo);
     EXPECT_EQ(store.get("b"), fixed);
     store.set("a", DisplaySettings{});
+    EXPECT_EQ(store.get("a"), DisplaySettings{});
+}
+
+// --- The sender's value-range hint -------------------------------------------------------------------------
+
+// Auto maps the hint, not the image's own minimum and maximum (4096 and 32768, which would give 0 and 255).
+TEST(DisplaySettings, AutoUsesTheValueRangeHint) {
+    const cv::Mat image = row(CV_16UC1, {4096, 16384, 32768});
+
+    const cv::Mat display = viewer_core::toDisplayImage(image, {}, {.tags = {.valueRange = {0, 65535}}});
+
+    EXPECT_EQ(greyAt(display, 0), 16);
+    EXPECT_EQ(greyAt(display, 1), 64);
+    EXPECT_EQ(greyAt(display, 2), 128);
+}
+
+// For 8U too: video-range 16-235 stretched to black and white.
+TEST(DisplaySettings, EightBitAutoUsesTheHintToo) {
+    const cv::Mat display =
+        viewer_core::toDisplayImage(row(CV_8UC1, {16, 235}), {}, {.tags = {.valueRange = {16, 235}}});
+
+    EXPECT_EQ(greyAt(display, 0), 0);
+    EXPECT_EQ(greyAt(display, 1), 255);
+}
+
+TEST(DisplaySettings, HoldCapturesTheHint) {
+    const cv::Mat image = row(CV_16UC1, {5, 700});
+
+    EXPECT_EQ(viewer_core::autoRange(image, {.valueRange = {0, 1023}}), (DisplayRange{0, 1023}));
+    EXPECT_EQ(viewer_core::autoRange(image), (DisplayRange{5, 700}));
+}
+
+TEST(DisplaySettings, ValuesBeyondTheHintAreClipped) {
+    const cv::Mat display =
+        viewer_core::toDisplayImage(row(CV_16UC1, {0, 2000}), {}, {.tags = {.valueRange = {0, 1023}}});
+
+    EXPECT_EQ(greyAt(display, 1), 255);
+}
+
+TEST(DisplaySettings, FloatHintZeroToOne) {
+    const cv::Mat display =
+        viewer_core::toDisplayImage(row(CV_32FC1, {0.25, 0.5, 0.75}), {}, {.tags = {.valueRange = {0, 1}}});
+
+    EXPECT_NEAR(greyAt(display, 0), 64, 1);
+    EXPECT_NEAR(greyAt(display, 1), 128, 1);
+    EXPECT_NEAR(greyAt(display, 2), 191, 1);
+}
+
+// Fixed keeps its own range; the hint is what Auto shows and Hold starts from.
+TEST(DisplaySettings, FixedIgnoresTheHint) {
+    const DisplaySettings fixed{.mode = RangeMode::Fixed, .range = {100, 200}};
+
+    const cv::Mat display =
+        viewer_core::toDisplayImage(row(CV_16UC1, {100, 200}), fixed, {.tags = {.valueRange = {0, 65535}}});
+
+    EXPECT_EQ(greyAt(display, 0), 0);
+    EXPECT_EQ(greyAt(display, 1), 255);
+}
+
+TEST(ImageTags, HaveAValueRangeOnlyWhenItIncreases) {
+    using viewer_core::ImageTags;
+    using viewer_core::Transfer;
+
+    EXPECT_FALSE(ImageTags{}.hasValueRange());
+    EXPECT_FALSE((ImageTags{.valueRange = {1, 1}}).hasValueRange());
+    EXPECT_FALSE((ImageTags{.valueRange = {2, 1}}).hasValueRange());
+    EXPECT_TRUE((ImageTags{.valueRange = {0, 1}}).hasValueRange());
+
+    EXPECT_FALSE(ImageTags{}.isHdr());
+    EXPECT_FALSE((ImageTags{.transfer = Transfer::Sdr}).isHdr());
+    EXPECT_TRUE((ImageTags{.transfer = Transfer::Hlg}).isHdr());
+    EXPECT_TRUE((ImageTags{.transfer = Transfer::Pq}).isHdr());
+}
+
+// A setting chosen by hand is kept even when it equals the default, so it can win over a default that depends
+// on the image (an HDR image's).
+TEST(DisplaySettingsStore, KeepsAnExplicitDefault) {
+    viewer_core::DisplaySettingsStore store;
+    EXPECT_FALSE(store.find("a").has_value());
+
+    store.set("a", DisplaySettings{});
+
+    EXPECT_EQ(store.find("a"), DisplaySettings{});
+    store.forget("a");
+    EXPECT_FALSE(store.find("a").has_value());
     EXPECT_EQ(store.get("a"), DisplaySettings{});
 }
 

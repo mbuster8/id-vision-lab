@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <string>
 
 namespace viewer_core {
@@ -25,11 +26,15 @@ struct DisplaySettings {
     bool operator==(const DisplaySettings&) const = default;
 };
 
-// The settings of each image or live channel, by name, for the session only: nothing is saved.
+// The settings of each image or live channel, by name, for the session only: nothing is saved. Every setting
+// given is kept, the default included, so a choice made by hand wins over a default that depends on the
+// image.
 class DisplaySettingsStore {
 public:
     DisplaySettings get(const std::string& name) const;                 // the default when never set
-    void set(const std::string& name, const DisplaySettings& settings); // the default forgets the name
+    std::optional<DisplaySettings> find(const std::string& name) const; // nothing when never set
+    void set(const std::string& name, const DisplaySettings& settings);
+    void forget(const std::string& name);
 
 private:
     std::map<std::string, DisplaySettings> m_settings;

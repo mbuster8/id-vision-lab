@@ -52,10 +52,12 @@ LiveChannels::ReceiveResult LiveChannels::receive(LiveFrameIn frame, SteadyTime 
         channel.newest = std::move(frame.image);
         timing.newestReceivedAt = frame.receivedAt;
         timing.newestSentAt = frame.sentAt;
+        timing.newestTags = frame.tags;
     } else {
         channel.shown = std::move(frame.image);
         channel.shownReceivedAt = frame.receivedAt;
         channel.shownSentAt = frame.sentAt;
+        channel.shownTags = frame.tags;
         result.shownChanged = true;
     }
     return result;
@@ -95,6 +97,7 @@ bool LiveChannels::setFrozen(const std::string& name, bool frozen) {
     channel.newest = cv::Mat();
     channel.shownReceivedAt = timing.newestReceivedAt;
     channel.shownSentAt = timing.newestSentAt;
+    channel.shownTags = timing.newestTags;
     return true;
 }
 
