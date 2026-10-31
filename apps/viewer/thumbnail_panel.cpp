@@ -120,6 +120,12 @@ void ThumbnailPanel::setShownFields(SidebarFields fields) {
 
 SidebarFields ThumbnailPanel::shownFields() const { return m_model->shownFields(); }
 
+void ThumbnailPanel::setThumbnailMaker(ThumbnailModel::ThumbnailMaker maker) {
+    m_model->setThumbnailMaker(std::move(maker));
+}
+
+void ThumbnailPanel::refreshThumbnails(const QString& name) { m_model->refreshThumbnails(name); }
+
 Qt::SortOrder ThumbnailPanel::naturalOrder(SidebarSort key) {
     return key == SidebarSort::Name ? Qt::AscendingOrder : Qt::DescendingOrder;
 }

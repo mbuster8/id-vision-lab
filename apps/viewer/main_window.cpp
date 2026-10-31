@@ -308,6 +308,8 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(livePanel, &LiveChannelPanel::muteRequested, this,
             [this](const QString& name, bool muted) { setLiveMuted(name.toStdString(), muted); });
     connect(m_thumbnails, &ThumbnailPanel::imageSelected, this, &MainWindow::showImage);
+    m_thumbnails->setThumbnailMaker(
+        [this](viewer_core::ImageId id, QSize deviceSize) { return thumbnailPicture(id, deviceSize); });
     connect(m_thumbnails, &ThumbnailPanel::actionRequested, this,
             [this](viewer_core::ImageId id, ThumbnailAction action) {
                 switch (action) {
@@ -520,6 +522,7 @@ MainWindow::~MainWindow() {
     disconnect(qApp, &QApplication::focusChanged, this, nullptr);
     m_sidebar->liveChannels()->disconnect(this);
     m_thumbnails->disconnect(this);
+    m_thumbnails->setThumbnailMaker({}); // it reads the history
     m_infoBar->disconnect(this);
     m_imageView->disconnect(this);
     m_storage.reset();
@@ -725,11 +728,13 @@ QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry) const {
                                    : viewer_core::toDisplayImage(entry.original, settings));
 }
 
-// For the shown image's name, so every image of that name, and later arrivals, look the same.
+// For the shown image's name, so every image of that name, and later arrivals, look the same: in the view
+// and in the thumbnails, which a still sharing a live channel's name has too.
 void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& settings) {
     if (m_liveChannel) {
         m_displaySettings.set(*m_liveChannel, settings);
         m_rowPictures.erase(*m_liveChannel); // drawn with the old settings
+        m_thumbnails->refreshThumbnails(QString::fromStdString(*m_liveChannel));
         drawLiveFrame(ImageView::KeepView::IfSameSize);
         return;
     }
@@ -738,7 +743,23 @@ void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& setti
         return;
     }
     m_displaySettings.set(entry->name, settings);
+    m_thumbnails->refreshThumbnails(QString::fromStdString(entry->name));
     m_imageView->setImage(shownPicture(*entry), ImageView::KeepView::IfSameSize);
+}
+
+// A thumbnail with its name's display settings, made at its own size; nothing for the default ones, whose
+// picture the history already holds.
+cv::Mat MainWindow::thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) const {
+    const auto* entry = m_history.find(id);
+    if (entry == nullptr) {
+        return {};
+    }
+    const viewer_core::DisplaySettings settings = m_displaySettings.get(entry->name);
+    if (settings == viewer_core::DisplaySettings{}) {
+        return {};
+    }
+    return viewer_core::toDisplayImage(entry->original, settings,
+                                       cv::Size(deviceSize.width(), deviceSize.height()));
 }
 
 // --- Live channels ----------------------------------------------------------------------------------------

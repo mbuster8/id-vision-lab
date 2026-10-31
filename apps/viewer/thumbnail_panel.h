@@ -56,6 +56,10 @@ public:
     void setShownFields(SidebarFields fields); // an empty set is ignored
     SidebarFields shownFields() const;         // all three by default
 
+    // As ThumbnailModel's: who makes the pictures, and the name whose thumbnails to make again.
+    void setThumbnailMaker(ThumbnailModel::ThumbnailMaker maker);
+    void refreshThumbnails(const QString& name);
+
     // In viewport coordinates; empty when the id is not listed. thumbnailRect is the picture as drawn.
     QRect cellRect(viewer_core::ImageId id) const;
     QRect thumbnailRect(viewer_core::ImageId id) const;

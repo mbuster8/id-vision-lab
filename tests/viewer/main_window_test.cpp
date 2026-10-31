@@ -936,8 +936,8 @@ int thumbnailGrey(MainWindow& window, ImageId id) {
     return thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2).red();
 }
 
-// The view, Copy Image and Save As show the range; the thumbnail keeps the stored picture.
-TEST(MainWindowTest, RangeChangesTheViewAndCopyButNotTheThumbnail) {
+// (F5) The view, Copy Image, Save As and the thumbnail all show the range.
+TEST(MainWindowTest, RangeChangesTheViewCopyAndTheThumbnail) {
     const auto window = makeTestWindow();
     window->resize(800, 600);
     window->show();
@@ -951,8 +951,51 @@ TEST(MainWindowTest, RangeChangesTheViewAndCopyButNotTheThumbnail) {
     EXPECT_EQ(viewedGrey(*window), 255);
     window->copyImage(1);
     EXPECT_EQ(QGuiApplication::clipboard()->image().pixelColor(20, 20).red(), 255);
-    EXPECT_EQ(thumbnailGrey(*window, 1), 100);
+    EXPECT_EQ(thumbnailGrey(*window, 1), 255);
     EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Fixed ▾"));
+}
+
+// A 16-bit left-to-right ramp, so a colour map shows as colour.
+cv::Mat ramp() {
+    cv::Mat image(30, 40, CV_16UC1);
+    for (int x = 0; x < image.cols; ++x) {
+        image.col(x).setTo(x * 1000);
+    }
+    return image;
+}
+
+// Whether the middle of a thumbnail is coloured, not grey.
+bool thumbnailIsColoured(MainWindow& window, ImageId id) {
+    const auto* model = panelOf(window)->findChild<ThumbnailModel*>();
+    const QImage thumbnail = model->thumbnail(id, QSize(40, 30)).toImage();
+    const QColor middle = thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+    return middle.red() != middle.green() || middle.green() != middle.blue();
+}
+
+void chooseColours(MainWindow& window, int entry) { // 0 Grey, 1 Turbo, 2 Viridis
+    imageSubmenu(window, QStringLiteral("Colours"))->actions().at(entry)->trigger();
+}
+
+// (F5) Every thumbnail of a name shows its colours, redrawn when they change.
+TEST(MainWindowTest, ThumbnailFollowsTheDisplaySettings) {
+    const auto window = makeTestWindow();
+    window->addImage("g", ramp());
+    ASSERT_FALSE(thumbnailIsColoured(*window, 1));
+
+    chooseColours(*window, 1);
+    EXPECT_TRUE(thumbnailIsColoured(*window, 1));
+    chooseColours(*window, 0);
+    EXPECT_FALSE(thumbnailIsColoured(*window, 1));
+}
+
+TEST(MainWindowTest, LaterArrivalOfTheNameGetsItsSettings) {
+    const auto window = makeTestWindow();
+    window->addImage("g", ramp());
+    chooseColours(*window, 1);
+
+    window->addImage("g", ramp());
+
+    EXPECT_TRUE(thumbnailIsColoured(*window, 2));
 }
 
 TEST(MainWindowTest, SettingsFollowTheName) {
@@ -2015,6 +2058,19 @@ TEST(MainWindowTest, ArrowKeysStillStepAfterPanning) {
 
     EXPECT_TRUE(window->shownImageId().has_value());
     EXPECT_EQ(window->shownLiveChannel(), std::nullopt);
+}
+
+// (F5) A snapshot's thumbnail looks as the channel did when it was taken.
+TEST(MainWindowTest, SnapshotThumbnailHasTheChannelsColours) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "edges", ramp());
+    QApplication::processEvents();
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+    chooseColours(*window, 1);
+
+    action(*window, "actionSnapshot")->trigger();
+
+    EXPECT_TRUE(thumbnailIsColoured(*window, 1));
 }
 
 // --- Live frames at the size they are drawn (F10) ---------------------------------------------------------
