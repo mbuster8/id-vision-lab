@@ -201,6 +201,44 @@ TEST(DisplayConverter, WideFixedRangeStillMapsLinearly) {
     EXPECT_EQ(display.at<cv::Vec4b>(0, 2)[0], 255);
 }
 
+// (R6) Doubles beyond a float's range map linearly too, Auto and Fixed alike. Wide enough for OpenCV's vector
+// code, which would read them as floats, so infinity.
+TEST(DisplayConverter, DoublesBeyondFloatRangeMapLinearly) {
+    cv::Mat image(1, 64, CV_64FC1, cv::Scalar(0.0));
+    image.at<double>(0, 1) = 5e38;
+    image.at<double>(0, 2) = 1e39;
+    image.at<double>(0, 3) = -1e39;
+
+    const cv::Mat automatic = toDisplayImage(image);
+    EXPECT_NEAR(automatic.at<cv::Vec4b>(0, 1)[0], 191, 1); // -1e39 to 1e39: 5e38 is three quarters
+    EXPECT_EQ(automatic.at<cv::Vec4b>(0, 2)[0], 255);
+
+    const cv::Mat fixed =
+        toDisplayImage(image, DisplaySettings{.mode = RangeMode::Fixed, .range = {0.0, 1e39}});
+    EXPECT_NEAR(fixed.at<cv::Vec4b>(0, 1)[0], 128, 1);
+    EXPECT_EQ(fixed.at<cv::Vec4b>(0, 2)[0], 255);
+    EXPECT_EQ(fixed.at<cv::Vec4b>(0, 3)[0], 0); // clipped below the range
+}
+
+// A long thin image is averaged along its long side too, though its short side is shorter than the shrink:
+// every fourth column white shrinks to an even grey, not to stripes.
+TEST(DisplayConverter, DrawnSizeAveragesThinImages) {
+    cv::Mat image(2, 10000, CV_8UC1, cv::Scalar(0));
+    for (int col = 0; col < image.cols; col += 4) {
+        image.col(col).setTo(255);
+    }
+
+    const cv::Mat drawn = toDisplayImage(image, DisplaySettings{}, cv::Size(800, 1));
+
+    cv::Mat red;
+    cv::extractChannel(drawn, red, 0);
+    double darkest = 0.0;
+    double brightest = 0.0;
+    cv::minMaxLoc(red, &darkest, &brightest);
+    EXPECT_NEAR(darkest, 255.0 / 4, 2.0);
+    EXPECT_NEAR(brightest, 255.0 / 4, 2.0);
+}
+
 TEST(SizeWithin, KeepsTheAspect) {
     EXPECT_EQ(sizeWithin({4000, 3000}, {1024, 1024}), cv::Size(1024, 768));
     EXPECT_EQ(sizeWithin({3000, 4000}, {1024, 1024}), cv::Size(768, 1024));

@@ -62,13 +62,17 @@ cv::Mat toEightBit(const Plane& plane, const DisplayRange& range, int channels) 
     const double halfSpan = range.max / 2.0 - range.min / 2.0;
     if (halfSpan > 0.0) {
         const double scale = 127.5 / halfSpan;
-        // Straight to 8 bits, OpenCV scales in single precision, where a scale outside float's range would
-        // become 0 or infinity: such a scale goes through double precision first.
-        if (scale >= std::numeric_limits<float>::min() && scale <= std::numeric_limits<float>::max()) {
+        // Straight to 8 bits, OpenCV works in single precision: a double beyond float's range becomes
+        // infinity, and so does a scale beyond it. Doubles, and such scales, are scaled in double precision
+        // first and clipped there, so only 0 to 255 reaches the conversion.
+        if (plane.values.depth() != CV_64F && scale >= std::numeric_limits<float>::min() &&
+            scale <= std::numeric_limits<float>::max()) {
             plane.values.convertTo(result, CV_8U, scale, -range.min * scale);
         } else {
             cv::Mat scaled;
             plane.values.convertTo(scaled, CV_64F, scale, -range.min * scale);
+            cv::max(scaled, 0.0, scaled);
+            cv::min(scaled, 255.0, scaled);
             scaled.convertTo(result, CV_8U);
         }
     } else {
@@ -124,17 +128,19 @@ cv::Mat colourMapped(cv::Mat eightBit, ColourMap colours, const cv::Mat& finiteS
     return display;
 }
 
-// Area averaging by the largest whole factor, which OpenCV does fast, then linear for the rest, under 2,
-// where linear loses nothing. Area averaging at any other factor costs about 50 times as much: 37 ms for a 4K
-// frame on one core, measured on an M4. The fast path needs the factor exact, so the last few columns and
-// rows that do not make a whole block, under one pixel of the result, are left out.
+// Area averaging by the largest whole factor across and down, which OpenCV does fast, then linear for the
+// rest, under 2, where linear loses nothing. Area averaging at any other factor costs about 50 times as much:
+// 37 ms for a 4K frame on one core, measured on an M4. The fast path needs the factors exact, so the last few
+// columns and rows that do not make a whole block, under one pixel of the result, are left out. Each side has
+// its own factor, so a long thin image is averaged along its length however short its other side.
 cv::Mat shrunk(const cv::Mat& image, cv::Size size) {
-    const int factor = std::max(1, std::min(image.cols / size.width, image.rows / size.height));
+    const int across = std::max(1, image.cols / size.width);
+    const int down = std::max(1, image.rows / size.height);
     cv::Mat averaged = image;
-    if (factor > 1) {
-        const cv::Size blocks(image.cols / factor, image.rows / factor);
-        cv::resize(image(cv::Rect(0, 0, blocks.width * factor, blocks.height * factor)), averaged, blocks, 0,
-                   0, cv::INTER_AREA);
+    if (across > 1 || down > 1) {
+        const cv::Size blocks(image.cols / across, image.rows / down);
+        cv::resize(image(cv::Rect(0, 0, blocks.width * across, blocks.height * down)), averaged, blocks, 0, 0,
+                   cv::INTER_AREA);
     }
     if (averaged.size() == size) {
         return averaged;
