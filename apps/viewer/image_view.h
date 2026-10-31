@@ -21,12 +21,20 @@ public:
     explicit ImageView(QWidget* parent = nullptr);
 
     void setImage(const QImage& image, KeepView keep = KeepView::No);
+    // A picture standing for an image of imageSize pixels, made smaller to be drawn at the view's scale:
+    // zoom, pan and the pixel readout use imageSize, and the picture is stretched over it.
+    void setImage(const QImage& picture, KeepView keep, QSize imageSize);
     void clear();
     bool hasImage() const;
+    // Device pixels per image pixel that a picture of an image this size, set with `keep`, will be drawn at;
+    // 1 while the view has no size yet.
+    double deviceScaleFor(QSize imageSize, KeepView keep) const;
+    QSize pictureSize() const;
 
 signals:
     void pixelHovered(int x, int y);
     void hoverLeft();
+    void scaleChanged(); // after a zoom, a fit or a resize; never for a new picture
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -42,6 +50,7 @@ private:
     void reportPixelAt(QPointF viewPoint);
 
     QImage m_image;
+    QSize m_imageSize; // what m_image stands for; its own size unless it was made smaller
     viewer_core::Viewport m_viewport;
     std::optional<QPointF> m_lastDragPosition;
     std::optional<QPointF> m_hoverPosition; // while the cursor is over the view

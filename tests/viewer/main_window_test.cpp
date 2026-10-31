@@ -59,6 +59,7 @@
 #include <opencv2/core.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <thread>
@@ -2014,6 +2015,83 @@ TEST(MainWindowTest, ArrowKeysStillStepAfterPanning) {
 
     EXPECT_TRUE(window->shownImageId().has_value());
     EXPECT_EQ(window->shownLiveChannel(), std::nullopt);
+}
+
+// --- Live frames at the size they are drawn (F10) ---------------------------------------------------------
+
+cv::Mat fourK() { return cv::Mat(3000, 4000, CV_8UC3, cv::Scalar(10, 20, 30)); }
+
+// A frame larger than the view is converted at the size it is drawn, not in full; the readout still names the
+// frame's own pixels.
+TEST(MainWindowTest, LiveFrameIsConvertedAtTheDrawnSize) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+
+    const QSize picture = view->pictureSize();
+    EXPECT_LT(picture.width(), 4000);
+    EXPECT_LE(picture.width(), static_cast<int>(std::ceil(view->width() * view->devicePixelRatioF())) + 1);
+    QSignalSpy hovered(view, &ImageView::pixelHovered);
+    moveMouseOver(*view, QRectF(view->rect()).center());
+    ASSERT_EQ(hovered.size(), 1);
+    EXPECT_NEAR(hovered.last().at(0).toInt(), 2000, 20);
+    EXPECT_NEAR(hovered.last().at(1).toInt(), 1500, 20);
+}
+
+// Copy Image and Snapshot take the whole frame, whatever size it is drawn at.
+TEST(MainWindowTest, CopyAndSnapshotTakeTheWholeFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    QGuiApplication::clipboard()->clear();
+
+    action(*window, "actionCopyImage")->trigger();
+    action(*window, "actionSnapshot")->trigger();
+
+    EXPECT_EQ(QGuiApplication::clipboard()->image().size(), QSize(4000, 3000));
+    const auto* model = panelOf(*window)->findChild<ThumbnailModel*>();
+    ASSERT_EQ(model->rowCount(), 1);
+    EXPECT_EQ(model->index(0).data(ThumbnailModel::ImageSizeRole).toSize(), QSize(4000, 3000));
+}
+
+// Zoomed in to 1:1 or closer, the whole frame is converted, so every pixel shows.
+TEST(MainWindowTest, ZoomingInDrawsTheWholeFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    action(*window, "actionFreeze")->trigger();
+    auto* view = window->findChild<ImageView*>();
+
+    for (int i = 0; i < 20 && view->pictureSize() != QSize(4000, 3000); ++i) {
+        zoomIn(*view, QRectF(view->rect()).center());
+    }
+
+    EXPECT_EQ(view->pictureSize(), QSize(4000, 3000));
+}
+
+// A resize redraws even a frozen frame at its new size, without counting it as a frame drawn.
+TEST(MainWindowTest, ResizingRedrawsAFrozenFrame) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    feedLive(window, "camera", fourK());
+    QApplication::processEvents();
+    action(window, "actionFreeze")->trigger();
+    window.tick(clocked.now);
+    auto* view = window.findChild<ImageView*>();
+    const QSize before = view->pictureSize();
+    const QString details = infoDetails(window);
+
+    window.resize(1600, 1200);
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_GT(view->pictureSize().width(), before.width());
+    EXPECT_EQ(infoDetails(window), details); // the same frames drawn
 }
 
 // --- The arrow keys across live rows and history (F8) -----------------------------------------------------

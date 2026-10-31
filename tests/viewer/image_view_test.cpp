@@ -103,6 +103,52 @@ TEST_F(ImageViewTest, KeepViewRefitsANewSize) {
     EXPECT_EQ(hovered.last().at(1).toInt(), 200);
 }
 
+// (F10) A picture made smaller than the image it stands for: zoom, pan and the readout use the image's size.
+TEST_F(ImageViewTest, PictureStandsForTheImageSize) {
+    m_view.setImage(filledImage(100, 75), ImageView::KeepView::No, QSize(400, 300));
+    QSignalSpy hovered(&m_view, &ImageView::pixelHovered);
+
+    sendMouseEvent(m_view, QEvent::MouseMove, {100, 100}, Qt::NoButton); // the centre of the fitted image
+
+    ASSERT_EQ(hovered.size(), 1);
+    EXPECT_NEAR(hovered.last().at(0).toInt(), 200, 2);
+    EXPECT_NEAR(hovered.last().at(1).toInt(), 150, 2);
+    EXPECT_EQ(m_view.pictureSize(), QSize(100, 75));
+}
+
+// The scale the next picture will be drawn at, so the window can make it at that size.
+TEST_F(ImageViewTest, DeviceScaleForTellsTheScaleToCome) {
+    const double ratio = m_view.devicePixelRatioF();
+    EXPECT_DOUBLE_EQ(m_view.deviceScaleFor(QSize(100, 100), ImageView::KeepView::IfSameSize), 2.0 * ratio);
+    EXPECT_DOUBLE_EQ(m_view.deviceScaleFor(QSize(400, 400), ImageView::KeepView::IfSameSize), 0.5 * ratio);
+
+    sendWheelEvent(m_view, {100, 100}, 4 * 120);
+
+    EXPECT_GT(m_view.deviceScaleFor(QSize(100, 100), ImageView::KeepView::IfSameSize), 2.0 * ratio);
+    EXPECT_DOUBLE_EQ(m_view.deviceScaleFor(QSize(100, 100), ImageView::KeepView::No), 2.0 * ratio);
+}
+
+// Before the view has a size there is no scale to make a picture for: the full size is asked for.
+TEST(ImageViewWithoutSize, DeviceScaleForIsOneBeforeTheViewIsShown) {
+    ImageView view;
+    EXPECT_DOUBLE_EQ(view.deviceScaleFor(QSize(4000, 3000), ImageView::KeepView::No), 1.0);
+}
+
+// The window redraws a live frame when the scale changes: on a zoom, a fit or a resize, never on a new
+// picture.
+TEST_F(ImageViewTest, ScaleChangesOnZoomFitAndResizeOnly) {
+    QSignalSpy changed(&m_view, &ImageView::scaleChanged);
+
+    m_view.setImage(filledImage(100, 100), ImageView::KeepView::IfSameSize);
+    EXPECT_EQ(changed.size(), 0);
+    sendWheelEvent(m_view, {100, 100}, 120);
+    EXPECT_EQ(changed.size(), 1);
+    sendMouseEvent(m_view, QEvent::MouseButtonDblClick, {100, 100}, Qt::LeftButton);
+    EXPECT_EQ(changed.size(), 2);
+    m_view.resize(300, 300);
+    EXPECT_EQ(changed.size(), 3);
+}
+
 // The view's pixel at (x, y) in widget coordinates.
 QColor pixelOf(ImageView& view, int x, int y) {
     const QImage grabbed = view.grab().toImage();

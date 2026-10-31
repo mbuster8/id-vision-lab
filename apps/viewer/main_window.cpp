@@ -55,6 +55,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <iterator>
@@ -330,6 +331,9 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(m_infoBar, &ImageInfoBar::renameRequested, this, &MainWindow::renameImage);
     connect(m_imageView, &ImageView::pixelHovered, this, &MainWindow::showPixel);
     connect(m_imageView, &ImageView::hoverLeft, m_pixelLabel, &QLabel::clear);
+    // A live frame was converted for the old scale; a frozen one would otherwise stay blurred or coarse.
+    connect(m_imageView, &ImageView::scaleChanged, this,
+            [this] { paintLiveFrame(ImageView::KeepView::IfSameSize); });
     updateEditActions();
 
     switch (dataProblem) {
@@ -839,16 +843,32 @@ void MainWindow::showLiveChannel(const std::string& name) {
     updateEditActions();
 }
 
-// Without a copy: the view holds the converted frame until the next one replaces it.
 void MainWindow::drawLiveFrame(ImageView::KeepView keep) {
+    if (paintLiveFrame(keep)) {
+        m_live.markDrawn(*m_liveChannel, m_clock());
+    }
+}
+
+// Converted at the size it will be drawn when that is smaller than the frame: a 4K frame in a window costs no
+// more than the window's pixels. At 1:1 or closer, the whole frame. Without a copy: the view holds the
+// converted frame until the next one replaces it.
+bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
-        return;
+        return false;
     }
+    const cv::Mat& frame = channel->shown;
+    const QSize frameSize(frame.cols, frame.rows);
+    const double scale = m_imageView->deviceScaleFor(frameSize, keep);
+    const cv::Size drawn =
+        scale < 1.0
+            ? viewer_core::sizeWithin(frame.size(), cv::Size(static_cast<int>(std::ceil(frame.cols * scale)),
+                                                             static_cast<int>(std::ceil(frame.rows * scale))))
+            : frame.size();
     m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
-                              channel->shown, m_displaySettings.get(channel->name))),
-                          keep);
-    m_live.markDrawn(channel->name, m_clock());
+                              frame, m_displaySettings.get(channel->name), drawn)),
+                          keep, frameSize);
+    return true;
 }
 
 void MainWindow::showLiveText(Clock::time_point now) {
@@ -882,8 +902,8 @@ void MainWindow::tick(Clock::time_point now) {
     }
 }
 
-// The row's picture is the channel's newest frame, the one set aside while frozen included, shrunk before it
-// is converted: a 4K frame costs a row no more than a small one.
+// The row's picture is the channel's newest frame, the one set aside while frozen included, converted at the
+// row's size: a 4K frame costs a row no more than a small one.
 void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now) {
     auto& [madeAtFrame, picture] = m_rowPictures[channel.name];
     const cv::Mat& newest = channel.newest.empty() ? channel.shown : channel.newest;
@@ -891,17 +911,9 @@ void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::t
     if (!muted && (picture.isNull() || madeAtFrame != channel.received) && !newest.empty()) {
         const int height =
             std::max(1, static_cast<int>(std::lround(LiveChannelPanel::kRowHeight * devicePixelRatioF())));
-        cv::Mat small = newest;
-        if (newest.rows > height) {
-            const int width =
-                std::max(1, static_cast<int>(std::lround(double(newest.cols) * height / newest.rows)));
-            // OpenCV averages (INTER_AREA) every depth but 8S and 32S; those are sampled instead.
-            const bool averages = newest.depth() != CV_8S && newest.depth() != CV_32S;
-            cv::resize(newest, small, cv::Size(width, height), 0, 0,
-                       averages ? cv::INTER_AREA : cv::INTER_NEAREST);
-        }
-        picture =
-            qt_common::toQImage(viewer_core::toDisplayImage(small, m_displaySettings.get(channel.name)));
+        picture = qt_common::toQImage(viewer_core::toDisplayImage(
+            newest, m_displaySettings.get(channel.name),
+            viewer_core::sizeWithin(newest.size(), cv::Size(newest.cols, height))));
         madeAtFrame = channel.received;
     }
     m_sidebar->liveChannels()->updateChannel(

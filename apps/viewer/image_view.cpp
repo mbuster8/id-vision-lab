@@ -35,11 +35,14 @@ ImageView::ImageView(QWidget* parent) : QWidget(parent) {
     setMinimumSize(200, 200);
 }
 
-void ImageView::setImage(const QImage& image, KeepView keep) {
-    const bool sameSize = !m_image.isNull() && image.size() == m_image.size();
-    m_image = image;
+void ImageView::setImage(const QImage& image, KeepView keep) { setImage(image, keep, image.size()); }
+
+void ImageView::setImage(const QImage& picture, KeepView keep, QSize imageSize) {
+    const bool sameSize = !m_image.isNull() && imageSize == m_imageSize;
+    m_image = picture;
+    m_imageSize = imageSize;
     if (keep == KeepView::No || !sameSize) {
-        m_viewport.setImageSize({image.width(), image.height()});
+        m_viewport.setImageSize({imageSize.width(), imageSize.height()});
     }
     update();
     // A new image under a resting cursor: report its pixel, or the readout would show the old image's.
@@ -50,11 +53,28 @@ void ImageView::setImage(const QImage& image, KeepView keep) {
 
 void ImageView::clear() {
     m_image = QImage();
+    m_imageSize = QSize();
     m_viewport.setImageSize({0, 0});
     update();
 }
 
 bool ImageView::hasImage() const { return !m_image.isNull(); }
+
+double ImageView::deviceScaleFor(QSize imageSize, KeepView keep) const {
+    // The viewport learns the view's size from the first resize, which comes as the view is shown.
+    if (!isVisible() || width() <= 0 || height() <= 0 || imageSize.isEmpty()) {
+        return 1.0;
+    }
+    double scale = m_viewport.scale();
+    if (keep == KeepView::No || m_image.isNull() || imageSize != m_imageSize) {
+        viewer_core::Viewport fitted = m_viewport; // as setImage will fit it
+        fitted.setImageSize({imageSize.width(), imageSize.height()});
+        scale = fitted.scale();
+    }
+    return scale > 0.0 ? scale * devicePixelRatioF() : 1.0;
+}
+
+QSize ImageView::pictureSize() const { return m_image.size(); }
 
 void ImageView::paintEvent(QPaintEvent*) {
     QPainter painter(this);
@@ -73,14 +93,22 @@ void ImageView::paintEvent(QPaintEvent*) {
     // start at the image's corner, so they move with it when panning.
     painter.setBrushOrigin(toQt(m_viewport.imageToView({0.0, 0.0})));
     painter.fillRect(target, checkerboard(palette()));
-    // Smooth when shrinking; nearest-neighbour when enlarging, so individual pixels stay visible.
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, m_viewport.scale() < 1.0);
-    painter.drawImage(target, m_image, QRectF(source.x, source.y, source.width, source.height));
+    // The picture may be smaller than the image it stands for: its pixels per image pixel.
+    const double pictureScale = static_cast<double>(m_image.width()) / m_imageSize.width();
+    // Smooth when shrinking; nearest-neighbour when enlarging, so individual pixels stay visible. A picture
+    // made at the drawn size is copied about 1:1, where smoothing would only cost.
+    const double devicePerPicturePixel = m_viewport.scale() * devicePixelRatioF() / pictureScale;
+    painter.setRenderHint(QPainter::SmoothPixmapTransform,
+                          m_viewport.scale() < 1.0 && std::abs(devicePerPicturePixel - 1.0) > 0.01);
+    painter.drawImage(target, m_image,
+                      QRectF(source.x * pictureScale, source.y * pictureScale, source.width * pictureScale,
+                             source.height * pictureScale));
 }
 
 void ImageView::resizeEvent(QResizeEvent* event) {
     m_viewport.setViewSize({static_cast<double>(width()), static_cast<double>(height())});
     QWidget::resizeEvent(event);
+    emit scaleChanged();
 }
 
 void ImageView::wheelEvent(QWheelEvent* event) {
@@ -93,6 +121,7 @@ void ImageView::wheelEvent(QWheelEvent* event) {
     // Zoom keeps the point under the cursor, except where it stops at the fit and re-centres the image.
     reportPixelAt(event->position());
     event->accept();
+    emit scaleChanged();
 }
 
 void ImageView::mousePressEvent(QMouseEvent* event) {
@@ -124,6 +153,7 @@ void ImageView::mouseDoubleClickEvent(QMouseEvent* event) {
         m_viewport.fit();
         update();
         reportPixelAt(event->position()); // fitting moves the image under the cursor
+        emit scaleChanged();
     }
 }
 

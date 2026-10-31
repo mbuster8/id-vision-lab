@@ -120,8 +120,9 @@ private:
     void changeDisplaySettings(const viewer_core::DisplaySettings& settings);
     void takeLiveFrames();
     void showLiveChannel(const std::string& name);
-    void drawLiveFrame(ImageView::KeepView keep); // the shown channel's frame
-    void showLiveText(Clock::time_point now);     // the shown channel's info strip
+    void drawLiveFrame(ImageView::KeepView keep);  // the shown channel's frame, counted as drawn
+    bool paintLiveFrame(ImageView::KeepView keep); // the same, not counted: for a zoom or resize
+    void showLiveText(Clock::time_point now);      // the shown channel's info strip
     void updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now);
     void closeLiveChannel(const std::string& name); // the close button
     // Closed or evicted. A shown channel gives the view back to the image shown before it.
