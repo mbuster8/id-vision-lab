@@ -22,10 +22,12 @@ public:
     explicit DisplaySettingsControl(QWidget* parent = nullptr);
 
     // Called when the shown image or channel changes, never per frame. Quiet: emits nothing. Colours are
-    // offered for single-channel images only.
-    void setState(const viewer_core::DisplaySettings& settings, bool singleChannel);
-    // Per live frame, which may change its channel count: shows or hides Colours, and nothing else.
-    void setSingleChannel(bool singleChannel);
+    // offered for single-channel images only, and HDR for images tagged HLG or PQ (hdrAvailable). Settings
+    // that say HDR for an image without such a tag are shown as Auto, as the picture is.
+    void setState(const viewer_core::DisplaySettings& settings, bool singleChannel, bool hdrAvailable);
+    // Per live frame, which may change its channel count or its tags: shows or hides Colours and HDR, and
+    // nothing else.
+    void setFrameKind(bool singleChannel, bool hdrAvailable);
     // Asked for the current Auto range only when Hold or Fixed… is chosen, so new frames never disturb it.
     void setAutoRangeProvider(std::function<viewer_core::DisplayRange()> provider);
     QMenu* rangeMenu() const; // the Image menu shows the same actions
@@ -48,7 +50,8 @@ private:
     QToolButton* m_coloursButton;
     QMenu* m_rangeMenu;
     QMenu* m_coloursMenu;
-    std::array<QAction*, 3> m_rangeActions{};   // indexed by RangeMode
+    bool m_hdrAvailable = false;
+    std::array<QAction*, 4> m_rangeActions{};   // indexed by RangeMode
     std::array<QAction*, 3> m_coloursActions{}; // indexed by ColourMap
     FixedRangePopup* m_popup = nullptr;
 };

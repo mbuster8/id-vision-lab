@@ -198,6 +198,18 @@ TEST(ImageTags, HaveAValueRangeOnlyWhenItIncreases) {
     EXPECT_TRUE((ImageTags{.transfer = Transfer::Pq}).isHdr());
 }
 
+TEST(DisplaySettings, HdrIsTheDefaultForHdrTags) {
+    using viewer_core::ImageTags;
+    using viewer_core::Transfer;
+
+    EXPECT_EQ(viewer_core::defaultSettings({.transfer = Transfer::Hlg}),
+              (DisplaySettings{.mode = RangeMode::Hdr}));
+    EXPECT_EQ(viewer_core::defaultSettings({.transfer = Transfer::Pq}),
+              (DisplaySettings{.mode = RangeMode::Hdr}));
+    EXPECT_EQ(viewer_core::defaultSettings({.transfer = Transfer::Sdr}), DisplaySettings{});
+    EXPECT_EQ(viewer_core::defaultSettings(ImageTags{.valueRange = {0, 1023}}), DisplaySettings{});
+}
+
 // A setting chosen by hand is kept even when it equals the default, so it can win over a default that depends
 // on the image (an HDR image's).
 TEST(DisplaySettingsStore, KeepsAnExplicitDefault) {

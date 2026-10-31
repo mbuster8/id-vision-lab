@@ -719,7 +719,7 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     m_lastHistoryId = id;
     m_imageView->setImage(shownPicture(*entry));
     m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
-                                          entry->original.channels() == 1);
+                                          entry->original.channels() == 1, entry->origin.tags.isHdr());
     showImageText(*entry);
     updateEditActions();
 }
@@ -878,7 +878,7 @@ void MainWindow::showLiveChannel(const std::string& name) {
     m_thumbnails->clearChoice();
     m_sidebar->liveChannels()->setSelected(QString::fromStdString(name));
     m_infoBar->displayControl()->setState(settingsFor(name, channel->shownTags),
-                                          channel->shown.channels() == 1);
+                                          channel->shown.channels() == 1, channel->shownTags.isHdr());
     m_ui->actionFreeze->setChecked(channel->frozen); // each channel is frozen or not by itself
     m_pixelLabel->clear();
     drawLiveFrame(ImageView::KeepView::No);
@@ -902,7 +902,8 @@ bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
         return false;
     }
     const cv::Mat& frame = channel->shown;
-    m_infoBar->displayControl()->setSingleChannel(frame.channels() == 1); // frames may change their count
+    // Frames may change their channel count, or their tags.
+    m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
     m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
                               frame, settingsFor(channel->name, channel->shownTags),
                               {.size = liveDrawnSize(frame, keep), .tags = channel->shownTags})),

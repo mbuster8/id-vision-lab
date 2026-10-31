@@ -2101,6 +2101,56 @@ TEST(MainWindowTest, KeptImagesKeepTheirTags) {
         << infoDetails(*window).toStdString();
 }
 
+QAction* rangeEntry(MainWindow& window, const QString& title) {
+    return entryTitled(imageSubmenu(window, QStringLiteral("Range")), title);
+}
+
+TEST(MainWindowTest, HlgStillShowsInHdrByDefault) {
+    const auto window = makeTestWindow();
+
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: HDR ▾"));
+    EXPECT_TRUE(rangeEntry(*window, QStringLiteral("HDR"))->isVisible());
+}
+
+// Auto chosen by hand on an HDR image is kept for the name, though Auto is not its default.
+TEST(MainWindowTest, ExplicitAutoOnAnHdrNameIsKept) {
+    const auto window = makeTestWindow();
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+
+    rangeEntry(*window, QStringLiteral("Auto"))->trigger();
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(8192)), kHlgDescription);
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Auto ▾"));
+}
+
+// An untagged image of a name set to HDR cannot be tone-mapped: it is shown, and named, as Auto.
+TEST(MainWindowTest, HdrRangeOnlyForTaggedImages) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+    rangeEntry(*window, QStringLiteral("HDR"))->trigger();
+
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(16384)),
+              {.valueRange = {0, 65535}});
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Auto ▾"));
+    EXPECT_FALSE(rangeEntry(*window, QStringLiteral("HDR"))->isVisible());
+    EXPECT_EQ(viewedGrey(*window), 64); // Auto with the hint
+}
+
+TEST(MainWindowTest, HlgLiveFrameShowsInHdrByDefault) {
+    const auto window = makeTestWindow();
+
+    feedLive(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("phone"));
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: HDR ▾"));
+}
+
 TEST(MainWindowTest, FreezeStopsRedrawsWhileCounting) {
     ClockedWindow clocked;
     MainWindow& window = *clocked.window;

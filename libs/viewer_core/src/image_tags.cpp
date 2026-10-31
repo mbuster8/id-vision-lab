@@ -10,7 +10,10 @@ bool ImageTags::hasValueRange() const {
 
 bool ImageTags::isHdr() const { return transfer == Transfer::Hlg || transfer == Transfer::Pq; }
 
-// Auto for every image: with a value-range hint, Auto shows the hint.
-DisplaySettings defaultSettings(const ImageTags& /*tags*/) { return DisplaySettings{}; }
+// HDR for an HLG or PQ image, which shown raw looks flat or dark; Auto for any other, which with a
+// value-range hint shows the hint.
+DisplaySettings defaultSettings(const ImageTags& tags) {
+    return tags.isHdr() ? DisplaySettings{.mode = RangeMode::Hdr} : DisplaySettings{};
+}
 
 } // namespace viewer_core

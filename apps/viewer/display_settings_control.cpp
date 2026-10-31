@@ -154,7 +154,7 @@ DisplaySettingsControl::DisplaySettingsControl(QWidget* parent)
     : QWidget(parent), m_rangeButton(new QToolButton), m_coloursButton(new QToolButton),
       m_rangeMenu(new QMenu(tr("Range"), this)), m_coloursMenu(new QMenu(tr("Colours"), this)) {
     auto* ranges = new QActionGroup(this);
-    for (const RangeMode mode : {RangeMode::Auto, RangeMode::Hold, RangeMode::Fixed}) {
+    for (const RangeMode mode : {RangeMode::Auto, RangeMode::Hold, RangeMode::Fixed, RangeMode::Hdr}) {
         QAction* action = ranges->addAction(mode == RangeMode::Fixed ? tr("Fixed…") : rangeName(mode));
         action->setCheckable(true);
         connect(action, &QAction::triggered, this, [this, mode] { chooseRange(mode); });
@@ -162,6 +162,8 @@ DisplaySettingsControl::DisplaySettingsControl(QWidget* parent)
         m_rangeActions[indexOf(mode)] = action;
     }
     m_rangeActions[indexOf(RangeMode::Hold)]->setToolTip(tr("Keep the current range for the frames to come"));
+    m_rangeActions[indexOf(RangeMode::Hdr)]->setToolTip(tr("Tone-map HLG or PQ for this screen"));
+    m_rangeActions[indexOf(RangeMode::Hdr)]->setVisible(false); // until an HDR image is shown
     auto* colourMaps = new QActionGroup(this);
     for (const ColourMap colours : {ColourMap::Grey, ColourMap::Turbo, ColourMap::Viridis}) {
         QAction* action = colourMaps->addAction(coloursName(colours));
@@ -191,20 +193,23 @@ DisplaySettingsControl::DisplaySettingsControl(QWidget* parent)
     showSettings();
 }
 
-void DisplaySettingsControl::setState(const viewer_core::DisplaySettings& settings, bool singleChannel) {
+void DisplaySettingsControl::setState(const viewer_core::DisplaySettings& settings, bool singleChannel,
+                                      bool hdrAvailable) {
     if (m_popup != nullptr) {
         m_popup->hide(); // it was for the picture shown before
     }
     m_settings = settings;
-    setSingleChannel(singleChannel);
-    showSettings();
+    setFrameKind(singleChannel, hdrAvailable);
 }
 
-void DisplaySettingsControl::setSingleChannel(bool singleChannel) {
+void DisplaySettingsControl::setFrameKind(bool singleChannel, bool hdrAvailable) {
     m_coloursButton->setVisible(singleChannel);
     for (QAction* action : m_coloursActions) {
         action->setEnabled(singleChannel);
     }
+    m_hdrAvailable = hdrAvailable;
+    m_rangeActions[indexOf(RangeMode::Hdr)]->setVisible(hdrAvailable);
+    showSettings(); // HDR settings read as Auto on a frame without an HDR tag
 }
 
 void DisplaySettingsControl::setAutoRangeProvider(std::function<viewer_core::DisplayRange()> provider) {
@@ -265,19 +270,31 @@ void DisplaySettingsControl::applyFixed(DisplayRange range) {
 }
 
 void DisplaySettingsControl::showSettings() {
-    m_rangeButton->setText(tr("Range: %1 ▾").arg(rangeName(m_settings.mode)));
-    m_rangeButton->setToolTip(
-        m_settings.mode == RangeMode::Auto
-            ? tr("Each picture from its own minimum to its maximum")
-            : tr("%1 to %2")
-                  .arg(formattedNumber(m_settings.range.min), formattedNumber(m_settings.range.max)));
+    // What the picture shows: HDR settings on an image without an HDR tag show it as Auto.
+    const RangeMode shown =
+        m_settings.mode == RangeMode::Hdr && !m_hdrAvailable ? RangeMode::Auto : m_settings.mode;
+    m_rangeButton->setText(tr("Range: %1 ▾").arg(rangeName(shown)));
+    switch (shown) {
+    case RangeMode::Auto:
+        m_rangeButton->setToolTip(tr("Each picture from its own minimum to its maximum"));
+        break;
+    case RangeMode::Hdr:
+        m_rangeButton->setToolTip(tr("HLG or PQ tone-mapped for this screen"));
+        break;
+    case RangeMode::Hold:
+    case RangeMode::Fixed:
+        m_rangeButton->setToolTip(
+            tr("%1 to %2").arg(formattedNumber(m_settings.range.min), formattedNumber(m_settings.range.max)));
+        break;
+    }
     m_coloursButton->setText(tr("Colours: %1 ▾").arg(coloursName(m_settings.colours)));
-    m_rangeActions[indexOf(m_settings.mode)]->setChecked(true);
+    m_rangeActions[indexOf(shown)]->setChecked(true);
     m_coloursActions[indexOf(m_settings.colours)]->setChecked(true);
 }
 
+// Auto's range for Auto and HDR, which have none of their own.
 DisplayRange DisplaySettingsControl::currentRange() const {
-    if (m_settings.mode != RangeMode::Auto) {
+    if (m_settings.mode == RangeMode::Hold || m_settings.mode == RangeMode::Fixed) {
         return m_settings.range;
     }
     return m_autoRange ? m_autoRange() : DisplayRange{};

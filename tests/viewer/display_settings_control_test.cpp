@@ -47,7 +47,7 @@ protected:
         QObject::connect(&m_control, &DisplaySettingsControl::settingsChanged,
                          [this](const DisplaySettings& settings) { m_emitted.push_back(settings); });
         m_control.setAutoRangeProvider([this] { return m_autoRange; });
-        m_control.setState(DisplaySettings{}, true);
+        m_control.setState(DisplaySettings{}, true, false);
         m_control.show();
     }
 
@@ -81,9 +81,11 @@ TEST_F(DisplaySettingsControlTest, StartsOnAutoAndGrey) {
     EXPECT_EQ(button("coloursButton")->text(), QStringLiteral("Colours: Grey ▾"));
     EXPECT_EQ(checkedTitle(m_control.rangeMenu()), QStringLiteral("Auto"));
     EXPECT_EQ(checkedTitle(m_control.coloursMenu()), QStringLiteral("Grey"));
-    QStringList ranges;
+    QStringList ranges; // as listed: HDR only for an HDR image
     for (const QAction* action : m_control.rangeMenu()->actions()) {
-        ranges << action->text().remove(u'&');
+        if (action->isVisible()) {
+            ranges << action->text().remove(u'&');
+        }
     }
     EXPECT_EQ(ranges,
               (QStringList{QStringLiteral("Auto"), QStringLiteral("Hold"), QStringLiteral("Fixed…")}));
@@ -156,13 +158,13 @@ TEST_F(DisplaySettingsControlTest, ColoursOnlyForSingleChannel) {
     EXPECT_EQ(m_emitted.back(), DisplaySettings{.colours = ColourMap::Turbo});
     EXPECT_EQ(button("coloursButton")->text(), QStringLiteral("Colours: Turbo ▾"));
 
-    m_control.setState(DisplaySettings{}, false);
+    m_control.setState(DisplaySettings{}, false, false);
 
     EXPECT_TRUE(button("coloursButton")->isHidden());
     for (const QAction* action : m_control.coloursMenu()->actions()) {
         EXPECT_FALSE(action->isEnabled());
     }
-    m_control.setState(DisplaySettings{.colours = ColourMap::Viridis}, true);
+    m_control.setState(DisplaySettings{.colours = ColourMap::Viridis}, true, false);
     EXPECT_FALSE(button("coloursButton")->isHidden());
     EXPECT_EQ(button("coloursButton")->text(), QStringLiteral("Colours: Viridis ▾"));
     EXPECT_EQ(checkedTitle(m_control.coloursMenu()), QStringLiteral("Viridis"));
@@ -175,7 +177,7 @@ TEST(DisplaySettingsControlPopup, FixedPopupStaysInsideTheWindow) {
     QWidget window;
     window.resize(600, 300);
     auto* control = new DisplaySettingsControl(&window);
-    control->setState(DisplaySettings{}, false); // the Range button alone: narrower than the popup
+    control->setState(DisplaySettings{}, false, false); // the Range button alone: narrower than the popup
     control->adjustSize();
     control->move(window.width() - control->width(), 0);
     window.show();
@@ -191,17 +193,61 @@ TEST(DisplaySettingsControlPopup, FixedPopupStaysInsideTheWindow) {
 }
 
 // (R3) Per frame, quietly: a live channel can change its channel count from one frame to the next.
-TEST_F(DisplaySettingsControlTest, SetSingleChannelOnlyShowsOrHidesColours) {
+TEST_F(DisplaySettingsControlTest, SetFrameKindOnlyShowsOrHidesColoursAndHdr) {
     actionTitled(m_control.rangeMenu(), QStringLiteral("Fixed…"))->trigger();
 
-    m_control.setSingleChannel(false);
+    m_control.setFrameKind(false, false);
     EXPECT_TRUE(button("coloursButton")->isHidden());
     EXPECT_FALSE(actionTitled(m_control.coloursMenu(), QStringLiteral("Turbo"))->isEnabled());
-    m_control.setSingleChannel(true);
+    m_control.setFrameKind(true, true);
     EXPECT_FALSE(button("coloursButton")->isHidden());
+    EXPECT_TRUE(actionTitled(m_control.rangeMenu(), QStringLiteral("HDR"))->isVisible());
 
     EXPECT_TRUE(popup()->isVisible()); // left open, unlike setState
     EXPECT_TRUE(m_emitted.empty());
+}
+
+TEST_F(DisplaySettingsControlTest, HdrOnlyWhenAvailable) {
+    QAction* hdr = actionTitled(m_control.rangeMenu(), QStringLiteral("HDR"));
+    ASSERT_NE(hdr, nullptr);
+    m_control.setState(DisplaySettings{}, false, false);
+    EXPECT_FALSE(hdr->isVisible());
+
+    m_control.setState(DisplaySettings{.mode = RangeMode::Hdr}, false, true);
+    EXPECT_TRUE(hdr->isVisible());
+    EXPECT_TRUE(hdr->isChecked());
+    EXPECT_EQ(button("rangeButton")->text(), QStringLiteral("Range: HDR ▾"));
+
+    // A frame without an HDR tag in a channel set to HDR is shown as Auto, and the control says so.
+    m_control.setFrameKind(false, false);
+    EXPECT_FALSE(hdr->isVisible());
+    EXPECT_EQ(button("rangeButton")->text(), QStringLiteral("Range: Auto ▾"));
+    EXPECT_EQ(checkedTitle(m_control.rangeMenu()), QStringLiteral("Auto"));
+    EXPECT_TRUE(m_emitted.empty());
+}
+
+TEST_F(DisplaySettingsControlTest, ChoosingHdrEmits) {
+    m_control.setState(DisplaySettings{.colours = ColourMap::Turbo}, true, true);
+
+    actionTitled(m_control.rangeMenu(), QStringLiteral("HDR"))->trigger();
+
+    ASSERT_EQ(m_emitted.size(), 1u);
+    EXPECT_EQ(m_emitted.back(), (DisplaySettings{.mode = RangeMode::Hdr, .colours = ColourMap::Turbo}));
+    EXPECT_EQ(button("rangeButton")->text(), QStringLiteral("Range: HDR ▾"));
+}
+
+// From HDR, Hold and Fixed… start from what Auto would show, as they do from Auto.
+TEST_F(DisplaySettingsControlTest, LeavingHdrStartsFromTheAutoRange) {
+    m_control.setState(DisplaySettings{.mode = RangeMode::Hdr}, true, true);
+
+    openFixed();
+    EXPECT_EQ(field("fixedMinimum")->text(), QStringLiteral("10"));
+    EXPECT_EQ(field("fixedMaximum")->text(), QStringLiteral("20"));
+    popup()->hide();
+    actionTitled(m_control.rangeMenu(), QStringLiteral("Hold"))->trigger();
+
+    ASSERT_EQ(m_emitted.size(), 1u);
+    EXPECT_EQ(m_emitted.back(), (DisplaySettings{.mode = RangeMode::Hold, .range = {10, 20}}));
 }
 
 // New frames change what Auto would show, but never what is being typed.
