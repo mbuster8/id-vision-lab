@@ -447,7 +447,7 @@ live_sender --list-cameras
 | `--pattern` | Send a generated moving test pattern; needs no camera and no file. `--size WxH` sets its size (default `640x480`, at most what the viewer takes) and `--fps N` its rate (default 30, from 0.1 to 1000). |
 | *(none of the three)* | The same as `--camera 0`. |
 | `--frames N` | Stop after `N` frames. Without it, a camera runs until Ctrl+C and a file until its end. |
-| `--name NAME` | Name the channels `NAME` and `NAME edges` instead of `camera` and `edges`, so several `live_sender`s can stream to one viewer side by side; the summary uses the same names. An empty name, or one longer than 1018 bytes, is a usage error. |
+| `--name NAME` | Name the channels `NAME` and `NAME edges` instead of `camera` and `edges`, so several `live_sender`s can stream to one viewer side by side; the summary uses the same names. An empty name, one that is not valid UTF-8, or one longer than 1018 bytes (so that `NAME edges` fits the 1024 a channel name may have), is a usage error. |
 | `--endpoint <uri>` | The viewer to send to: by default `$VISUAL_DEBUG_ENDPOINT` if set, else `tcp://127.0.0.1:7139`. |
 | `--list-cameras` | Print the camera numbers that open, with their frame size, and exit. On macOS, which numbers cameras without gaps, it stops at the first number that does not open; elsewhere it tries 0 to 9. OpenCV cannot read cameras' names, so this is how you find your USB camera's number. |
 

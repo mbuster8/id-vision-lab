@@ -28,7 +28,7 @@ Wait for the viewer's status bar to say `Listening on [tcp://127.0.0.1:7139]` be
   or take a frame and a few milliseconds, and the window's title names `camera`.
 - The mouse wheel zooms and dragging pans while the stream runs; hovering reads the pixel under the cursor.
 - Stop the sender with Ctrl+C. It prints `camera: N sent, N delivered` and the same for `edges`. Three
-  seconds later both rows turn grey and read `idle`, and a ✕ appears on each.
+  seconds later both rows' dots turn grey and the rows read `idle`, and a ✕ appears on each.
 - The log (**Log ▴**) has `Live channel [camera] started` and `Live channel [camera] idle after N frames
   (0 dropped)` for each channel.
 - Click `camera`'s ✕. The row goes, the log adds `Closed live channel [camera]`, and the view shows the image

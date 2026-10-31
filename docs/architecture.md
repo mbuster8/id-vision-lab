@@ -130,9 +130,10 @@ at most 8 channels and refuses any frame, of a new channel or an open one, that 
 channels' newest frames past 1 GiB; a channel without a frame for `viewer_core::kIdleAfter` (3 s) is idle,
 and the longest-idle one is closed to make room, never the frame's own channel and never the one in view,
 which the window names with `protectLiveChannel`. The window marks a channel idle after the same constant,
-so a row reads `idle` exactly when its channel can be closed to make room. A refused frame is answered `too
-many live channels`. The UI logs each refused name once, for up to 8 names; a sender that numbers its channel names
-would otherwise cost the log a line per frame, so refusals beyond those are counted with the rejections.
+at its next 500 ms tick, so a row reads `idle` from about when the sink may close that channel, if it is not
+the one in view. A refused frame is answered `too many live channels`. The UI logs each refused name once,
+for up to 8 names; a sender that numbers its channel names would otherwise cost the log a line per frame, so
+refusals beyond those are counted with the rejections.
 
 **The UI does the least it can per frame.** `takeLiveFrames` hands every channel's newest frame to
 `LiveChannels`, but only the channel in view is converted and drawn, wrapped in a `QImage` without a copy
@@ -140,11 +141,11 @@ would otherwise cost the log a line per frame, so refusals beyond those are coun
 frame is converted at the size it will be drawn: `ImageView::deviceScaleFor` gives the device pixels per
 image pixel for the coming draw, and below 1 `toDisplayImage` maps the values to 8 bits at full size, shrinks
 that to the drawn size, and only then makes it RGBA or colour-maps it, so a NaN stays one dark pixel among its
-neighbours. The shrink is an exact whole-number `INTER_AREA` step (from a crop to a multiple of the factor)
-followed by `INTER_LINEAR` for the rest, as `INTER_AREA` at a fractional factor is far slower. `ImageView`
-draws the picture into the image's rectangle (`setImage` takes the image's size beside the picture) and
-emits `scaleChanged` after a zoom, fit or resize, on which the window converts the frame again. At 1:1 or
-closer the whole frame is converted. The readout, Copy Image, Save As and Snapshot use the original frame. A
+neighbours. The shrink is an exact whole-number `INTER_AREA` step, with a factor of its own across and down
+(from a crop to a multiple of each), followed by `INTER_LINEAR` for the rest, as `INTER_AREA` at a fractional
+factor is far slower. `ImageView` draws the picture into the image's rectangle (`setImage` takes the image's
+size beside the picture) and emits `scaleChanged` after a zoom, fit or resize, on which the window converts
+the frame again if the size it would convert at has changed. At 1:1 or closer the whole frame is converted. The readout, Copy Image, Save As and Snapshot use the original frame. A
 500 ms timer, running only while channels exist, does the rest: it marks channels idle, redraws each row's
 picture (at the row's size, and only for a newer frame) and its rate, and refreshes the info strip.
 `LiveChannels` takes every time as an argument; `MainWindow` and the sink share one injectable
