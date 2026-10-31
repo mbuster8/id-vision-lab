@@ -1,7 +1,9 @@
 #include "viewer_core/display_converter.h"
+#include "viewer_core/hdr_tone_map.h"
 
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <cstdint>
 #include <limits>
@@ -237,6 +239,74 @@ TEST(DisplayConverter, DrawnSizeAveragesThinImages) {
     cv::minMaxLoc(red, &darkest, &brightest);
     EXPECT_NEAR(darkest, 255.0 / 4, 2.0);
     EXPECT_NEAR(brightest, 255.0 / 4, 2.0);
+}
+
+// --- The HDR range -----------------------------------------------------------------------------------------
+
+const viewer_core::ImageTags kHlg{.valueRange = {0, 65535},
+                                  .transfer = viewer_core::Transfer::Hlg,
+                                  .primaries = viewer_core::Primaries::Bt2020};
+const DisplaySettings kHdr{.mode = RangeMode::Hdr};
+
+cv::Mat hdrSignal(int rows, int cols) {
+    cv::Mat signal(rows, cols, CV_16UC3);
+    cv::randu(signal, cv::Scalar::all(0), cv::Scalar::all(65536));
+    return signal;
+}
+
+// The tone map's BGR as the display's RGBA.
+cv::Mat rgbaOf(const cv::Mat& bgr) {
+    cv::Mat rgba;
+    cv::cvtColor(bgr, rgba, cv::COLOR_BGR2RGBA);
+    return rgba;
+}
+
+TEST(DisplayConverter, HdrModeUsesTheToneMap) {
+    const cv::Mat signal = hdrSignal(4, 5);
+
+    const cv::Mat display = toDisplayImage(signal, kHdr, {.tags = kHlg});
+
+    const cv::Mat expected = rgbaOf(viewer_core::toneMapToSdr(signal, viewer_core::Transfer::Hlg,
+                                                              viewer_core::Primaries::Bt2020, {0, 65535}));
+    EXPECT_EQ(cv::norm(display, expected, cv::NORM_INF), 0.0);
+}
+
+TEST(DisplayConverter, HdrWithoutATagShowsAsAuto) {
+    const cv::Mat signal = hdrSignal(4, 5);
+
+    EXPECT_EQ(cv::norm(toDisplayImage(signal, kHdr, {.tags = {.valueRange = {0, 65535}}}),
+                       toDisplayImage(signal, DisplaySettings{}, {.tags = {.valueRange = {0, 65535}}}),
+                       cv::NORM_INF),
+              0.0);
+}
+
+// Tone-mapped at the drawn size: each pixel is the map of its block's average.
+TEST(DisplayConverter, HdrShrinksBeforeMapping) {
+    const cv::Mat signal = hdrSignal(3000, 4000);
+
+    const cv::Mat display = toDisplayImage(signal, kHdr, {.size = {400, 300}, .tags = kHlg});
+
+    ASSERT_EQ(display.size(), cv::Size(400, 300));
+    const cv::Scalar mean = cv::mean(signal(cv::Rect(2000, 1500, 10, 10)));
+    const cv::Mat block(1, 1, CV_16UC3,
+                        cv::Scalar(std::round(mean[0]), std::round(mean[1]), std::round(mean[2])));
+    const cv::Vec4b expected = rgbaOf(viewer_core::toneMapToSdr(block, viewer_core::Transfer::Hlg,
+                                                                viewer_core::Primaries::Bt2020, {0, 65535}))
+                                   .at<cv::Vec4b>(0, 0);
+    const cv::Vec4b centre = display.at<cv::Vec4b>(150, 200);
+    for (int channel = 0; channel < 4; ++channel) {
+        EXPECT_NEAR(centre[channel], expected[channel], 2) << channel;
+    }
+}
+
+TEST(DisplayConverter, HdrKeepsAlphaAndShowsTwoChannelsAsAuto) {
+    cv::Mat withAlpha(2, 2, CV_16UC4, cv::Scalar(30000, 30000, 30000, 65535));
+    const cv::Mat twoChannels(2, 2, CV_16UC2, cv::Scalar(100, 900));
+
+    EXPECT_EQ(toDisplayImage(withAlpha, kHdr, {.tags = kHlg}).at<cv::Vec4b>(0, 0)[3], 255);
+    EXPECT_EQ(cv::norm(toDisplayImage(twoChannels, kHdr, {.tags = kHlg}),
+                       toDisplayImage(twoChannels, DisplaySettings{}, {.tags = kHlg}), cv::NORM_INF),
+              0.0);
 }
 
 TEST(SizeWithin, KeepsTheAspect) {

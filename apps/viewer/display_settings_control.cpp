@@ -39,6 +39,8 @@ QString rangeName(RangeMode mode) {
         return DisplaySettingsControl::tr("Hold");
     case RangeMode::Fixed:
         return DisplaySettingsControl::tr("Fixed");
+    case RangeMode::Hdr:
+        return QStringLiteral("HDR");
     case RangeMode::Auto:
         break;
     }
@@ -216,7 +218,8 @@ QMenu* DisplaySettingsControl::coloursMenu() const { return m_coloursMenu; }
 void DisplaySettingsControl::chooseRange(RangeMode mode) {
     switch (mode) {
     case RangeMode::Auto:
-        m_settings.mode = RangeMode::Auto;
+    case RangeMode::Hdr:
+        m_settings.mode = mode;
         m_settings.range = {};
         break;
     case RangeMode::Hold:

@@ -7,8 +7,10 @@
 namespace viewer_core {
 
 // How original values map to the 8-bit picture on screen. Auto stretches each image (or frame) from its own
-// minimum to its maximum; Hold keeps the range captured when it was chosen; Fixed uses a typed range.
-enum class RangeMode { Auto, Hold, Fixed };
+// minimum to its maximum, or shows its sender's value range; Hold keeps the range captured when it was
+// chosen; Fixed uses a typed range; Hdr tone-maps an HLG or PQ image for an SDR screen, and shows any other
+// as Auto. New modes go at the end: the viewer's menus are indexed by these values.
+enum class RangeMode { Auto, Hold, Fixed, Hdr };
 
 // For single-channel images only; other channel counts are always shown in their own colours.
 enum class ColourMap { Grey, Turbo, Viridis };
