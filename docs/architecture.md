@@ -46,13 +46,13 @@ flowchart LR
 | Component | Responsibility |
 |---|---|
 | `libs/visual_debug` | Everything both ends of the channel share. `wire_format`: encodes an image into the two frames and decodes them back, validating everything and never throwing. `ImageSender`: the interface a host application depends on. `Client`: its ZeroMQ implementation. `sendImage()` and `sendLive()`: the one-line convenience calls, using one process-wide `Client`. `Server`: the viewer's receive loop on its own thread. `ImageSink`: the interface through which the server hands images to whoever displays them. `endpoint`: the default endpoint and the loopback check. |
-| `libs/viewer_core` | The viewer's logic, free of any UI toolkit, so it is unit-tested without Qt. `toDisplayImage`: any supported image to 8-bit RGBA, with a display range and colour map. `DisplaySettings` and `DisplaySettingsStore`: those choices, by name, for the session. `ImageHistory`: the bounded list of received images. `LiveChannels`: per live channel, the frame to show, its counters and rates, and whether it is idle or frozen. `inspectPixel`: the readout text for one pixel of the original. `Viewport`: zoom and pan arithmetic. |
+| `libs/viewer_core` | The viewer's logic, free of any UI toolkit, so it is unit-tested without Qt. `toDisplayImage`: any supported image to 8-bit RGBA, with a display range and colour map, at full size or at the size it is drawn (`sizeWithin`). `DisplaySettings` and `DisplaySettingsStore`: those choices, by name, for the session. `ImageHistory`: the bounded list of received images. `LiveChannels`: per live channel, the frame to show, its counters and rates, and whether it is idle or frozen; `kIdleAfter`, the one idle time for the window and the sink. `inspectPixel`: the readout text for one pixel of the original. `Viewport`: zoom and pan arithmetic. |
 | `apps/qt_common` | The Qt code both apps need: `toQImage` (an RGBA `cv::Mat` to a `QImage`), choosing and reading an image file, `application_identity` (the apps' names and descriptions; `setApplicationIdentity`, which names what `QSettings` and the standard paths use), `about` (Help → About, which names the OpenCV and Qt versions the app runs with), `appearance` (the shared System, Light or Dark setting and its menu), `outline_icons` (the line icons, drawn in the palette's colours), `controls` (the shared control height, framed buttons and the regular font) and `shades` (the panel, hover, selection and divider greys, blended from the palette's window and text colours; `usePanelGrey`, which keeps a widget on the panel grey as the appearance changes; and `DividerLine`). |
-| `apps/viewer` | The Visual Debug Viewer. `MainWindow` composes the parts; `ImageView` paints through a `Viewport`; `ImageSidebar` holds the search field, the sort options and `ThumbnailPanel`, which shows the history: a list view over `ThumbnailModel` (the history's rows, in history order), seen through `ThumbnailFilterModel` (the names the search matches, in the chosen sort) and drawn by `ThumbnailDelegate`, and `LiveChannelPanel`, the Live group's rows; `ImageInfoBar` is the strip above the view, with `DisplaySettingsControl` (the Range and Colours buttons) and Freeze and Snapshot; `QtImageSink` moves images and live frames from the server thread to the UI thread; `ActivityLog` is the activity log (a list model, stored in the endpoint's `DataFolder`) and `ActivityLogPanel` shows it; `DividerSplitter` is a splitter whose handles draw a divider line and a grip; `ImageStore` keeps images in files, `StorageWorker` drives it on its own thread, and `StorageController` owns that thread and the restore for the window. |
+| `apps/viewer` | The Visual Debug Viewer. `MainWindow` composes the parts; `ImageView` paints through a `Viewport`; `ImageSidebar` holds the search field, the sort options and `ThumbnailPanel`, which shows the history: a list view over `ThumbnailModel` (the history's rows, in history order), seen through `ThumbnailFilterModel` (the names the search matches, in the chosen sort) and drawn by `ThumbnailDelegate`, and `LiveChannelPanel`, the Live group's rows with their mute and close buttons and right-click menu (the sidebar steps ↑ and ↓ across the live rows and the thumbnails as one list); `ImageInfoBar` is the strip above the view, with `DisplaySettingsControl` (the Range and Colours buttons) and Freeze and Snapshot; `QtImageSink` moves images and live frames from the server thread to the UI thread; `ActivityLog` is the activity log (a list model, stored in the endpoint's `DataFolder`) and `ActivityLogPanel` shows it; `DividerSplitter` is a splitter whose handles draw a divider line and a grip; `ImageStore` keeps images in files, `StorageWorker` drives it on its own thread, and `StorageController` owns that thread and the restore for the window. |
 | `apps/example_sender` | The Visual Debug Example Sender, which shows how a Qt app uses the library. Its window takes a factory that makes an `ImageSender` for an endpoint, so it never knows which transport is behind it, and a new endpoint in its **Send to** field gets a new sender. |
 | `examples/pipeline_demo` | An ordinary OpenCV program that sends each stage of a pipeline. Its stages are a separate `pipeline` library so tests can check them. |
 | `examples/minimal_sender` | The smallest use of `sendImage`, compiled so the user guide's first example cannot go stale. |
-| `examples/live_sender` | Streams a camera, a video file or a test pattern to live channels with `sendLive`, with an edge channel beside it. Everything but the reading of cameras and files is a separate `live_sender_lib`, so tests check it without a camera; only the executable links OpenCV's `videoio`. |
+| `examples/live_sender` | Streams a camera, a video file or a test pattern to live channels with `sendLive`, with an edge channel beside it. Everything but the reading of cameras and files is a separate `live_sender_lib`, so tests check it without a camera. Opening a video file (AVFoundation first on macOS, then OpenCV's default backend) is `live_sender_video`, which tests check with clips they write; only it and the executable link OpenCV's `videoio`. |
 
 ## The dependency rule
 
@@ -127,21 +127,38 @@ sequenceDiagram
 each channel keeps only its newest waiting frame, so a sender faster than the screen loses frames in the
 viewer (counted as dropped), never time, and the sink holds at most one waiting frame per channel. It opens
 at most 8 channels and refuses any frame, of a new channel or an open one, that would take the open
-channels' newest frames past 1 GiB; a channel without a frame for 5 s is idle, and the longest-idle one
-(never the frame's own channel) is closed to make room. A refused frame is answered `too many live
-channels`. The UI logs each refused name once, for up to 8 names; a sender that numbers its channel names
+channels' newest frames past 1 GiB; a channel without a frame for `viewer_core::kIdleAfter` (3 s) is idle,
+and the longest-idle one is closed to make room, never the frame's own channel and never the one in view,
+which the window names with `protectLiveChannel`. The window marks a channel idle after the same constant,
+so a row reads `idle` exactly when its channel can be closed to make room. A refused frame is answered `too
+many live channels`. The UI logs each refused name once, for up to 8 names; a sender that numbers its channel names
 would otherwise cost the log a line per frame, so refusals beyond those are counted with the rejections.
 
 **The UI does the least it can per frame.** `takeLiveFrames` hands every channel's newest frame to
 `LiveChannels`, but only the channel in view is converted and drawn, wrapped in a `QImage` without a copy
-(`qt_common::wrapAsQImage`), and the view keeps its zoom and pan while the frame size stays the same. A
-500 ms timer, running only while channels exist, does the rest: it marks channels idle, redraws each
-row's picture (shrunk before it is converted, and only for a newer frame) and its rate, and refreshes the
-info strip. `LiveChannels` takes every time as an argument; `MainWindow` and the sink share one injectable
+(`qt_common::wrapAsQImage`), and the view keeps its zoom and pan while the frame size stays the same. The
+frame is converted at the size it will be drawn: `ImageView::deviceScaleFor` gives the device pixels per
+image pixel for the coming draw, and below 1 `toDisplayImage` maps the values to 8 bits at full size, shrinks
+that to the drawn size, and only then makes it RGBA or colour-maps it, so a NaN stays one dark pixel among its
+neighbours. The shrink is an exact whole-number `INTER_AREA` step (from a crop to a multiple of the factor)
+followed by `INTER_LINEAR` for the rest, as `INTER_AREA` at a fractional factor is far slower. `ImageView`
+draws the picture into the image's rectangle (`setImage` takes the image's size beside the picture) and
+emits `scaleChanged` after a zoom, fit or resize, on which the window converts the frame again. At 1:1 or
+closer the whole frame is converted. The readout, Copy Image, Save As and Snapshot use the original frame. A
+500 ms timer, running only while channels exist, does the rest: it marks channels idle, redraws each row's
+picture (at the row's size, and only for a newer frame) and its rate, and refreshes the info strip.
+`LiveChannels` takes every time as an argument; `MainWindow` and the sink share one injectable
 `steady_clock`, so tests move time by hand.
 
+**Mute.** A muted channel's frames are still taken from the sink and counted by `LiveChannels`, so its
+sender is answered `Delivered` and the channel still goes idle and comes back; `MainWindow` keeps the muted
+names for the session and skips everything else for them: no conversion, no row picture, no `started` or
+`idle after` lines, never the view. Muting the channel in view leaves it as closing it does.
+
 **Freeze and Snapshot.** A frozen channel keeps its shown frame and sets newer ones aside, still counting
-them; unfreezing shows the newest. Snapshot adds the shown frame to the history as an ordinary image with
+them; unfreezing shows the newest. Space is a Freeze shortcut, so `MainWindow` filters the application's
+`ShortcutOverride` events and lets a button with the keyboard focus take Space instead. Snapshot adds the
+shown frame to the history as an ordinary image with
 `ImageSource::LiveSnapshot` and the channel's display settings. Live channels and snapshots stay in memory:
 `StorageController` skips both, so **Keep images between sessions** never writes a live frame to disk.
 
@@ -225,13 +242,17 @@ Each image name and live channel can have its own `DisplaySettings`, kept for th
   the range of the frame shown when it was chosen (`autoRange`), so a live channel's brightness stops
   jumping from frame to frame. Fixed uses a typed range. Hold and Fixed map the range to 0–255 for every
   depth, 8U included, clipping values outside it; a range whose minimum is not below its maximum shows
-  black.
+  black. The span is taken as `max / 2 − min / 2`, which cannot overflow even for −1e308 to 1e308, and a
+  scale beyond a `float`'s range is applied in double precision, so such a range still maps linearly.
 - **Colours.** Grey, Turbo or Viridis, for single-channel images only. NaN and ±Inf are black whatever the
   map.
 
 The history keeps each image's display picture as it was converted on arrival; an image whose settings
 are not the default is converted again from the original whenever it is shown, copied or saved, so Copy
-Image and Save As give what is on screen.
+Image and Save As give what is on screen. Its thumbnail follows too: `ThumbnailModel` asks the window's
+thumbnail maker for a picture at the thumbnail's own size the first time the thumbnail is drawn, and keeps
+it until `refreshThumbnails(name)` drops the pictures of that name after a change of settings, so a change
+costs only the thumbnails on screen. An image with the default settings uses its display picture.
 
 `ImageView` samples with nearest neighbour when zoomed in past 1:1, so single pixels stay sharp, and
 smoothly when zoomed out. It floors view-to-image coordinates, so the point at −0.5 is pixel −1 (outside

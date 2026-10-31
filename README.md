@@ -86,7 +86,7 @@ Run these from the repository root. The [build guide](docs/build-guide.md) and t
 ```sh
 cmake --preset debug                    # configure; once, or after changing a CMakeLists.txt
 cmake --build --preset debug            # build everything into build/debug
-ctest --preset debug                    # all 512 tests, about 70 seconds
+ctest --preset debug                    # all 566 tests, about 85 seconds
 ctest --preset debug -R ClientServer    # only the tests whose name matches
 
 cmake --preset release                  # an optimised build, into build/release
@@ -95,7 +95,7 @@ ctest --preset release
 
 cmake --preset asan                     # Debug with AddressSanitizer and UndefinedBehaviorSanitizer
 cmake --build --preset asan             # into build/asan
-ctest --preset asan                     # the same tests under the sanitizers, about 90 seconds
+ctest --preset asan                     # the same tests under the sanitizers, about 110 seconds
 ```
 
 ### Check before a push
@@ -137,7 +137,9 @@ build/debug/examples/live_sender/live_sender --camera 0
 ```
 
 Senders started before the viewer's status bar says `Listening on [tcp://127.0.0.1:7139]` get
-`ViewerUnavailable` and carry on; later sends reach the viewer once it is up.
+`ViewerUnavailable` and carry on; later sends reach the viewer once it is up. The
+[tour of live channels](docs/live-channels-tour.md) tries every live feature in eight steps, with what to
+expect at each.
 
 ![The Visual Debug Example Sender after sending a photo: Open, Send image and the Send to field along the top, the result in the status bar](docs/images/example-sender.png)
 
@@ -145,8 +147,8 @@ In the viewer, the mouse wheel zooms, dragging pans, a double-click fits the ima
 and hovering shows the original value of the pixel under the cursor. **File → Open…** adds an image file
 to the history and **File → Save As…** saves the displayed image. The sidebar renames, duplicates and
 deletes images (with undo), searches and sorts them; its **Live** group lists the live channels, each
-with its frame rate, and **Image → Freeze** and **Snapshot** hold a channel's frame or keep it in the
-history; **Range** and **Colours** above the view set how values map to the screen, with false colour for
+with its frame rate and a button to mute it, and **Image → Freeze** and **Snapshot** hold a channel's frame
+or keep it in the history; **Range** and **Colours** above the view set how values map to the screen, with false colour for
 single-channel images; the status bar pauses or stops the viewer's server;
 the activity log records what arrived and what was refused; the history can be kept between sessions;
 **View → Appearance** picks light or dark; and **About** names the OpenCV and Qt versions it runs with. The

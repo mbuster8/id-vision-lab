@@ -88,7 +88,8 @@ or library cannot break the build, but a new warning from project code should be
 | `pipeline_demo` | Command-line demo: an OpenCV pipeline that sends every stage | `examples/pipeline_demo/pipeline_demo` |
 | `minimal_sender` | The smallest use of `sendImage` | `examples/minimal_sender/minimal_sender` |
 | `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
-| `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels. The only target that needs OpenCV's `videoio` module | `examples/live_sender/live_sender` |
+| `live_sender_video` | Opens a video file for `live_sender`: AVFoundation first on macOS, then OpenCV's default backend | `examples/live_sender/liblive_sender_video.a` |
+| `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels. With `live_sender_video` and the tests, the only targets that need OpenCV's `videoio` module | `examples/live_sender/live_sender` |
 | `visual_debug_tests`, `viewer_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
 
 To build one target: `cmake --build --preset debug --target pipeline_demo`.
@@ -115,7 +116,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the 218 tests that need no Qt
+ctest --test-dir build/no-qt               # the 236 tests that need no Qt (234 on Linux)
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -123,10 +124,10 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (512 tests, about 70 seconds)
+ctest --preset debug                       # everything (566 tests, about 85 seconds; 564 on Linux)
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
-ctest --preset asan                        # the same tests under the sanitizers (about 90 seconds)
+ctest --preset asan                        # the same tests under the sanitizers (about 110 seconds)
 ctest --preset debug -L whole              # only the whole-program runs
 ctest --preset debug -LE whole             # everything except them
 ```
