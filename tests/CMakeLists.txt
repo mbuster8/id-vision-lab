@@ -53,14 +53,24 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             GTest::gtest_main)
     # video_file_test.cpp writes and reads clips, so these tests need OpenCV's videoio, as live_sender does.
     find_package(OpenCV REQUIRED COMPONENTS videoio)
+    # FFmpeg's libraries are optional; the tests write their clips with them too. Listed before
+    # visual_debug, which live_sender_ffmpeg needs, so it is linked once.
+    set(live_sender_ffmpeg_tests "")
+    set(live_sender_ffmpeg_libraries "")
+    if(TARGET live_sender_ffmpeg)
+        set(live_sender_ffmpeg_tests examples/ffmpeg_video_test.cpp)
+        set(live_sender_ffmpeg_libraries live_sender_ffmpeg PkgConfig::FFMPEG)
+    endif()
     id_vision_lab_add_test_executable(live_sender_tests
         SOURCES
             examples/live_sender_test.cpp
             examples/read_ahead_test.cpp
             examples/video_file_test.cpp
+            ${live_sender_ffmpeg_tests}
         LIBRARIES
             live_sender_lib
             live_sender_video
+            ${live_sender_ffmpeg_libraries}
             opencv_videoio
             visual_debug::visual_debug
             cppzmq

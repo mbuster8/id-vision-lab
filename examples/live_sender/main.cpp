@@ -9,12 +9,17 @@
 // Without a source it reads camera 0. A camera runs until Ctrl+C and a file until its end, unless --frames
 // stops them sooner; a summary prints either way. A file plays in real time, read ahead on a thread of its
 // own: a frame that is ready more than a frame late is skipped and counted, never counted as undelivered.
+// With --hdr the file is read with FFmpeg's libraries instead of OpenCV's, as 16-bit frames tagged with the
+// video's transfer, primaries and nominal black and white (a live_sender built without them says so).
 // The pattern is sent at --fps (30 by default). Exit code: 0 when every frame sent was delivered, 1 when any
 // was not, 2 for bad arguments or an unreadable source.
 
 #include "live_sender.h"
 #include "read_ahead.h"
 #include "video_file.h"
+#if defined(LIVE_SENDER_HAS_FFMPEG)
+#include "ffmpeg_video.h"
+#endif
 
 #include "visual_debug/client.h"
 
@@ -26,8 +31,10 @@
 #include <chrono>
 #include <csignal>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <thread>
@@ -92,6 +99,14 @@ int listCameras() {
     return kExitAllDelivered;
 }
 
+// The interval between a video's frames, unless its frame rate is unknown or unlikely.
+std::optional<Clock::duration> intervalOf(double fps) {
+    if (fps < live_sender::kMinPatternFps || fps > live_sender::kMaxPatternFps) {
+        return std::nullopt;
+    }
+    return std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
+}
+
 // Opens a camera or a video file. A file's own frame rate becomes the interval between frames; a camera
 // delivers frames at its own pace, so it has none.
 bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
@@ -105,10 +120,7 @@ bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
         if (!live_sender::openVideoFile(capture, file.path)) {
             return false;
         }
-        const double fps = capture.get(cv::CAP_PROP_FPS);
-        if (fps >= live_sender::kMinPatternFps && fps <= live_sender::kMaxPatternFps) {
-            interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
-        }
+        interval = intervalOf(capture.get(cv::CAP_PROP_FPS));
         return true;
     } catch (const std::exception&) {
         return false; // reported by the caller like any other source that does not open
@@ -134,6 +146,44 @@ bool waitUntil(Clock::time_point due) {
     return !stopRequested;
 }
 
+#if defined(LIVE_SENDER_HAS_FFMPEG)
+const char* nameOf(visual_debug::Transfer transfer) {
+    switch (transfer) {
+    case visual_debug::Transfer::Hlg:
+        return "HLG";
+    case visual_debug::Transfer::Pq:
+        return "PQ";
+    case visual_debug::Transfer::Sdr:
+        break;
+    }
+    return "SDR";
+}
+
+const char* nameOf(visual_debug::Primaries primaries) {
+    return primaries == visual_debug::Primaries::Bt2020 ? "BT.2020" : "BT.709";
+}
+
+// Opens a video for --hdr and says what it is, for example "clip.MOV: 3840x2160, 10-bit, HLG, BT.2020,
+// VideoToolbox". Nothing if it does not open, also said.
+std::unique_ptr<live_sender::FfmpegVideo> openHdrVideo(const std::string& path) {
+    std::string error;
+    std::unique_ptr<live_sender::FfmpegVideo> video = live_sender::FfmpegVideo::open(path, true, error);
+    if (!video) {
+        std::cerr << "cannot open " << path << ": " << error << '\n';
+        return nullptr;
+    }
+    const live_sender::VideoInfo& info = video->info();
+    std::cout << std::filesystem::path(path).filename().string() << ": " << info.size.width << 'x'
+              << info.size.height << ", " << info.bitDepth << "-bit, " << nameOf(info.transfer) << ", "
+              << nameOf(info.primaries) << ", " << info.decoder << '\n';
+    if (info.dolbyVisionProfile == 5) {
+        std::cerr << "warning: Dolby Vision profile 5 has no HDR10 or HLG base layer, so its colours will be "
+                     "wrong\n";
+    }
+    return video;
+}
+#endif
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -145,17 +195,26 @@ int main(int argc, char* argv[]) {
     if (arguments->listCameras) {
         return listCameras();
     }
+#if !defined(LIVE_SENDER_HAS_FFMPEG)
     if (arguments->hdr) {
         std::cerr << "live_sender was built without FFmpeg, so --hdr is not available\n";
         return kExitUsageError;
     }
+#endif
 
     cv::VideoCapture capture;
+#if defined(LIVE_SENDER_HAS_FFMPEG)
+    std::unique_ptr<live_sender::FfmpegVideo> video; // --hdr's
+#endif
     std::optional<Clock::duration> interval;
     std::function<std::optional<cv::Mat>()> next;
-    std::optional<live_sender::FramePacer> pacer;            // the pattern's
-    std::optional<live_sender::ReadAhead<TimedFrame>> ahead; // a file's, after `capture`: it reads from it
+    std::function<std::optional<TimedFrame>()> readTimed; // a file's
+    std::optional<live_sender::FramePacer> pacer;         // the pattern's
+    std::optional<live_sender::ReadAhead<TimedFrame>>
+        ahead; // a file's, after `capture` and `video`: it reads them
     std::optional<live_sender::Playback> playback;
+    visual_debug::ImageDescription description;
+    std::string described; // the description in the summary, as " (HLG, BT.2020)"
     int skipped = 0;
     if (const auto* pattern = std::get_if<live_sender::PatternSource>(&arguments->source)) {
         interval =
@@ -164,6 +223,25 @@ int main(int argc, char* argv[]) {
         next = [size = pattern->size, index = 0]() mutable -> std::optional<cv::Mat> {
             return live_sender::patternFrame(index++, size);
         };
+    } else if (arguments->hdr) {
+#if defined(LIVE_SENDER_HAS_FFMPEG)
+        video = openHdrVideo(std::get<live_sender::FileSource>(arguments->source).path);
+        if (!video) {
+            return kExitUsageError;
+        }
+        const live_sender::VideoInfo& info = video->info();
+        interval = intervalOf(info.fps);
+        description = {.valueRange = info.valueRange, .transfer = info.transfer, .primaries = info.primaries};
+        described = std::string(" (") + nameOf(info.transfer) + ", " + nameOf(info.primaries) + ")";
+        readTimed = [&video]() -> std::optional<TimedFrame> {
+            std::optional<live_sender::VideoFrame> frame = video->read();
+            if (!frame) {
+                return std::nullopt;
+            }
+            return TimedFrame{std::move(frame->image),
+                              std::chrono::duration_cast<Clock::duration>(frame->at)};
+        };
+#endif
     } else {
         if (!open(capture, *arguments, interval)) {
             if (const auto* camera = std::get_if<live_sender::CameraSource>(&arguments->source)) {
@@ -185,39 +263,40 @@ int main(int argc, char* argv[]) {
         if (std::holds_alternative<live_sender::CameraSource>(arguments->source)) {
             next = read; // a camera delivers at its own pace
         } else {
-            // A file is decoded ahead on a thread of its own and played at its own rate from its first frame:
-            // a frame due long ago is skipped rather than shown late. Without a frame rate it is sent as fast
-            // as it reads.
-            ahead.emplace(
-                [read, interval, index = 0]() mutable -> std::optional<TimedFrame> {
-                    std::optional<cv::Mat> frame = read();
-                    if (!frame) {
-                        return std::nullopt;
-                    }
-                    const Clock::duration at = interval ? *interval * index++ : Clock::duration::zero();
-                    return TimedFrame{std::move(*frame), at};
-                },
-                kFramesReadAhead);
-            next = [&ahead, &playback, &skipped, interval]() -> std::optional<cv::Mat> {
-                while (std::optional<TimedFrame> timed = ahead->take()) {
-                    if (!interval) {
-                        return std::move(timed->frame);
-                    }
-                    if (!playback) {
-                        playback.emplace(Clock::now() - timed->at, *interval);
-                    }
-                    if (playback->late(timed->at, Clock::now())) {
-                        ++skipped;
-                        continue;
-                    }
-                    if (!waitUntil(playback->due(timed->at))) {
-                        return std::nullopt; // Ctrl+C
-                    }
-                    return std::move(timed->frame);
+            readTimed = [read, interval, index = 0]() mutable -> std::optional<TimedFrame> {
+                std::optional<cv::Mat> frame = read();
+                if (!frame) {
+                    return std::nullopt;
                 }
-                return std::nullopt;
+                const Clock::duration at = interval ? *interval * index++ : Clock::duration::zero();
+                return TimedFrame{std::move(*frame), at};
             };
         }
+    }
+    if (readTimed) {
+        // A file is decoded ahead on a thread of its own and played at its own rate from its first frame: a
+        // frame due long ago is skipped rather than shown late. Without a frame rate it is sent as fast as it
+        // reads.
+        ahead.emplace(readTimed, kFramesReadAhead);
+        next = [&ahead, &playback, &skipped, interval]() -> std::optional<cv::Mat> {
+            while (std::optional<TimedFrame> timed = ahead->take()) {
+                if (!interval) {
+                    return std::move(timed->frame);
+                }
+                if (!playback) {
+                    playback.emplace(Clock::now() - timed->at, *interval);
+                }
+                if (playback->late(timed->at, Clock::now())) {
+                    ++skipped;
+                    continue;
+                }
+                if (!waitUntil(playback->due(timed->at))) {
+                    return std::nullopt; // Ctrl+C
+                }
+                return std::move(timed->frame);
+            }
+            return std::nullopt;
+        };
     }
 
     const auto waitAndContinue = [&pacer] {
@@ -231,13 +310,13 @@ int main(int argc, char* argv[]) {
     visual_debug::Client client(visual_debug::ClientOptions{.endpoint = arguments->endpoint});
     const live_sender::ChannelNames names = live_sender::channelNames(arguments->name);
     const live_sender::Tally tally =
-        live_sender::run(next, client, arguments->frames, waitAndContinue, names);
+        live_sender::run(next, client, arguments->frames, waitAndContinue, names, description);
 
     if (tally.camera.sent == 0 && !stopRequested) {
         std::cerr << "no frame could be read\n";
         return kExitUsageError;
     }
-    printTally(names.camera, tally.camera, skipped);
+    printTally(names.camera + described, tally.camera, skipped);
     printTally(names.edges, tally.edges);
     const bool allDelivered =
         tally.camera.delivered == tally.camera.sent && tally.edges.delivered == tally.edges.sent;

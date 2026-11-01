@@ -25,3 +25,25 @@ add_executable(live_sender main.cpp)
 target_link_libraries(live_sender PRIVATE live_sender_lib live_sender_video opencv_videoio)
 id_vision_lab_set_warnings(live_sender)
 id_vision_lab_add_sanitizer_defaults(live_sender)
+
+# --hdr reads a video with FFmpeg's own libraries: OpenCV's videoio gives 8-bit pictures without the 10-bit
+# data and the HDR tags. Optional: without them live_sender still builds, and --hdr says what is missing.
+# GLOBAL, so tests/ can link the clips it writes against the same target.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET GLOBAL libavformat libavcodec libswscale libavutil)
+endif()
+if(FFMPEG_FOUND)
+    add_library(live_sender_ffmpeg STATIC
+        ffmpeg_video.cpp
+        ffmpeg_video.h)
+    target_include_directories(live_sender_ffmpeg PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(live_sender_ffmpeg PUBLIC opencv_core visual_debug::visual_debug
+                                             PRIVATE PkgConfig::FFMPEG)
+    id_vision_lab_set_warnings(live_sender_ffmpeg)
+    target_link_libraries(live_sender PRIVATE live_sender_ffmpeg)
+    target_compile_definitions(live_sender PRIVATE LIVE_SENDER_HAS_FFMPEG=1)
+else()
+    message(STATUS "FFmpeg's libraries (libavformat, libavcodec, libswscale, libavutil) not found: "
+                   "live_sender builds without --hdr")
+endif()
