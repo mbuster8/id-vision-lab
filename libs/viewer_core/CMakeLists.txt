@@ -7,6 +7,7 @@ add_library(viewer_core STATIC
     src/image_tags.cpp
     src/live_channels.cpp
     src/pixel_inspector.cpp
+    src/region_statistics.cpp
     src/save_name.cpp
     src/viewport.cpp)
 add_library(viewer_core::viewer_core ALIAS viewer_core)

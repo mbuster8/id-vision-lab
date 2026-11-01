@@ -118,6 +118,7 @@ private:
     // display settings of the entry's name. Only the view's shows clipping.
     QImage shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping = false) const;
     void setShowClipping(bool show);
+    void showRegionStatistics(); // in the view's region label
     void changeDisplaySettings(const viewer_core::DisplaySettings& settings);
     // The settings chosen for the name, or else the default for an image with these tags.
     viewer_core::DisplaySettings settingsFor(const std::string& name,

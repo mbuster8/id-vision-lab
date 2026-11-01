@@ -32,6 +32,7 @@ id_vision_lab_add_test_executable(viewer_core_tests
         viewer_core/display_converter_test.cpp
         viewer_core/display_settings_test.cpp
         viewer_core/hdr_tone_map_test.cpp
+        viewer_core/region_statistics_test.cpp
         viewer_core/image_history_test.cpp
         viewer_core/live_channels_test.cpp
         viewer_core/pixel_inspector_test.cpp

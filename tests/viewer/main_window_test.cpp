@@ -61,6 +61,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -2202,6 +2203,104 @@ TEST(MainWindowTest, ShowClippingMarksTheLiveFrame) {
     QApplication::processEvents();
 
     EXPECT_EQ(viewedColour(*window), QColor(255, 0, 255));
+}
+
+// --- Region statistics ------------------------------------------------------------------------------------
+
+void sendMouse(QWidget& widget, QEvent::Type type, QPointF position, Qt::KeyboardModifiers modifiers) {
+    QMouseEvent event(type, position, widget.mapToGlobal(position), Qt::LeftButton, Qt::LeftButton,
+                      modifiers);
+    QCoreApplication::sendEvent(&widget, &event);
+}
+
+// Shift-drags across the whole view, so the region is the whole image.
+ImageView* selectWholeImage(MainWindow& window) {
+    auto* view = window.findChild<ImageView*>();
+    const QPointF corner(view->width() - 1, view->height() - 1);
+    sendMouse(*view, QEvent::MouseButtonPress, {0, 0}, Qt::ShiftModifier);
+    sendMouse(*view, QEvent::MouseMove, corner, Qt::ShiftModifier);
+    sendMouse(*view, QEvent::MouseButtonRelease, corner, Qt::ShiftModifier);
+    return view;
+}
+
+cv::Mat countingImage() {
+    cv::Mat image(4, 4, CV_8UC1);
+    for (int i = 0; i < 16; ++i) {
+        image.at<uchar>(i / 4, i % 4) = static_cast<uchar>(i);
+    }
+    return image;
+}
+
+TEST(MainWindowTest, RegionShowsStatistics) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("counting", countingImage());
+
+    const ImageView* view = selectWholeImage(*window);
+
+    EXPECT_EQ(view->regionText(), (QStringList{QString::fromUtf8("4×4 at 0, 0"),
+                                               QString::fromUtf8("I  min 0 · max 15 · mean 7.5 · σ 4.61")}));
+}
+
+TEST(MainWindowTest, RegionNamesEveryChannelAndWhatIsLeftOut) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    cv::Mat image(2, 2, CV_32FC3, cv::Scalar(0.25, 1.5, 1000));
+    image.at<cv::Vec3f>(0, 0)[1] = std::numeric_limits<float>::quiet_NaN();
+    window->addImage("floats", image);
+
+    const ImageView* view = selectWholeImage(*window);
+
+    EXPECT_EQ(view->regionText(), (QStringList{QString::fromUtf8("2×2 at 0, 0"),
+                                               QString::fromUtf8("B  min 0.25 · max 0.25 · mean 0.25 · σ 0"),
+                                               QString::fromUtf8("G  min 1.5 · max 1.5 · mean 1.5 · σ 0"),
+                                               QString::fromUtf8("R  min 1000 · max 1000 · mean 1000 · σ 0"),
+                                               QStringLiteral("1 not finite")}));
+}
+
+TEST(MainWindowTest, RegionFollowsTheShownImage) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("ten", cv::Mat(4, 4, CV_8UC1, cv::Scalar(10)));
+    window->addImage("twenty", cv::Mat(4, 4, CV_8UC1, cv::Scalar(20)));
+    const ImageView* view = selectWholeImage(*window);
+    ASSERT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 20")));
+
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    EXPECT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 10")))
+        << view->regionText().join(u'|').toStdString();
+}
+
+TEST(MainWindowTest, RegionFollowsTheLiveFrame) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    feedLive(window, "camera", liveFrame(10));
+    QApplication::processEvents();
+    const ImageView* view = selectWholeImage(window);
+    ASSERT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 10")));
+
+    feedLive(window, "camera", liveFrame(20));
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 20")))
+        << view->regionText().join(u'|').toStdString();
+}
+
+TEST(MainWindowTest, EscapeClearsTheRegion) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("counting", countingImage());
+    ImageView* view = selectWholeImage(*window);
+    ASSERT_TRUE(view->region().has_value());
+
+    QTest::keyClick(QApplication::focusWidget() != nullptr ? QApplication::focusWidget() : window.get(),
+                    Qt::Key_Escape);
+
+    EXPECT_EQ(view->region(), std::nullopt);
+    EXPECT_TRUE(view->regionText().isEmpty());
 }
 
 TEST(MainWindowTest, FreezeStopsRedrawsWhileCounting) {

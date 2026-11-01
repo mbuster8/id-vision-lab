@@ -2,10 +2,12 @@
 
 #include "viewer_core/image_history.h"
 #include "viewer_core/live_channels.h"
+#include "viewer_core/region_statistics.h"
 
 #include <QChar>
 #include <QLocale>
 #include <QString>
+#include <QStringList>
 #include <QtGlobal>
 
 // A name may hold line breaks, but the sidebar and the info strip show it on one line: each break becomes a
@@ -38,6 +40,11 @@ QString imageDetails(const viewer_core::ReceivedImage& image, const QLocale& loc
 // for a live channel.
 QString liveDetails(const QString& summary, const viewer_core::LiveChannel& channel,
                     const viewer_core::LiveStats& stats);
+
+// A region's label: "120×80 at 10, 20", then a line per channel, "B  min 3 · max 1023 · mean 512.3 · σ 20.1"
+// (labels and values as the pixel readout writes them for an image of this depth, mean and σ to four
+// significant digits), then "12 not finite" when values were left out.
+QStringList regionLines(const viewer_core::RegionStatistics& statistics, int channels, int depth);
 
 // "camera 14:03:22.517": a snapshot's name, from its frame's receive time, local and to the millisecond.
 QString snapshotName(const QString& channel, qint64 epochMilliseconds);

@@ -1,5 +1,7 @@
 #include "display_text.h"
 
+#include "viewer_core/pixel_inspector.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 
@@ -64,6 +66,30 @@ QString liveDetails(const QString& summary, const viewer_core::LiveChannel& chan
         text += QCoreApplication::translate("ImageInfoBar", " · %1 ms").arg(stats.age->count());
     }
     return text;
+}
+
+QStringList regionLines(const viewer_core::RegionStatistics& statistics, int channels, int depth) {
+    const cv::Rect& region = statistics.region;
+    QStringList lines{QString::fromUtf8("%1×%2 at %3, %4")
+                          .arg(region.width)
+                          .arg(region.height)
+                          .arg(region.x)
+                          .arg(region.y)};
+    const auto text = [](const std::string& number) { return QString::fromStdString(number); };
+    for (std::size_t i = 0; i < statistics.channels.size(); ++i) {
+        const viewer_core::ChannelStatistics& channel = statistics.channels[i];
+        const std::string_view label = viewer_core::channelLabel(channels, static_cast<int>(i));
+        lines << QString::fromUtf8("%1  min %2 · max %3 · mean %4 · σ %5")
+                     .arg(QString::fromLatin1(label.data(), static_cast<qsizetype>(label.size())),
+                          text(viewer_core::formatValue(channel.min, depth)),
+                          text(viewer_core::formatValue(channel.max, depth)),
+                          text(viewer_core::formatSignificant(channel.mean, 4)),
+                          text(viewer_core::formatSignificant(channel.standardDeviation, 4)));
+    }
+    if (statistics.nonFinite > 0) {
+        lines << QCoreApplication::translate("ImageView", "%1 not finite").arg(statistics.nonFinite);
+    }
+    return lines;
 }
 
 QString snapshotName(const QString& channel, qint64 epochMilliseconds) {

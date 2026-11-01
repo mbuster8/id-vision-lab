@@ -4,9 +4,13 @@
 
 #include <QImage>
 #include <QPointF>
+#include <QRect>
+#include <QStringList>
 #include <QWidget>
 
 #include <optional>
+
+class QPainter;
 
 // Shows one image: wheel to zoom at the cursor, drag to pan, double-click to fit. Reports the image pixel
 // under the cursor, so the window can show its original values.
@@ -31,10 +35,19 @@ public:
     double deviceScaleFor(QSize imageSize, KeepView keep) const;
     const QImage& picture() const; // as set; null for none
 
+    // A region of the image drawn with Shift + drag, in image pixels, clipped to the image. A new picture of
+    // the same image size keeps it; another size, or a left click without a drag, clears it.
+    std::optional<QRect> region() const;
+    void clearRegion();
+    // The lines of the region's label, drawn in a box above it (below when there is no room above).
+    void setRegionText(const QStringList& lines);
+    const QStringList& regionText() const;
+
 signals:
     void pixelHovered(int x, int y);
     void hoverLeft();
     void scaleChanged(); // after a zoom, a fit or a resize; never for a new picture
+    void regionChanged(std::optional<QRect> region);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -48,10 +61,17 @@ protected:
 
 private:
     void reportPixelAt(QPointF viewPoint);
+    cv::Point2d imagePointAt(QPointF viewPoint) const;
+    std::optional<QRect> regionBetween(cv::Point2d from, cv::Point2d to) const;
+    void paintRegionLabel(QPainter& painter, const QRectF& outline) const;
 
     QImage m_image;
     QSize m_imageSize; // what m_image stands for; its own size unless it was made smaller
     viewer_core::Viewport m_viewport;
     std::optional<QPointF> m_lastDragPosition;
-    std::optional<QPointF> m_hoverPosition; // while the cursor is over the view
+    std::optional<QPointF> m_hoverPosition;   // while the cursor is over the view
+    std::optional<QPointF> m_pressPosition;   // of the left button, to tell a click from a drag
+    std::optional<cv::Point2d> m_regionStart; // image point, while a Shift + drag draws a region
+    std::optional<QRect> m_region;
+    QStringList m_regionText;
 };

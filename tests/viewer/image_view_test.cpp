@@ -5,10 +5,14 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QPalette>
+#include <QRect>
 #include <QSignalSpy>
+#include <QStringList>
 #include <QWheelEvent>
 
 #include <gtest/gtest.h>
+
+#include <optional>
 
 namespace {
 
@@ -18,9 +22,17 @@ QImage filledImage(int width, int height) {
     return image;
 }
 
-void sendMouseEvent(ImageView& view, QEvent::Type type, QPointF position, Qt::MouseButton button) {
-    QMouseEvent event(type, position, view.mapToGlobal(position), button, button, Qt::NoModifier);
+void sendMouseEvent(ImageView& view, QEvent::Type type, QPointF position, Qt::MouseButton button,
+                    Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QMouseEvent event(type, position, view.mapToGlobal(position), button, button, modifiers);
     QCoreApplication::sendEvent(&view, &event);
+}
+
+// A left-button drag from `from` to `to`, in view coordinates.
+void drag(ImageView& view, QPointF from, QPointF to, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    sendMouseEvent(view, QEvent::MouseButtonPress, from, Qt::LeftButton, modifiers);
+    sendMouseEvent(view, QEvent::MouseMove, to, Qt::LeftButton, modifiers);
+    sendMouseEvent(view, QEvent::MouseButtonRelease, to, Qt::LeftButton, modifiers);
 }
 
 // 120 units is one notch of a mouse wheel; positive zooms in.
@@ -41,6 +53,57 @@ protected:
 
     ImageView m_view;
 };
+
+// --- Regions (the 100×100 image fills the 200×200 view at scale 2) ---------------------------------------
+
+// From the pixel under the press to the pixel under the release, both included; Shift + drag never pans.
+TEST_F(ImageViewTest, ShiftDragDrawsARegion) {
+    QSignalSpy changed(&m_view, &ImageView::regionChanged);
+    QSignalSpy hovered(&m_view, &ImageView::pixelHovered);
+
+    drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
+
+    ASSERT_EQ(changed.size(), 1);
+    EXPECT_EQ(m_view.region(), std::optional(QRect(10, 20, 21, 31)));
+    sendMouseEvent(m_view, QEvent::MouseMove, {20, 40}, Qt::NoButton);
+    EXPECT_EQ(hovered.last().at(0).toInt(), 10); // not panned
+    EXPECT_EQ(hovered.last().at(1).toInt(), 20);
+}
+
+TEST_F(ImageViewTest, RegionIsClippedToTheImage) {
+    m_view.setImage(filledImage(50, 50)); // at scale 4
+
+    drag(m_view, {-40, -40}, {120, 160}, Qt::ShiftModifier);
+
+    EXPECT_EQ(m_view.region(), std::optional(QRect(0, 0, 31, 41)));
+}
+
+TEST_F(ImageViewTest, SameSizeKeepsTheRegion) {
+    drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
+    QSignalSpy changed(&m_view, &ImageView::regionChanged);
+
+    m_view.setImage(filledImage(100, 100)); // another image of the same size
+    EXPECT_EQ(m_view.region(), std::optional(QRect(10, 20, 21, 31)));
+    EXPECT_EQ(changed.size(), 0);
+
+    m_view.setImage(filledImage(50, 50));
+    EXPECT_EQ(m_view.region(), std::nullopt);
+    EXPECT_EQ(changed.size(), 1);
+}
+
+TEST_F(ImageViewTest, ClickClearsTheRegion) {
+    drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
+    m_view.setRegionText({QStringLiteral("21×31 at 10, 20")});
+    drag(m_view, {100, 100}, {150, 150}); // a pan keeps it
+    EXPECT_TRUE(m_view.region().has_value());
+    QSignalSpy changed(&m_view, &ImageView::regionChanged);
+
+    drag(m_view, {100, 100}, {100, 100});
+
+    EXPECT_EQ(m_view.region(), std::nullopt);
+    EXPECT_TRUE(m_view.regionText().isEmpty());
+    EXPECT_EQ(changed.size(), 1);
+}
 
 TEST_F(ImageViewTest, ReportsPixelUnderRestingCursorWhenImageChanges) {
     QSignalSpy hovered(&m_view, &ImageView::pixelHovered);

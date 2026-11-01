@@ -24,10 +24,12 @@
 
 #include "viewer_core/display_converter.h"
 #include "viewer_core/pixel_inspector.h"
+#include "viewer_core/region_statistics.h"
 #include "viewer_core/save_name.h"
 #include "visual_debug/wire_format.h"
 
 #include <QAbstractButton>
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
@@ -343,6 +345,7 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(m_imageView, &ImageView::pixelHovered, this, &MainWindow::showPixel);
     connect(m_imageView, &ImageView::hoverLeft, m_pixelLabel, &QLabel::clear);
     connect(m_imageView, &ImageView::scaleChanged, this, &MainWindow::redrawLiveFrameForScale);
+    connect(m_imageView, &ImageView::regionChanged, this, &MainWindow::showRegionStatistics);
     updateEditActions();
 
     switch (dataProblem) {
@@ -538,6 +541,20 @@ MainWindow::~MainWindow() {
 // Space is the Freeze shortcut, which would otherwise take it from a button that has the keyboard focus (with
 // macOS keyboard navigation on, for one). Accepting the override sends the key to the button instead.
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // Esc clears a region, unless a text field has the focus: there it ends an edit or clears a search.
+    if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape &&
+        m_imageView->region()) {
+        const auto* widget = qobject_cast<QWidget*>(watched);
+        const QWidget* focus = QApplication::focusWidget();
+        const bool typing = qobject_cast<const QLineEdit*>(focus) != nullptr ||
+                            qobject_cast<const QAbstractSpinBox*>(focus) != nullptr ||
+                            qobject_cast<const QTextEdit*>(focus) != nullptr ||
+                            qobject_cast<const QPlainTextEdit*>(focus) != nullptr;
+        if (widget != nullptr && widget->window() == this && !typing) {
+            m_imageView->clearRegion();
+            return true;
+        }
+    }
     if (event->type() == QEvent::ShortcutOverride) {
         const auto* key = static_cast<QKeyEvent*>(event);
         const auto* button = qobject_cast<QAbstractButton*>(watched);
@@ -727,6 +744,7 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
                                           entry->original.channels() == 1, entry->origin.tags.isHdr());
     showImageText(*entry);
+    showRegionStatistics(); // a region kept for an image of the same size is now this one's
     updateEditActions();
 }
 
@@ -737,6 +755,27 @@ QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry, bool sh
             ? entry.display
             : viewer_core::toDisplayImage(entry.original, settings,
                                           {.tags = entry.origin.tags, .showClipping = showClipping}));
+}
+
+// Of the original in view, the live channel's shown frame included; nothing without a region, whose label the
+// view has cleared itself.
+void MainWindow::showRegionStatistics() {
+    const std::optional<QRect> region = m_imageView->region();
+    if (!region) {
+        return;
+    }
+    const cv::Mat* original = nullptr;
+    if (const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
+        original = &channel->shown;
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        original = &entry->original;
+    }
+    if (original == nullptr || original->empty()) {
+        return;
+    }
+    const viewer_core::RegionStatistics statistics = viewer_core::regionStatistics(
+        *original, cv::Rect(region->x(), region->y(), region->width(), region->height()));
+    m_imageView->setRegionText(regionLines(statistics, original->channels(), original->depth()));
 }
 
 // For the session, and for the view only: what is copied, saved or listed is never marked.
@@ -900,6 +939,7 @@ void MainWindow::showLiveChannel(const std::string& name) {
     m_pixelLabel->clear();
     drawLiveFrame(ImageView::KeepView::No);
     showLiveText(m_clock());
+    showRegionStatistics();
     setWindowTitle(viewerWindowTitle(QString::fromStdString(name), m_endpoint));
     updateEditActions();
 }
@@ -981,6 +1021,9 @@ void MainWindow::tick(Clock::time_point now) {
         updateLiveRow(channel, now);
     }
     showLiveText(now);
+    if (m_liveChannel) {
+        showRegionStatistics(); // twice a second, not per frame: a region of a 4K frame takes a while
+    }
     if (m_live.channels().empty()) {
         m_liveTimer->stop();
     }
