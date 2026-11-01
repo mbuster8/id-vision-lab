@@ -129,7 +129,8 @@ build/debug/examples/live_sender/live_sender path/to/video.mov
   with `N sent, N delivered`.
 - It keeps the video's timing even when sending cannot keep up, as with a 4K video at 60 frames a second in
   the debug build: a frame ready more than a frame late is skipped, and the summary counts them,
-  `N sent, N delivered, M skipped`. The video then takes as long as it lasts, not longer.
+  `N sent, N delivered, M skipped`. The video then takes as long as it lasts, not longer. If decoding is
+  what cannot keep up, skipping would not help: the video plays slower instead, every frame shown.
 - On macOS, files are read through AVFoundation, the Mac's own media framework. An iPhone's HDR video
   (HEVC 10-bit HLG) plays at full speed, with colours close to QuickTime Player's; a portrait clip arrives
   upright.

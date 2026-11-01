@@ -54,17 +54,22 @@ double pqDisplayLight(double signal) {
     return 10000.0 * std::pow(std::max(power - kPqC1, 0.0) / (kPqC2 - kPqC3 * power), 1.0 / kPqM1);
 }
 
+// Where `value` lies from `min` (0) to `max` (1), in halves so that no range a double can hold overflows: the
+// span from -1e308 to 1e308 is not a double, its half is.
+double normalised(double value, double min, double halfSpan) { return (value / 2 - min / 2) / halfSpan; }
+
 // What each channel's signal becomes before the channels are combined: HLG's scene light (0 to 12 at most),
 // PQ's display light in cd/m². The signal is normalised by its range and clipped: below at black, and above
-// at the HLG white point or at PQ's nominal white.
+// at the HLG white point or at PQ's nominal white. NaN is black.
 struct Linearise {
     Transfer transfer;
     double black;
-    double span;
+    double halfSpan;
     double maxSignal;
 
     float operator()(double value) const {
-        const double signal = std::clamp((value - black) / span, 0.0, maxSignal);
+        const double share = normalised(value, black, halfSpan);
+        const double signal = std::isnan(share) ? 0.0 : std::clamp(share, 0.0, maxSignal);
         return static_cast<float>(transfer == Transfer::Hlg ? hlgSceneLight(signal) : pqDisplayLight(signal));
     }
 };
@@ -121,9 +126,10 @@ const std::vector<uchar>& srgbTable() {
     return table;
 }
 
+// NaN is black: it must never become an index (std::lround gives 0 for it on ARM, but LONG_MIN on x86-64).
 uchar srgb(double linear) {
-    const auto index = static_cast<std::size_t>(std::lround(std::clamp(linear, 0.0, 1.0) * kSrgbSteps));
-    return srgbTable()[index];
+    const double clipped = std::isnan(linear) ? 0.0 : std::clamp(linear, 0.0, 1.0);
+    return srgbTable()[static_cast<std::size_t>(std::lround(clipped * kSrgbSteps))];
 }
 
 // Each value through `linearise`, as 32-bit floats with the same channels: a table for 8U and 16U, which
@@ -227,11 +233,11 @@ cv::Mat toneMapToSdr(const cv::Mat& signal, Transfer transfer, Primaries primari
           signalRange.min < signalRange.max)) {
         throw std::invalid_argument("toneMapToSdr: the signal range must increase");
     }
-    const double span = signalRange.max - signalRange.min;
+    const double halfSpan = signalRange.max / 2 - signalRange.min / 2;
     const bool hlg = transfer == Transfer::Hlg;
-    const double hlgTop =
-        std::clamp((hdrScaleTop(signal.depth(), signalRange) - signalRange.min) / span, 1.0, kMaxHlgSignal);
-    const Linearise linearise{transfer, signalRange.min, span, hlg ? hlgTop : 1.0};
+    const double hlgTop = std::clamp(
+        normalised(hdrScaleTop(signal.depth(), signalRange), signalRange.min, halfSpan), 1.0, kMaxHlgSignal);
+    const Linearise linearise{transfer, signalRange.min, halfSpan, hlg ? hlgTop : 1.0};
     // The white point, relative to reference white: a grey at the HLG top, or the assumed PQ peak.
     const double whitePoint =
         (hlg ? kHlgPeak * std::pow(hlgSceneLight(hlgTop), kHlgSystemGamma) : kPqAssumedPeak) /

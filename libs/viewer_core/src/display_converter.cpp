@@ -154,12 +154,14 @@ cv::Mat shrunk(const cv::Mat& image, cv::Size size) {
     return small;
 }
 
-// The HDR range tone-maps at the drawn size, so the signal is shrunk first: tone mapping is not linear, but
-// a 4K frame then costs no more than the window's pixels. Floating point has its non-finite values set to 0
-// first, and `finite` marks the others at that size (for a colour map; one channel only). A fourth channel is
-// alpha, mapped linearly from the signal range. HLG and PQ imply BT.2020 primaries when none are given.
+// The HDR range tone-maps an integer signal at the drawn size, so it is shrunk first: tone mapping is not
+// linear, but a 4K frame then costs no more than the window's pixels. Floating point has its non-finite
+// values set to 0 first, and `finite` marks the others at the drawn size (for a colour map; one channel
+// only). A fourth channel is alpha, mapped linearly from the signal range. HLG and PQ imply BT.2020 primaries
+// when none are given.
 cv::Mat toneMappedAtSize(const cv::Mat& image, const ImageTags& tags, cv::Size drawn, cv::Mat& finite) {
     const DisplayRange range = hdrSignalRange(image.depth(), tags);
+    const bool shrinkFirst = !isFloatingPoint(image.depth()) && drawn != image.size();
     cv::Mat signal = image;
     if (isFloatingPoint(image.depth())) {
         const Plane plane = planeOf(image);
@@ -170,29 +172,33 @@ cv::Mat toneMappedAtSize(const cv::Mat& image, const ImageTags& tags, cv::Size d
     } else if (image.depth() == CV_8S || image.depth() == CV_32S) {
         image.convertTo(signal, CV_32F); // OpenCV cannot average them
     }
-    if (drawn != image.size()) {
+    // An integer signal is shrunk first, so a 4K frame costs no more than the window's pixels. A
+    // floating-point one is mapped whole and shrunk after: averaging values near its type's limits would
+    // overflow to infinities, and mixing those makes NaN.
+    if (shrinkFirst) {
         signal = shrunk(signal, drawn);
-        if (!finite.empty()) {
-            finite = shrunk(finite, drawn);
-        }
+    }
+    if (!finite.empty() && drawn != image.size()) {
+        finite = shrunk(finite, drawn);
     }
     const Primaries primaries = tags.primaries.value_or(Primaries::Bt2020);
-    if (signal.channels() != 4) {
-        return toneMapToSdr(signal, *tags.transfer, primaries, range);
-    }
-    std::vector<cv::Mat> planes;
-    cv::split(signal, planes);
-    cv::Mat alpha;
-    const double scale = 255.0 / (range.max - range.min);
-    planes[3].convertTo(alpha, CV_8U, scale, -range.min * scale);
-    planes.pop_back();
-    cv::Mat colour;
-    cv::merge(planes, colour);
-    cv::split(toneMapToSdr(colour, *tags.transfer, primaries, range), planes);
-    planes.push_back(alpha);
     cv::Mat mapped;
-    cv::merge(planes, mapped);
-    return mapped;
+    if (signal.channels() != 4) {
+        mapped = toneMapToSdr(signal, *tags.transfer, primaries, range);
+    } else {
+        std::vector<cv::Mat> planes;
+        cv::split(signal, planes);
+        cv::Mat alpha;
+        const double scale = 127.5 / (range.max / 2 - range.min / 2); // in halves: no range overflows
+        planes[3].convertTo(alpha, CV_8U, scale, -range.min * scale);
+        planes.pop_back();
+        cv::Mat colour;
+        cv::merge(planes, colour);
+        cv::split(toneMapToSdr(colour, *tags.transfer, primaries, range), planes);
+        planes.push_back(alpha);
+        cv::merge(planes, mapped);
+    }
+    return shrinkFirst || drawn == image.size() ? mapped : shrunk(mapped, drawn);
 }
 
 // The values a picture cuts off: at or below `bottom`, at or above `top`.
@@ -228,16 +234,18 @@ constexpr uchar kMarkedAbove = 2; // the larger, so that it wins wherever both m
 
 // Per pixel, at full size: above when any channel is at or above the top, else below when any is at or below
 // the bottom. NaN fails every comparison, so it is never marked.
+// A fourth channel is alpha, how opaque the pixel is, never a value that clips.
 cv::Mat clippingMarks(const cv::Mat& image, const ClipRange& range) {
     const cv::Mat values = image.reshape(1);
-    const auto anyChannel = [&image](const cv::Mat& perValue) {
+    const int colourChannels = std::min(image.channels(), 3);
+    const auto anyChannel = [&image, colourChannels](const cv::Mat& perValue) {
         if (image.channels() == 1) {
             return perValue;
         }
         std::vector<cv::Mat> channels;
         cv::split(perValue.reshape(image.channels()), channels);
         cv::Mat any = channels[0].clone();
-        for (std::size_t i = 1; i < channels.size(); ++i) {
+        for (std::size_t i = 1; i < static_cast<std::size_t>(colourChannels); ++i) {
             cv::bitwise_or(any, channels[i], any);
         }
         return any;

@@ -421,13 +421,13 @@ ITU-R BT.2408) just below the screen's white and compresses brighter light smoot
 converts BT.2020 colours to BT.709, and encodes the result for an sRGB screen. An HLG video's codes above its
 nominal white are highlights, kept up to the top of the scale, so glare keeps its gradations; PQ is clipped at
 its nominal 10 000 cd/m². Auto, Hold and Fixed still show such an image's raw signal, which is what to use to
-read values against a range: raw HLG looks reasonable on an SDR screen, raw PQ dark. A frame drawn smaller
-than its pixels is shrunk before it is tone-mapped.
+read values against a range: raw HLG looks reasonable on an SDR screen, raw PQ dark. A frame of whole numbers
+drawn smaller than its pixels is shrunk before it is tone-mapped; a floating-point one after.
 
 **Show Clipping** (**Image → Show Clipping**, ⇧⌘K, or the foot of the **Range** menu) marks the pixels whose
 original value is at or beyond an end of the range in use: magenta at or above the maximum, blue at or below
 the minimum (white under Turbo and Viridis, which have blue). A pixel is marked when any channel is at an end,
-magenta when one channel is above and another below. Under HDR "above" means the top of the scale, the
+magenta when one channel is above and another below; alpha, a fourth channel, never marks one. Under HDR "above" means the top of the scale, the
 camera's own clipping; under Auto or Hold with a video's value range it means brighter than nominal white.
 Auto on an image without a value range stretches the image's own extremes to black and white, so it marks
 nothing, apart from 8-bit images at 0 and 255. A shrunk picture keeps every mark: a block with a marked pixel
@@ -509,7 +509,8 @@ live_sender --list-cameras
 
 A video file plays in real time, at its own frame rate: it is decoded ahead on a thread of its own, and a frame
 that is ready more than a frame late is skipped, so a slow send drops frames instead of slowing the video
-down. The summary counts them (`, 12 skipped`); they are not counted as sent. The pattern is sent at `--fps`; a
+down. The summary counts them (`, 12 skipped`); they are not counted as sent. Reading that is slower than
+the video cannot be caught up by skipping, so then the video plays slower instead, every frame shown. The pattern is sent at `--fps`; a
 camera delivers frames at its own pace. On macOS, camera access is granted to the program that starts
 `live_sender` (Terminal, Qt Creator or VS Code), so macOS may ask that program for permission the first time.
 Ctrl+C stops it, and the summary still prints:

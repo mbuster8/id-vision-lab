@@ -181,7 +181,7 @@ shown frame to the history as an ordinary image with
 | The server's worker thread | `Server`'s receive loop: polls the socket every 100 ms, decodes, calls `ImageSink::onImageReceived`, replies. It checks a stop flag on each poll, so `stop()` returns promptly without killing the thread. |
 | The viewer's UI thread | Everything in `viewer_core` and all widgets. Nothing there needs a lock. |
 | The viewer's storage thread | `StorageWorker`, started by `StorageController`: writes, deletes and loads the images kept between sessions, and their index. Only a viewer with a data folder has one. |
-| `live_sender`'s threads | The main thread sends frames. A file's frames are decoded on `ReadAhead`'s thread, at most three ahead: it waits for room before it reads, so it never holds more. Each frame's edges are found on a `std::async` thread while the frame goes out. With `--hdr`, FFmpeg adds its own: frame threads for software decoding and slice threads in `sws_scale_frame`'s conversion. |
+| `live_sender`'s threads | The main thread sends frames, played in real time by `RealTimeFrames`: a frame that was ready but is more than a frame late is skipped, as the sending fell behind; one it had to wait for is never skipped, as the reading fell behind, and the schedule starts again from it. A file's frames are decoded on `ReadAhead`'s thread, at most three ahead: it waits for room before it reads, so it never holds more. Each frame's edges are found on a `std::async` thread while the frame goes out. With `--hdr`, FFmpeg adds its own: frame threads for software decoding and slice threads in `sws_scale_frame`'s conversion. |
 
 `ImageSink::onImageReceived` is called **on the worker thread**; every sink is responsible for getting the
 image to its own UI thread. `QtImageSink` emits a signal connected with `Qt::QueuedConnection`, so the slot
@@ -263,15 +263,17 @@ Each image name and live channel can have its own `DisplaySettings`, kept for th
   defines it (1000 cd/m² peak), puts BT.2408's reference white (203 cd/m²) just below the screen's white with a
   curve that is the identity up to a knee and logarithmic above it, reaching white at the scale's top (65535
   for `live_sender --hdr`'s HLG), converts BT.2020 to BT.709 and encodes sRGB. 8- and 16-bit signals go through
-  lookup tables, in one `cv::parallel_for_` pass; a frame drawn smaller is shrunk first, which an integer
-  signal (no NaN) allows.
+  lookup tables, in one `cv::parallel_for_` pass. An integer signal drawn smaller is shrunk first, as it has
+  no NaN and its averages cannot overflow; a floating-point one is mapped whole and shrunk after, since values
+  near its type's limits average to infinities. Ranges are spanned in halves (`max / 2 − min / 2`), so the
+  widest a double holds still maps, and NaN shows black.
 - **Colours.** Grey, Turbo or Viridis, for single-channel images only. NaN and ±Inf are black whatever the
   map.
 - **Clipping marks** (`DisplayOptions::showClipping`, the view only). The original's pixels at or beyond an
   end of the range in use are found at full size, max-pooled exactly onto the drawn size so a shrunk block
   keeps a marked pixel, and painted over the picture: `kClippedAbove` (magenta), `kClippedBelowGrey` (blue) or,
-  under a colour map, `kClippedBelowMapped` (white). Auto without a value range marks nothing except 8-bit
-  images at 0 and 255.
+  under a colour map, `kClippedBelowMapped` (white). Only colour channels count: alpha never marks a pixel.
+  Auto without a value range marks nothing except 8-bit images at 0 and 255.
 
 **Region statistics.** `ImageView` draws the region (Shift-drag) and its label, and emits `regionChanged`;
 `MainWindow` computes `regionStatistics` on the original of the image or frame in view, when the region

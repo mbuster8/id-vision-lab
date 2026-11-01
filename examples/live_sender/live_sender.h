@@ -108,6 +108,39 @@ private:
     Clock::duration m_frameInterval;
 };
 
+// A video's frame and when it is due, from the start of the video.
+struct TimedFrame {
+    cv::Mat frame;
+    Playback::Clock::duration at;
+};
+
+// A video's frames in real time, as `take` hands them over from a reader running ahead (`ready`: whether
+// take() would return at once; nothing from take() is the end). Each frame is due its `at` after the first
+// one was shown, and waited for with `waitUntil`, whose false (Ctrl+C) ends the video. A frame that was ready
+// but is more than a frame interval late is skipped: the sending fell behind, and skipping catches up. One
+// that was not ready when asked for is never skipped: the reading fell behind, which skipping cannot catch
+// up, so the schedule starts again from it and the video plays slower instead of freezing. Without an
+// interval the frames come as fast as they are read.
+class RealTimeFrames {
+public:
+    using Clock = Playback::Clock;
+
+    RealTimeFrames(std::function<bool()> ready, std::function<std::optional<TimedFrame>()> take,
+                   std::optional<Clock::duration> interval, std::function<Clock::time_point()> now,
+                   std::function<bool(Clock::time_point)> waitUntil);
+    std::optional<cv::Mat> next(); // nothing at the end, or when waitUntil returns false
+    int skipped() const;
+
+private:
+    std::function<bool()> m_ready;
+    std::function<std::optional<TimedFrame>()> m_take;
+    std::optional<Clock::duration> m_interval;
+    std::function<Clock::time_point()> m_now;
+    std::function<bool(Clock::time_point)> m_waitUntil;
+    std::optional<Playback> m_playback;
+    int m_skipped = 0;
+};
+
 struct ChannelTally {
     int sent = 0;
     int delivered = 0;

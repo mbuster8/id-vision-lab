@@ -6,6 +6,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -161,6 +162,33 @@ TEST(HdrToneMap, FloatSignalMatchesSixteenBits) {
     for (std::size_t i = 0; i < values.size(); ++i) {
         EXPECT_NEAR(mapped[i], expected[i], 1) << i;
     }
+}
+
+// (F1) A range as wide as a double allows, which the wire format accepts, still maps linearly: its middle
+// shows as the middle of 0 to 1 does. Its span overflowed to infinity, and the white point became NaN.
+TEST(HdrToneMap, WidestRangeMapsLinearly) {
+    constexpr double kMax = std::numeric_limits<double>::max();
+    const cv::Mat middle(1, 1, CV_64FC3, cv::Scalar::all(0.0));
+    const cv::Mat half(1, 1, CV_64FC3, cv::Scalar::all(0.5));
+
+    const cv::Vec3b widest =
+        toneMapToSdr(middle, Transfer::Hlg, Primaries::Bt2020, {-kMax, kMax}).at<cv::Vec3b>(0, 0);
+    const cv::Vec3b unit = toneMapToSdr(half, Transfer::Hlg, Primaries::Bt2020, {0, 1}).at<cv::Vec3b>(0, 0);
+
+    EXPECT_EQ(widest, unit);
+}
+
+// (F1) NaN is black and infinities clip, as everywhere else. (A NaN once reached the sRGB table as an index:
+// 0 on ARM, which hid it, but far out of bounds on x86-64.)
+TEST(HdrToneMap, NonFiniteValuesClip) {
+    cv::Mat signal(1, 3, CV_32FC3);
+    signal.at<cv::Vec3f>(0, 0) = cv::Vec3f::all(std::numeric_limits<float>::quiet_NaN());
+    signal.at<cv::Vec3f>(0, 1) = cv::Vec3f::all(std::numeric_limits<float>::infinity());
+    signal.at<cv::Vec3f>(0, 2) = cv::Vec3f::all(-std::numeric_limits<float>::infinity());
+
+    const std::vector<int> mapped = reds(toneMapToSdr(signal, Transfer::Hlg, Primaries::Bt2020, {0, 1}));
+
+    EXPECT_EQ(mapped, (std::vector<int>{0, 255, 0}));
 }
 
 } // namespace

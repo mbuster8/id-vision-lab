@@ -8,11 +8,12 @@
 //
 // Without a source it reads camera 0. A camera runs until Ctrl+C and a file until its end, unless --frames
 // stops them sooner; a summary prints either way. A file plays in real time, read ahead on a thread of its
-// own: a frame that is ready more than a frame late is skipped and counted, never counted as undelivered.
-// With --hdr the file is read with FFmpeg's libraries instead of OpenCV's, as 16-bit frames tagged with the
-// video's transfer, primaries and nominal black and white (a live_sender built without them says so).
-// The pattern is sent at --fps (30 by default). Exit code: 0 when every frame sent was delivered, 1 when any
-// was not, 2 for bad arguments or an unreadable source.
+// own: a frame that is ready more than a frame late is skipped and counted, never counted as undelivered;
+// when the reading itself is too slow, the video plays slower instead. With --hdr the file is read with
+// FFmpeg's libraries instead of OpenCV's, as 16-bit frames tagged with the video's transfer, primaries and
+// nominal black and white (a live_sender built without them says so). The pattern is sent at --fps (30 by
+// default). Exit code: 0 when every frame sent was delivered, 1 when any was not, 2 for bad arguments or an
+// unreadable source.
 
 #include "live_sender.h"
 #include "read_ahead.h"
@@ -57,11 +58,7 @@ constexpr const char* kUsage =
     "                   [--name NAME] [--endpoint <uri>]\n"
     "       live_sender --list-cameras\n";
 
-// A video's frame and when it is due, from the start of the video.
-struct TimedFrame {
-    cv::Mat frame;
-    Clock::duration at;
-};
+using live_sender::TimedFrame;
 
 #if defined(__APPLE__)
 constexpr bool kCamerasNumberedWithoutGaps = true; // AVFoundation numbers the cameras it finds
@@ -212,10 +209,9 @@ int main(int argc, char* argv[]) {
     std::optional<live_sender::FramePacer> pacer;         // the pattern's
     std::optional<live_sender::ReadAhead<TimedFrame>>
         ahead; // a file's, after `capture` and `video`: it reads them
-    std::optional<live_sender::Playback> playback;
+    std::optional<live_sender::RealTimeFrames> realTime; // a file's, played from `ahead`
     visual_debug::ImageDescription description;
     std::string described; // the description in the summary, as " (HLG, BT.2020)"
-    int skipped = 0;
     if (const auto* pattern = std::get_if<live_sender::PatternSource>(&arguments->source)) {
         interval =
             std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / pattern->fps));
@@ -274,29 +270,11 @@ int main(int argc, char* argv[]) {
         }
     }
     if (readTimed) {
-        // A file is decoded ahead on a thread of its own and played at its own rate from its first frame: a
-        // frame due long ago is skipped rather than shown late. Without a frame rate it is sent as fast as it
-        // reads.
+        // A file is decoded ahead on a thread of its own and played in real time (see RealTimeFrames).
         ahead.emplace(readTimed, kFramesReadAhead);
-        next = [&ahead, &playback, &skipped, interval]() -> std::optional<cv::Mat> {
-            while (std::optional<TimedFrame> timed = ahead->take()) {
-                if (!interval) {
-                    return std::move(timed->frame);
-                }
-                if (!playback) {
-                    playback.emplace(Clock::now() - timed->at, *interval);
-                }
-                if (playback->late(timed->at, Clock::now())) {
-                    ++skipped;
-                    continue;
-                }
-                if (!waitUntil(playback->due(timed->at))) {
-                    return std::nullopt; // Ctrl+C
-                }
-                return std::move(timed->frame);
-            }
-            return std::nullopt;
-        };
+        realTime.emplace([&ahead] { return ahead->ready(); }, [&ahead] { return ahead->take(); }, interval,
+                         [] { return Clock::now(); }, waitUntil);
+        next = [&realTime] { return realTime->next(); };
     }
 
     const auto waitAndContinue = [&pacer] {
@@ -316,7 +294,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "no frame could be read\n";
         return kExitUsageError;
     }
-    printTally(names.camera + described, tally.camera, skipped);
+    printTally(names.camera + described, tally.camera, realTime ? realTime->skipped() : 0);
     printTally(names.edges, tally.edges);
     const bool allDelivered =
         tally.camera.delivered == tally.camera.sent && tally.edges.delivered == tally.edges.sent;

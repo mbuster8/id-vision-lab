@@ -300,6 +300,23 @@ TEST(DisplayConverter, HdrShrinksBeforeMapping) {
     }
 }
 
+// (F1) A floating-point frame is tone-mapped whole, then shrunk: averaging values near its type's limits
+// overflows to infinities, and mixing those makes NaN. Here white and black average to mid-grey.
+TEST(DisplayConverter, HdrMapsFloatsBeforeShrinking) {
+    cv::Mat signal(1, 2, CV_32FC3);
+    signal.at<cv::Vec3f>(0, 0) = cv::Vec3f::all(std::numeric_limits<float>::max());
+    signal.at<cv::Vec3f>(0, 1) = cv::Vec3f::all(-std::numeric_limits<float>::max());
+    const viewer_core::ImageTags tags{.transfer = viewer_core::Transfer::Hlg,
+                                      .primaries = viewer_core::Primaries::Bt2020};
+
+    const cv::Mat display = toDisplayImage(signal, kHdr, {.size = {1, 1}, .tags = tags});
+
+    ASSERT_EQ(display.size(), cv::Size(1, 1));
+    for (int channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(display.at<cv::Vec4b>(0, 0)[channel], 127.5, 1) << channel;
+    }
+}
+
 TEST(DisplayConverter, HdrKeepsAlphaAndShowsTwoChannelsAsAuto) {
     cv::Mat withAlpha(2, 2, CV_16UC4, cv::Scalar(30000, 30000, 30000, 65535));
     const cv::Mat twoChannels(2, 2, CV_16UC2, cv::Scalar(100, 900));
@@ -379,6 +396,23 @@ TEST(DisplayConverter, FixedMarksBeyondItsEnds) {
     EXPECT_NE(rgbAt(display, 1), viewer_core::kClippedAbove);
     EXPECT_EQ(rgbAt(display, 2), viewer_core::kClippedAbove);
     EXPECT_EQ(rgbAt(display, 3), cv::Vec3b(0, 0, 0)); // NaN is never marked
+}
+
+// (F2) Alpha is how opaque a pixel is, not a value that clips: an opaque or a transparent BGRA picture is not
+// marked for it, while a colour channel at an end still is.
+TEST(DisplayConverter, ClippingIgnoresAlpha) {
+    const cv::Mat opaque(1, 1, CV_8UC4, cv::Scalar(128, 128, 128, 255));
+    const cv::Mat transparent(1, 1, CV_8UC4, cv::Scalar(128, 128, 128, 0));
+    const cv::Mat blownBlue(1, 1, CV_8UC4, cv::Scalar(255, 128, 128, 128));
+
+    EXPECT_EQ(cv::norm(toDisplayImage(opaque, DisplaySettings{}, kShowClipping), toDisplayImage(opaque),
+                       cv::NORM_INF),
+              0.0);
+    EXPECT_EQ(cv::norm(toDisplayImage(transparent, DisplaySettings{}, kShowClipping),
+                       toDisplayImage(transparent), cv::NORM_INF),
+              0.0);
+    EXPECT_EQ(rgbAt(toDisplayImage(blownBlue, DisplaySettings{}, kShowClipping), 0),
+              viewer_core::kClippedAbove);
 }
 
 // HDR's top is the camera's own clip; a super-white is not clipped there, though Auto with the hint clips it.

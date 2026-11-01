@@ -232,6 +232,39 @@ bool Playback::late(Clock::duration at, Clock::time_point now) const {
     return now - due(at) > m_frameInterval;
 }
 
+RealTimeFrames::RealTimeFrames(std::function<bool()> ready, std::function<std::optional<TimedFrame>()> take,
+                               std::optional<Clock::duration> interval,
+                               std::function<Clock::time_point()> now,
+                               std::function<bool(Clock::time_point)> waitUntil)
+    : m_ready(std::move(ready)), m_take(std::move(take)), m_interval(interval), m_now(std::move(now)),
+      m_waitUntil(std::move(waitUntil)) {}
+
+std::optional<cv::Mat> RealTimeFrames::next() {
+    for (;;) {
+        const bool waited = !m_ready();
+        std::optional<TimedFrame> timed = m_take();
+        if (!timed) {
+            return std::nullopt;
+        }
+        if (!m_interval) {
+            return std::move(timed->frame);
+        }
+        const Clock::time_point now = m_now();
+        if (!m_playback || (waited && m_playback->late(timed->at, now))) {
+            m_playback.emplace(now - timed->at, *m_interval); // the start, or the reading fell behind
+        } else if (m_playback->late(timed->at, now)) {
+            ++m_skipped;
+            continue;
+        }
+        if (!m_waitUntil(m_playback->due(timed->at))) {
+            return std::nullopt; // Ctrl+C
+        }
+        return std::move(timed->frame);
+    }
+}
+
+int RealTimeFrames::skipped() const { return m_skipped; }
+
 // The edges are found on another thread while the frame goes out: a 4K frame's take about as long as sending
 // it.
 Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::ImageSender& sender,

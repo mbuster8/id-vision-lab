@@ -33,6 +33,12 @@ public:
     ReadAhead(const ReadAhead&) = delete;
     ReadAhead& operator=(const ReadAhead&) = delete;
 
+    // Whether take() would return at once: an item waits, or the stream has ended.
+    bool ready() const {
+        const std::lock_guard lock(m_mutex);
+        return !m_items.empty() || m_ended;
+    }
+
     std::optional<T> take() {
         std::unique_lock lock(m_mutex);
         m_changed.wait(lock, [this] { return !m_items.empty() || m_ended; });
@@ -80,7 +86,7 @@ private:
 
     std::function<std::optional<T>()> m_read;
     std::size_t m_depth;
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::condition_variable m_changed;
     std::deque<T> m_items;
     bool m_ended = false;
