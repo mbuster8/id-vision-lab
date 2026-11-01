@@ -13,6 +13,7 @@ build.
 | `visual_debug_example_sender` (the **Visual Debug Example Sender**) | A small Qt app: open an image file and send it to the viewer. Shows how a GUI application uses the library. |
 | `pipeline_demo` | A command-line OpenCV pipeline that sends the result of each of its ten stages. Exercises every image type the viewer handles. |
 | `minimal_sender` | The smallest real use of the library: one include, one call per image. |
+| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels, the frames and their Canny edges, named after the source (`camera 0`, the video file's name) or as you name them. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
 
 All senders reach the viewer through the `visual_debug` library, over ZeroMQ on `tcp://127.0.0.1:7139` by
 default. Start the viewer first.
@@ -69,10 +70,20 @@ kind (information, warning or error) and a text. The viewer logs:
 - the server's state: listening, paused, stopped, or not listening and why;
 - every received image, with its name, size, channels, depth and pixel bytes, timed when the server finished
   decoding it rather than when the window showed it;
-- requests it refused, with the reason (`viewer busy`, `viewer paused`, a malformed message). Refusals that
-  arrive while the window is busy are combined: `Rejected 3 requests: [viewer paused]`;
+- requests it refused, with the reason (`viewer busy`, a malformed message). Refusals that arrive while the
+  window is busy are combined, `Rejected 3 requests: [viewer busy]`, and a sender that goes on being refused
+  gets at most one line a second. While the viewer is paused, its refusals are only counted, and logged once
+  when you resume or stop: `Rejected 900 requests while paused: [viewer paused]`;
 - opened and saved files, renames, duplicates, deletes, undos and copies, and files it could not open or save;
-- images dropped because the history is full: `Dropped the oldest image`.
+- images dropped because the history is full: `Dropped the oldest image`;
+- live channels (see [Live channels](#live-channels)): `Live channel [camera] started`,
+  `Live channel [camera] idle after 1234 frames (12 dropped)` (the frames since it started, and how many of
+  them were dropped), `Closed live channel [camera]`, `Live channel [cam9] replaced idle channel [camera]`,
+  `Refused live channel [cam9]: 8 channels are open` (once per name, for up to 8 names; any more are counted
+  as `Rejected 150 requests: [too many live channels]`, at most one line a second),
+  `Muted live channel [camera]`, `Unmuted live channel [camera]`, and
+  `Snapshot [camera 14:03:22.517] (640×480 · 3 ch · 8U · 921.6 kB)`. Never a line per frame, and no
+  `started` or `idle after` lines for a muted channel.
 
 Names, file paths, endpoints and refusal reasons are written in square brackets, so a name with spaces reads
 plainly: `Renamed [old image.jpg] to [new image.jpg]`. Counts and sizes are not.
@@ -118,6 +129,8 @@ received and modified times and their original pixels at every depth. It is off 
   undone.
 - **Port `*`.** A viewer whose port is `*` gets a different port, and so a different folder, on every
   start: it stores nothing and keeps its log in memory only.
+- **Live channels.** Live frames are never stored, and neither are snapshots of them or copies of those,
+  even with the setting on. Save As and Copy Image are the only ways a live frame leaves the viewer.
 
 ### Options
 
@@ -153,8 +166,10 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | Drag with the left button | Pan. The image cannot be dragged past its edges. |
 | Double-click | Fit the whole image to the window again. |
 | Hover | The status bar shows the pixel under the cursor (see below). Leaving the image clears it. |
-| Click a thumbnail | Show that image, fitted. The newest image is at the top and is shown as it arrives. |
-| ↑ and ↓ | With the sidebar focused, as it is when the window opens, show the image above or below in the list. |
+| Shift-drag | Draw a region: its size and each channel's minimum, maximum, mean and standard deviation show beside it (see [Region statistics](#region-statistics)). A click in the view, or Esc, clears it. |
+| Click a thumbnail | Show that image, fitted. The newest image is at the top and is shown as it arrives, unless a live channel is in the view. |
+| Click a live channel's row | Show that channel, updating in place (see [Live channels](#live-channels)). |
+| ↑ and ↓ | With the sidebar focused, as it is when the window opens, show the entry above or below: the live channels first, then the images as listed (see [The sidebar](#the-sidebar)). |
 | **File → Open…** (⌘O) | Open an image file (PNG, JPEG, BMP, TIFF, WebP, PNM, or anything else OpenCV reads). It is read with its original depth and channels, so a 16-bit PNG stays 16-bit, and joins the history like a received image. |
 | **File → Save As…** (⇧⌘S) | Save the image in the view, as shown on screen, as PNG or JPEG. The suggested name is the image's name without an image-file extension (`photo.webp #3` suggests `photo #3.png`; `result v1.2` keeps its dot). `.png` is added if you type no extension. |
 | **Quit** (⌘Q) | Quit. On macOS it is in the application menu (**Visual Debug Viewer**); on other systems in **File**. |
@@ -167,6 +182,10 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | **Edit → Find…** (⌘F) | Put the cursor in the sidebar's search field, with its text selected. |
 | **View → Show in Sidebar**, **View → Sort By** | The same choices as the sidebar's options button (see [The sidebar](#the-sidebar)). |
 | **View → Show Log** (⌘L) | Open or close the activity log, as **Log ▴** in the status bar does (see [Activity log](#activity-log)). |
+| **Image → Range**, **Image → Colours** | The same choices as the info strip's **Range** and **Colours** buttons (see [Display range and colours](#display-range-and-colours)). |
+| **Image → Show Clipping** (⇧⌘K) | Mark the pixels at or beyond the ends of the range in use, in the view (see [Display range and colours](#display-range-and-colours)). Also at the foot of the **Range** button's menu. |
+| **Image → Freeze** (⇧⌘T, or Space) | Keep a live channel's frame in view while frames go on arriving; again to show the newest. Space freezes from anywhere but a text field or a button that has the keyboard focus, which Space presses instead. Only while a live channel is shown (see [Live channels](#live-channels)). |
+| **Image → Snapshot** (⌘T) | Copy the live frame in view into the history, as `camera 14:03:22.517`. Only while a live channel is shown. |
 | **View → Appearance** | **System** (the default) follows the system's light or dark appearance; **Light** and **Dark** keep one whatever the system does. The choice is kept, and the example sender shares it (see [Running the example sender](#running-the-example-sender)). Needs Qt 6.8 or newer: built with older Qt, the menu is absent and both programs follow the system. |
 | **History → Keep Images Between Sessions** | Store the history on disk, for every viewer (see [Keeping images between sessions](#keeping-images-between-sessions)). |
 | **History → Clear History…** | Delete every image in this viewer, in memory and on disk, after asking. |
@@ -176,8 +195,9 @@ The Edit menu acts on the image in the view. While you type in a text field, suc
 ⌘Z and ⌘⌫ act on the text instead.
 
 **Copy Image and Save As take the 8-bit picture on screen, not the original values.** Other programs cannot
-take 16-bit, signed or floating-point pixels, so a Sobel result pastes as the stretched grey image you see.
-The readout (below) is where the original values are.
+take 16-bit, signed or floating-point pixels, so a Sobel result pastes as the stretched grey image you see,
+in the display range and colours you chose. The readout (below) is where the original values are. With a live
+channel in view, they take its frame on screen, and Save As suggests the name a snapshot of it would get.
 
 The history keeps the newest 100 images, or fewer if they would hold more than 2 GiB of pixels; the
 oldest are dropped first. The pixels counted are each image's original and its 8-bit copy on screen, and
@@ -205,9 +225,12 @@ duplicate.
   compact row, with the text on the left and the three icons in a row on the right, so a names-only list fits
   many more images. The icons' place is kept on every row, so the text never moves when they appear.
 - **Right-click menu.** Rename…, Duplicate, Copy Image, Save As… and Delete, for the thumbnail clicked.
-- **Keys.** With the sidebar focused (as it is when the window opens, or after clicking a thumbnail), the
-  arrow keys move through the images and Delete or Backspace deletes the selected one. On a Mac keyboard the
-  key labelled "delete" is Backspace.
+- **Keys.** With the sidebar focused (as it is when the window opens, or after clicking a thumbnail), ↑ and
+  ↓ move through one list: the live channels that are not muted, in their order, then the images as listed,
+  with the search and sort applied. Each one is shown as you reach it: ↑ from the first image shows the last
+  channel, ↓ from the last channel the first image, and nothing happens past either end. With nothing
+  chosen, ↓ goes to the first entry. Clicking a channel's row leaves the keyboard where it was. Delete or
+  Backspace deletes the selected image. On a Mac keyboard the key labelled "delete" is Backspace.
 
 #### Searching and sorting
 
@@ -238,12 +261,83 @@ The row at the top of the sidebar holds the search field and an options button, 
   keys stay newest first. The list re-sorts at once when an image arrives or is renamed, and the viewer
   remembers the sort.
 
+### Live channels
+
+A program that sends each frame with `visual_debug::sendLive(frame, "camera")` (see
+[worked example 1](#1-one-line-debugging-with-sendimage)), such as `live_sender`, streams it as a **live
+channel**: the viewer shows the channel's newest frame in place, instead of adding every frame to the history.
+
+- **The Live group.** While channels exist, a **Live** group sits at the top of the sidebar, above the search,
+  with a row per channel in the order they started: the newest frame (in the channel's range and colours),
+  the channel's name on one line, its frame rate (`30 fps`: frames that arrived in the last second) and its
+  state as a dot and a word or two. The dot is in the accent colour while frames arrive, grey otherwise. The
+  words are **live** while frames arrive; **idle** once none has come for 3 seconds; **frozen** while frozen;
+  **muted** while muted (below); and **frozen · idle** or **muted · idle** for a frozen or muted channel that
+  has gone idle. Three rows show at first; more scroll, and the arrow keys scroll the row they reach into
+  view. Drag the grip below the rows, which looks like the sidebar's divider, to show more or fewer of
+  them at once, in whole rows, from one to all eight; the viewer remembers how many.
+- **Showing a channel.** Click its row, or reach it with ↑ and ↓ (see [The sidebar](#the-sidebar)). The
+  first channel to start is shown at once if nothing else is in the view. The view shows a history image or a
+  channel, never both: clicking a thumbnail leaves the channel, and clicking the row again returns to it.
+  Frames of the same size keep the zoom and pan; a frame of another size is fitted. The readout reads the
+  original values of the frame on screen, and the window's title names the channel.
+- **Nothing takes its place.** While a channel is shown, images that arrive are listed in the sidebar without
+  taking the view, so the stream stays in view. Rename, Duplicate and Delete are off; Copy Image and Save As
+  take the frame on screen.
+- **The info strip** shows, for example,
+  `camera  live · 1920×1080 · 3 ch · 8U · 30 fps in · 30 drawn · 12 dropped · 18 ms`: the state, the frame's
+  size and type (and its description, if the sender gave one: see [The info strip](#the-info-strip)), the
+  frames that arrived and the frames the view drew in the last second, the frames dropped
+  since the channel's row appeared, idle spells included (a newer frame arrived before the view could take
+  the older one), and the frame's
+  age: the time it arrived minus the time the sender stamped on it. The age compares two clocks, so it means
+  something only when sender and viewer run on one computer; a frame without a stamp shows none. The counters
+  refresh twice a second.
+- **Freeze** (**Image → Freeze**, ⇧⌘T, Space, or the strip's **Freeze** button) keeps the frame in view while
+  frames go on arriving and being counted; freezing again shows the newest. Each channel is frozen on its own.
+- **Snapshot** (**Image → Snapshot**, ⌘T, or the strip's **Snapshot** button) copies the frame in view, frozen
+  or not, into the history as `camera 14:03:22.517`, its arrival time to the millisecond, with the channel's
+  range and colours. The channel stays in view. Snapshots stay in memory, even with Keep Images Between
+  Sessions on.
+- **Muting.** A channel you do not want to see, such as a second camera, can be muted: hover its row and
+  click the eye with a stroke through it (it also shows on the row in view), or right-click the row and
+  choose **Mute**. The row reads **muted**, keeps the picture it had, greyed, and shows no rate; its button
+  stays visible and pressed. A muted channel's frames are still accepted, so its sender gets `Delivered` and
+  is never slowed down, and still counted, so it still goes idle and comes back; but nothing is converted or
+  drawn for it. It never takes the view: muting unfreezes a channel, muting the one in view shows the image
+  you looked at before it, clicking its row does nothing, and ↑ and ↓ skip it. The log says when it is muted and
+  unmuted, and nothing else about it meanwhile. Mute belongs to the name until the viewer quits: a muted
+  channel that is closed and comes back is still muted. Click the button again, or choose **Unmute**, to
+  see it.
+- **Closing.** A channel that has gone idle shows a close button (✕) on its row, frozen or muted or not; the
+  right-click menu's **Close** is enabled at the same time. One that still streams has none: stop its sender,
+  and 3 seconds later it is idle. Closing the channel in view shows the image you looked at before it, if it
+  is still in the history.
+- **Limits.** At most 8 channels, whose newest frames may hold 1 GiB together. A ninth channel takes the place
+  of the one that has been idle longest, never the one in view; with all 8 active, its frames are refused,
+  and its sender gets `Rejected` (`too many live channels`). So does any frame that would take the channels
+  past 1 GiB, unless closing idle channels makes room. Keep a channel's name the same for the whole stream: a
+  name with a frame number in it makes every frame a new channel. A sender is never slowed down: the viewer
+  keeps one waiting frame per channel, the newest, and counts the older ones it replaces as dropped.
+- **Large frames.** A frame drawn smaller than its own pixels, such as a 4K frame fitted to the window, is
+  shrunk to the drawn size before it is coloured and drawn, instead of being converted whole and scaled on
+  screen; zooming or resizing the window redraws it at the new size. Zoomed in to 1:1 or closer, the whole
+  frame is converted. The readout, Copy Image, Save As and Snapshot always use the full frame.
+
 ### The info strip
 
 One line above the image shows its name, a pencil and its details, for example
 `Sobel X ✎  640×480 · 1 ch · 16S · 614.4 kB`. The size is the image's pixel data (rows × columns × bytes per
 element) for a received image, and the file's size on disk, marked `file`, for an opened one. Sizes use decimal
-units, as Finder shows them. With no image, the strip is hidden.
+units, as Finder shows them. With no image, the strip is hidden. At its right end are the **Range** and
+**Colours** buttons (see [Display range and colours](#display-range-and-colours)) and, while a live channel is
+shown, **Freeze** and **Snapshot**; a live channel's name has no pencil.
+
+An image sent with a description (see [worked example 1](#1-one-line-debugging-with-sendimage)) names it
+after its type: its transfer, primaries and value range, for example
+`Horses close to Tegernsee.MOV  live · 3840×2160 · 3 ch · 16U · HLG · BT.2020 · 4100–60219 · …` for a frame
+of an iPhone's HLG video from `live_sender --hdr`. The description stays with the image in the history, its snapshots and duplicates, and
+the images kept between sessions.
 
 **Renaming.** Click the pencil (here or on the thumbnail) and type. Enter saves, Esc cancels, and clicking
 elsewhere saves, as in Finder. The rename stays with the image it started on, even if new images arrive
@@ -267,6 +361,26 @@ X=12 Y=40 · B=12 G=200 R=3
 Integers print exactly, including negative values of signed images. Floating-point values print with up
 to six significant digits, always with a decimal point regardless of the system's language settings.
 
+### Region statistics
+
+Shift-drag in the view to draw a rectangle. It is outlined, and a label beside it gives its size and place and,
+per channel, the minimum, maximum, mean and standard deviation of the original values. Over a whole 2×2
+floating-point BGR image whose one green value is NaN:
+
+```text
+2×2 at 0, 0
+B  min 0.25 · max 0.25 · mean 0.25 · σ 0
+G  min 1.5 · max 1.5 · mean 1.5 · σ 0
+R  min 1000 · max 1000 · mean 1000 · σ 0
+1 not finite
+```
+
+The labels and number format are the readout's; the mean and σ (the population standard deviation) have up to
+four significant digits. NaN and infinite values are left out of the figures and counted on the last line.
+The region stays while the images or frames shown have the same size, so you can compare them; on a live
+channel its figures follow the frame in view, refreshed twice a second. A click in the view, Esc (unless a text
+field has the keyboard), or an image of another size clears it. A plain drag still pans.
+
 ### How images are displayed
 
 | Image | On screen |
@@ -279,6 +393,62 @@ to six significant digits, always with a decimal point regardless of the system'
 | 4 channels | Read as BGRA; transparent areas show a grey checkerboard, in greys that suit dark or light mode. |
 
 **Save As…** writes this displayed version; PNG and JPEG cannot hold every depth.
+
+### Display range and colours
+
+The info strip's **Range: Auto ▾** and, for a single-channel image, **Colours: Grey ▾** change how the
+picture in the view maps the original values to the screen, for history images and live channels alike. The
+**Image** menu holds the same choices. The readout still shows the original values.
+
+| Range | On screen |
+|---|---|
+| **Auto** (the default) | As in the table above: 8-bit values as they are, other depths stretched from each image's smallest value to its largest. |
+| **Hold** | The range Auto shows now, kept for the frames that follow, so a live channel's brightness stops changing with each frame's range. |
+| **Fixed…** | A minimum and maximum that you type, with a full stop as the decimal mark. **Apply** is enabled while the minimum is below the maximum. The popup opens below the Range button, its right edge at the button's, and moves left or up as needed to stay inside the window and the screen. |
+| **HDR** | Only for an image or frame tagged HLG or PQ, such as `live_sender --hdr`'s, and the default for its name until you choose another range. Tone-maps the video for this screen (see below). |
+
+Hold and Fixed apply to 8-bit images too. The minimum shows black and the maximum white, and values outside
+the range are clipped to them.
+
+**A sender's value range.** An image sent with a value range (see
+[worked example 1](#1-one-line-debugging-with-sendimage)) is shown by Auto and Hold from that range's minimum to
+its maximum, instead of from its own smallest to largest value, so a 10-bit picture held in 16 bits, or a
+mask from 0 to 1, shows right without typing a Fixed range, and a live channel's brightness stops changing
+with each frame. Values beyond the range are clipped. Fixed overrides it.
+
+**HDR.** HLG and PQ video keeps its highlights above the white an SDR screen can show. The HDR range turns the
+signal into light as ITU-R BT.2100 defines it (a 1000 cd/m² peak), puts HDR reference white (203 cd/m²,
+ITU-R BT.2408) just below the screen's white and compresses brighter light smoothly into the room above it,
+converts BT.2020 colours to BT.709, and encodes the result for an sRGB screen. An HLG video's codes above its
+nominal white are highlights, kept up to the top of the scale, so glare keeps its gradations; PQ is clipped at
+its nominal 10 000 cd/m². Auto, Hold and Fixed still show such an image's raw signal, which is what to use to
+read values against a range: raw HLG looks reasonable on an SDR screen, raw PQ dark. A frame of whole numbers
+drawn smaller than its pixels is shrunk before it is tone-mapped; a floating-point one after.
+
+**Show Clipping** (**Image → Show Clipping**, ⇧⌘K, or the foot of the **Range** menu) marks the pixels whose
+original value is at or beyond an end of the range in use: magenta at or above the maximum, blue at or below
+the minimum (white under Turbo and Viridis, which have blue). A pixel is marked when any channel is at an end,
+magenta when one channel is above and another below; alpha, a fourth channel, never marks one. Under HDR "above" means the top of the scale, the
+camera's own clipping; under Auto or Hold with a video's value range it means brighter than nominal white.
+Auto on an image without a value range stretches the image's own extremes to black and white, so it marks
+nothing, apart from 8-bit images at 0 and 255. A shrunk picture keeps every mark: a block with a marked pixel
+is marked. The marks are in the view only, never in thumbnails, live rows, Copy Image or Save As, and the
+setting holds for every image until the viewer quits.
+
+| Colours | On screen |
+|---|---|
+| **Grey** (the default) | Grey levels. |
+| **Turbo** | OpenCV's Turbo map, from dark blue for low values through green to dark red for high ones. |
+| **Viridis** | OpenCV's Viridis map, from dark purple to yellow, which keeps its order in grey print and for most colour-blind readers. |
+
+NaN and infinite values stay black under every map. The **Colours** button shows only while the image, or the
+live frame in view, has one channel (the **Image** menu's choices are disabled otherwise), and follows a live
+channel frame by frame if its channel count changes. A range as wide as −1e308 to 1e308 still maps linearly.
+
+The choice is kept for the image's name until the viewer quits: other images of that name, later arrivals
+among them, look the same; a rename takes it along; a snapshot takes its channel's. Thumbnails and live rows
+show each image with its name's range and colours, and change with them. Copy Image and Save As take the
+picture as shown.
 
 ## Running the example sender
 
@@ -312,10 +482,130 @@ A send that finds the endpoint unusable (`Invalid endpoint`, for example `tcp://
 outlines the field in red until you edit it, and is not remembered. A variable set to
 `tcp://127.0.0.1:7139` itself counts as unset, so the remembered endpoint is used.
 
+## Running live_sender
+
+`live_sender` reads frames, sends each one to the viewer as a live channel and its Canny edges as a second
+one, and prints a summary when it stops. The channels are named after the source: `camera 0` and
+`camera 0 edges` for camera 0, `My video.mp4` and `My video.mp4 edges` for that video (the first 32
+characters of the file's name), or `camera` and `edges` for the test pattern; `--name` names them yourself. Everything you look at and every control (Freeze, Snapshot, the display range) is in the viewer:
+this is how a vision program uses the library, doing the processing while the viewer shows the stages. The
+[tour of live channels](live-channels-tour.md) walks through it step by step.
+
+```text
+live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
+            [--name NAME] [--endpoint <uri>]
+live_sender --list-cameras
+live_sender --help
+```
+
+### Examples
+
+Run from the repository root, with the viewer open; `live_sender --help` prints the same list. Quote a file
+name that has spaces in straight quotes (`"`): a note-taking app's typographic quotes (`”`) leave the shell
+waiting for the closing one.
+
+| Command | What it does |
+|---|---|
+| `live_sender --list-cameras` | Prints the camera numbers that open, with their sizes. |
+| `live_sender --camera 0` | Streams the first camera as channels `camera 0` and `camera 0 edges`. |
+| `live_sender --camera 1` | Streams another camera beside it, such as an iPhone through Continuity Camera, in channels of its own: run both at once and the Live group has four rows. |
+| `live_sender --camera 1 --name phone` | The same camera as channels `phone` and `phone edges`. |
+| `live_sender "path/to/My video.mp4"` | Plays a video file in real time, as channels `My video.mp4` and `My video.mp4 edges`, and stops at its end. |
+| `live_sender --hdr "path/to/iPhone HDR.MOV"` | Plays a phone's HDR video as 16-bit frames with its HLG or PQ tags; the viewer tone-maps it (see [HDR video](#hdr-video)). |
+| `live_sender --pattern` | Streams a moving test pattern; no camera or file needed. |
+| `live_sender --pattern --size 3840x2160 --fps 30` | A 4K load test: compare `fps in` with `drawn` in the info strip. |
+| `live_sender --pattern --endpoint tcp://127.0.0.1:7140` | Streams to a second viewer, started with `--endpoint tcp://127.0.0.1:7140`. |
+| `live_sender --camera 0 --frames 300` | Stops after 300 frames and prints the summary. |
+
+The program is `build/debug/examples/live_sender/live_sender` (or `build/release/…`); the commands above
+leave the folder out.
+
+| Argument | Meaning |
+|---|---|
+| `--camera N` | Read camera number `N`. `0` is the first camera macOS lists; a USB camera, or an iPhone through Continuity Camera, may be `1` or `2`. |
+| `<video file>` | Read a video file instead, such as a `.mov` recorded with QuickTime Player (**File → New Movie Recording**) or a clip from a phone: any format the installed OpenCV decodes. On macOS the file is read through AVFoundation first, then through OpenCV's default reader (FFmpeg, with Homebrew's OpenCV) if AVFoundation cannot read it, so `.mov`, `.mp4`, `.mkv` and `.avi` all work (see below). |
+| `--hdr` | Read the video file with FFmpeg's libraries instead, as 16-bit frames with its HDR tags (see [HDR video](#hdr-video) below). Only with a video file. |
+| `--pattern` | Send a generated moving test pattern; needs no camera and no file. `--size WxH` sets its size (default `640x480`, at most what the viewer takes) and `--fps N` its rate (default 30, from 0.1 to 1000). |
+| *(none of the three)* | The same as `--camera 0`. |
+| `--frames N` | Stop after `N` frames. Without it, a camera runs until Ctrl+C and a file until its end. |
+| `--name NAME` | Name the channels `NAME` and `NAME edges` instead of after the source (`camera N`, the file's name, or `camera` and `edges` for the pattern), for instance to tell two patterns apart on one viewer; the summary uses the same names. An empty name, one that is not valid UTF-8, or one longer than 1018 bytes (so that `NAME edges` fits the 1024 a channel name may have), is a usage error. |
+| `--endpoint <uri>` | The viewer to send to: by default `$VISUAL_DEBUG_ENDPOINT` if set, else `tcp://127.0.0.1:7139`. |
+| `--list-cameras` | Print the camera numbers that open, with their frame size, and exit. On macOS, which numbers cameras without gaps, it stops at the first number that does not open; elsewhere it tries 0 to 9. OpenCV cannot read cameras' names, so this is how you find your USB camera's number. |
+| `--help`, `-h` | Print the usage and the examples above, and exit. |
+
+A video file plays in real time, at its own frame rate: it is decoded ahead on a thread of its own, and a frame
+that is ready more than a frame late is skipped, so a slow send drops frames instead of slowing the video
+down. The summary counts them (`, 12 skipped`); they are not counted as sent. Reading that is slower than
+the video cannot be caught up by skipping, so then the video plays slower instead, every frame shown. The pattern is sent at `--fps`; a
+camera delivers frames at its own pace. On macOS, camera access is granted to the program that starts
+`live_sender` (Terminal, Qt Creator or VS Code), so macOS may ask that program for permission the first time.
+Ctrl+C stops it, and the summary still prints:
+
+```sh
+build/debug/examples/live_sender/live_sender --pattern --frames 90
+```
+
+```text
+camera: 90 sent, 90 delivered
+edges: 90 sent, 90 delivered
+```
+
+Exit codes follow `pipeline_demo`: 0 when every frame was delivered, 1 when any was not, and 2 for bad
+arguments or a camera or file that cannot be read.
+
+**Video files on macOS.** OpenCV's default reader on macOS is FFmpeg, which decodes in software and does not
+handle HDR video well: it read an iPhone's 4K HEVC 10-bit HLG video, shot at 60 frames a second, at about 48
+frames a second before any processing, and its colours came out too bright and saturated. AVFoundation, the
+Mac's own media framework, read the same file at about 260 frames a second (both measured on an M4 Mac), with
+colours close to QuickTime Player's and a portrait video's rotation applied. A file AVFoundation cannot
+read, such as a Matroska `.mkv`, falls back to FFmpeg; OpenCV's AVFoundation code then prints one line of
+its own, which no setting silences. Cameras are read as before. On other systems, files go straight to
+OpenCV's default reader.
+
+OpenCV also prints a line or two of its own for a camera number that does not open, outside its logger, so
+`live_sender` cannot silence them; its own message follows them.
+
+### HDR video
+
+A phone records HDR video in 10 bits, and keeps glare and highlights in the codes above nominal white;
+OpenCV's readers hand such a video over as 8-bit pictures, without those codes or the tags that say how to show
+it. With `--hdr`, `live_sender` reads the file with FFmpeg's libraries and sends every frame as 16-bit BGR
+(`16U`, 3 channels) on one scale whatever the video's depth: 0 to 65535, each code keeping its place, so a
+10-bit video's nominal black (code 64) lands at 4100, its nominal white (940) at 60219, and its brightest code
+(1023) at 65535. Each frame carries that black and white as its value range, and the video's transfer (HLG, PQ
+or SDR) and primaries (BT.2020 or BT.709), so the viewer can tone-map it with the
+[HDR range](#display-range-and-colours) and every value stays readable. The edges channel is computed from each
+frame's top 8 bits.
+
+It decodes with VideoToolbox on macOS and D3D11VA on Windows when they can decode the video, in software
+otherwise, turns a phone's portrait video upright as players do, and times the frames by the video's own
+timestamps. It first prints what it found, and the summary names the transfer:
+
+```text
+$ live_sender --hdr "Horses close to Tegernsee.MOV" --frames 600
+Horses close to Tegernsee.MOV: 3840x2160, 10-bit, HLG, BT.2020, VideoToolbox
+Horses close to Tegernsee.MOV (HLG, BT.2020): 600 sent, 600 delivered, 145 skipped
+Horses close to Tegernsee.MOV edges: 600 sent, 600 delivered
+```
+
+That 4K video runs at 60 frames a second, and each 16-bit 4K frame is about 50 MB: on an M4 Pro, with the
+viewer on the same Mac, `live_sender` kept the video's timing by skipping frames, 145 of its first 745 in
+this run and 80 of 680 in another; how many depends on what else the Mac is doing.
+
+- A video that is not HDR works too, on the same scale, tagged SDR and BT.709.
+- Dolby Vision profiles 8.1 and 8.4 (iPhones record 8.4) play through their HDR10 or HLG base layer. Profile 5
+  has no such layer, so `live_sender` warns that its colours will be wrong, and goes on.
+- `--hdr` with a camera or the pattern is a usage error. A `live_sender` built without FFmpeg's development
+  files (see the [build guide](build-guide.md)) prints `live_sender was built without FFmpeg, so --hdr is not
+  available` and exits with code 2.
+
+To try every live feature in turn, follow the [tour of live channels](live-channels-tour.md).
+
 ## Configuration
 
-`VISUAL_DEBUG_ENDPOINT` sets the endpoint for `sendImage()`, the example sender, `pipeline_demo` and the viewer
-alike, so they find each other without configuration. An empty value counts as unset. An app started with
+`VISUAL_DEBUG_ENDPOINT` sets the endpoint for `sendImage()`, `sendLive()`, the example sender,
+`pipeline_demo`, `live_sender` and the viewer alike, so they find each other without configuration. An empty
+value counts as unset. An app started with
 `open` does not see your shell's variables: use `open --env VISUAL_DEBUG_ENDPOINT=… <app>`, or the
 viewer's `--endpoint` option.
 
@@ -330,7 +620,7 @@ viewer, the first send waits up to `replyTimeout` (500 ms by default) and later 
 |---|---|---|
 | `Delivered` | The viewer accepted the image. | Nothing. |
 | `ViewerUnavailable` | No viewer is listening, or a retry back-off is running after a failure (1 s by default). | Start the viewer. The next send after the back-off connects; no restart of your program is needed. |
-| `Rejected` | The viewer answered with an error. Usually it is busy (eight images were waiting for its display for over 200 ms) or paused. | Send less often, or ignore it; the viewer is still running. A paused viewer takes images again once resumed. |
+| `Rejected` | The viewer answered with an error. Usually it is busy (eight images were waiting for its display for over 200 ms) or paused, or, for a live frame, it already shows as many live channels as it can, or the frame would take them past their memory budget (`too many live channels`). | Send less often, or ignore it; the viewer is still running. A paused viewer takes images again once resumed. |
 | `InvalidImage` | The image is empty, not 2-D, larger than 32768 pixels in a dimension or 512 MiB in total, or of a type the format does not carry (more than four channels, or the OpenCV 5 depths `16F`, `16BF`, `Bool`, `64U`, `64S`, `32U`). Nothing was sent. | Convert the image, for example with `convertTo(CV_32F)`. |
 | `Timeout` | The image went out but no answer came back in time. The deadline grows by 10 ms per MiB, so large images are not cut short. | Check that the viewer is not frozen. The connection is rebuilt automatically. |
 | `InvalidEndpoint` | The endpoint string cannot be used, for example an empty string or `tcp://localhost` without a port. | Fix the endpoint. |
@@ -381,6 +671,27 @@ threshold 192: Delivered
 
 The viewer shows three black-and-white images whose edge moves right. `sendImage` can be called from any
 thread; calls share one connection and take turns.
+
+For a stream, such as a camera or a video, send each frame with `visual_debug::sendLive(frame, "camera")`
+instead; a `Client` has the same `sendLive`. It shares `sendImage`'s connection, marks the frame as part of
+the live channel `camera`, and stamps it with the time it was sent (the `live` and `sentAt` fields of the
+[wire format](wire-format.md)). A viewer that predates live channels shows it as an ordinary image.
+
+Both calls, and a `Client`'s `send` and `sendLive`, also take an `ImageDescription` as a third argument: the
+range the image's values nominally span from black to white, and for HDR video its transfer and primaries.
+A 10-bit image held in 16 bits, for example:
+
+```cpp
+visual_debug::sendImage(depthMap, "depth", {.valueRange = {0, 1023}});
+visual_debug::sendLive(frame, "phone", {.valueRange = {0, 65535},
+                                        .transfer = visual_debug::Transfer::Hlg,
+                                        .primaries = visual_debug::Primaries::Bt2020});
+```
+
+Every field is optional. The description travels in the `valueRange`, `transfer` and `primaries` header
+fields; a viewer that predates them ignores them. This viewer shows the image from the range's minimum to its
+maximum in Auto and Hold, offers the HDR range for HLG and PQ (see
+[Display range and colours](#display-range-and-colours)), and names the description in the info strip.
 
 ### 2. A `Client` with your own options
 

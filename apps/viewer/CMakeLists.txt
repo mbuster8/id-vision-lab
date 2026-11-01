@@ -6,6 +6,8 @@ add_library(viewer_ui STATIC
     activity_log_panel.h
     data_folder.cpp
     data_folder.h
+    display_settings_control.cpp
+    display_settings_control.h
     display_text.cpp
     display_text.h
     divider_splitter.cpp
@@ -19,8 +21,12 @@ add_library(viewer_ui STATIC
     image_sidebar.h
     image_store.cpp
     image_store.h
+    image_tags_conversion.cpp
+    image_tags_conversion.h
     image_view.cpp
     image_view.h
+    live_channel_panel.cpp
+    live_channel_panel.h
     main_window.cpp
     main_window.h
     main_window.ui

@@ -40,7 +40,8 @@ class StorageWorker : public QObject {
 public:
     explicit StorageWorker(const QString& imagesFolder, QObject* parent = nullptr);
 
-    void store(viewer_core::ImageId id, const std::string& name, const cv::Mat& original);
+    void store(viewer_core::ImageId id, const std::string& name, const cv::Mat& original,
+               const viewer_core::ImageTags& tags = {});
     void remove(viewer_core::ImageId id);
     void updateIndex(const std::vector<IndexRow>& newestFirst);
     void removeAll(); // Clear History

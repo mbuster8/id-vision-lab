@@ -4,6 +4,7 @@
 #include <opencv2/core.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <stdexcept>
 #include <vector>
 
@@ -25,6 +26,35 @@ std::vector<ImageId> idsOf(const ImageHistory& history) {
         ids.push_back(entry.id);
     }
     return ids;
+}
+
+const viewer_core::ImageTags kHlgTags{.valueRange = {0, 65535},
+                                      .transfer = viewer_core::Transfer::Hlg,
+                                      .primaries = viewer_core::Primaries::Bt2020};
+
+// The picture the history keeps is made with the sender's hint: 16384 of 0-65535 is a quarter.
+TEST(ImageHistory, DisplayPictureUsesTheTags) {
+    ImageHistory history;
+    cv::Mat image(1, 2, CV_16UC1);
+    image.at<std::uint16_t>(0, 0) = 16384;
+    image.at<std::uint16_t>(0, 1) = 32768;
+
+    const auto id = history.add("phone", image, {.tags = {.valueRange = {0, 65535}}}).id;
+
+    const auto* entry = history.find(id);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->display.at<cv::Vec4b>(0, 0)[0], 64);
+    EXPECT_EQ(entry->origin.tags.valueRange, (viewer_core::DisplayRange{0, 65535}));
+}
+
+TEST(ImageHistory, DuplicateKeepsTheTags) {
+    ImageHistory history;
+    const auto id = history.add("phone", greyImage(), {.tags = kHlgTags}).id;
+
+    const auto copy = history.duplicate(id);
+
+    ASSERT_TRUE(copy.has_value());
+    EXPECT_EQ(history.find(copy->id)->origin.tags, kHlgTags);
 }
 
 TEST(ImageHistory, AssignsIncreasingIdsNewestFirst) {

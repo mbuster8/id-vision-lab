@@ -56,7 +56,8 @@ ImageHistory::ImageHistory(std::size_t capacity, std::size_t byteBudget, std::si
 // Converts before anything changes, so an unsupported image leaves the history as it was. Takes an id only
 // once the conversion has succeeded.
 ReceivedImage ImageHistory::makeEntry(std::string name, cv::Mat original, ImageOrigin origin) {
-    cv::Mat display = toDisplayImage(original);
+    cv::Mat display =
+        toDisplayImage(original, defaultSettings(origin.tags), DisplayOptions{.tags = origin.tags});
     std::string summary = describeImage(original);
     if (origin.modifiedAt == Clock::time_point{}) {
         origin.modifiedAt = origin.arrivedAt;

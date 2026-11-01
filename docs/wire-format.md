@@ -49,6 +49,20 @@ existing viewers. Jupyter kernels use the same split (JSON frames plus binary bu
 | `rows`, `cols` | integers from 1 to 32768 |
 | `depth` | one of `"8U"`, `"8S"`, `"16U"`, `"16S"`, `"32S"`, `"32F"`, `"64F"` |
 | `channels` | an integer from 1 to 4 |
+| `live` | optional: a JSON boolean. `true` marks a frame of a live channel (a camera or video stream) named by `name`; the viewer shows it in place of the channel's previous frame instead of adding it to the history |
+| `sentAt` | optional: an integer from 0 to 253402300799999 (the end of the year 9999), the sender's clock in whole milliseconds since the Unix epoch when it sent the message |
+| `valueRange` | optional: an array of two JSON numbers `[min, max]`, integers or not, with min < max: the values the image's black and white nominally sit at. Values may lie beyond it (a video's super-whites lie above its white). The viewer takes it as a hint for the range it displays |
+| `transfer` | optional: `"sdr"`, `"hlg"` (hybrid log-gamma, ARIB STD-B67) or `"pq"` (the perceptual quantiser, SMPTE ST 2084): how the values map to light |
+| `primaries` | optional: `"bt709"` or `"bt2020"`: the colour primaries of a colour image |
+
+A version 2 viewer that predates `live` ignores both optional fields and shows a live frame as an ordinary
+image; a sender that predates them sends neither. The C++ sender writes them for `sendLive` only, and leaves
+`sentAt` out if its clock reads before 1970 or after 9999 rather than send a value the viewer would refuse.
+
+The last three describe an image, still or live; a viewer that predates them ignores them. The C++ sender
+writes each only when the sender sets it (through the `ImageDescription` overloads of `sendImage`, `sendLive`
+and `Client`), after `sentAt`. It writes a whole-number range without a fraction (`[0,1023]`), and leaves out a
+range whose ends are equal, decreasing or not finite rather than send one the viewer would refuse.
 
 Element sizes: 1 byte for `8U` and `8S`, 2 for `16U` and `16S`, 4 for `32S` and `32F`, 8 for `64F`. The
 pixel frame may hold at most 512 MiB; the C++ sender refuses larger images before touching the network.
@@ -79,13 +93,28 @@ The header `visual_debug::encode` produces for a 640×480 single-channel 16-bit 
 6e 65 6c 73 22 3a 31 7d                           nels":1}
 ```
 
+A live frame of a 640×480 colour channel named `camera`, as `visual_debug::sendLive` sends it at
+13:23:22.517 UTC on 30 October 2026:
+
+```text
+{"protocol":"visual_debug","version":2,"type":"image","name":"camera","rows":480,"cols":640,"depth":"8U","channels":3,"live":true,"sentAt":1793366602517}
+```
+
+A 16-bit 3840×2160 frame of HLG video in a channel named `phone`, sent at the same moment as
+`sendLive(frame, "phone", {.valueRange = {0, 65535}, .transfer = Transfer::Hlg, .primaries = Primaries::Bt2020})`:
+
+```text
+{"protocol":"visual_debug","version":2,"type":"image","name":"phone","rows":2160,"cols":3840,"depth":"16U","channels":3,"live":true,"sentAt":1793366602517,"valueRange":[0,65535],"transfer":"hlg","primaries":"bt2020"}
+```
+
 ## Validation
 
 The viewer rejects a message when:
 
 - it does not have exactly two frames;
 - the header is over 64 KiB, is not valid UTF-8 JSON, or is not a JSON object;
-- a required field is missing, has the wrong JSON type, or is out of range;
+- a required field is missing, has the wrong JSON type, or is out of range, or an optional field is present
+  with the wrong JSON type or out of range;
 - the pixel frame is not exactly `rows × cols × channels × element size` bytes. The size is computed in
   64-bit arithmetic from fields already range-checked, so it is at most 2³⁵ and cannot overflow, and it is
   checked before anything is allocated.
@@ -132,10 +161,16 @@ hostile header cannot make the reply itself fail to encode.
 | `cols out of range` | Missing, not an integer, or outside 1–32768. |
 | `unsupported depth` | Missing, not a string, or not one of the seven depths. |
 | `channels out of range` | Missing, not an integer, or outside 1–4. |
+| `live is not a boolean` | `live` is present but not `true` or `false`. |
+| `sentAt out of range` | `sentAt` is present but not an integer, or outside 0–253402300799999. |
+| `valueRange is not two increasing numbers` | `valueRange` is present but not an array of exactly two JSON numbers with the first below the second. |
+| `transfer is not sdr, hlg or pq` | `transfer` is present but not one of those three strings, in lower case. |
+| `primaries is not bt709 or bt2020` | `primaries` is present but not one of those two strings, in lower case. |
 | `image too large` | The pixel data would exceed 512 MiB. |
 | `pixel frame has the wrong size` | The pixel frame's length does not match the header. |
 | `could not decode message` | Any other failure while decoding. |
 | `viewer busy` | The viewer accepted the message but its display is too far behind (eight images waiting for longer than 200 ms). |
+| `too many live channels` | A live frame (`live: true`) for a new channel while the viewer already shows as many live channels as it can, or one whose size would take the live channels' frames past the viewer's memory budget. |
 | `viewer paused` | The viewer is paused: it keeps its port but takes no images until resumed. Sent for every request while paused, before any other check. |
 | `internal error` | An unexpected failure in the viewer; it keeps running. |
 
@@ -152,9 +187,10 @@ cannot push a large message into the host application.
 
 ## Room to grow
 
-Optional fields the format is ready for, left as learning exercises: `timestamp`; `source` (file and line
-of the `sendImage` call); `stream` (to group the images of one pipeline); `overlays` (rectangles, points or
-contours drawn over the image).
+Optional fields the format is ready for, left as learning exercises: `source` (file and line of the
+`sendImage` call); `stream` (to group the images of one pipeline; a live channel already groups a stream's
+frames); `overlays` (rectangles, points or contours drawn over the image). `sentAt` took the place of the
+`timestamp` this list once proposed.
 
 ## Security
 

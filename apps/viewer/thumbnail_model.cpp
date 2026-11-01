@@ -71,7 +71,11 @@ void ThumbnailModel::updateImage(const viewer_core::ReceivedImage& image) {
     if (row < 0) {
         return;
     }
-    setTexts(m_rows[static_cast<std::size_t>(row)], image);
+    Row& entry = m_rows[static_cast<std::size_t>(row)];
+    if (entry.name != QString::fromStdString(image.name)) {
+        entry.thumbnail = QPixmap(); // a new name may have other display settings
+    }
+    setTexts(entry, image);
     emit dataChanged(index(row), index(row));
 }
 
@@ -99,15 +103,32 @@ QPixmap ThumbnailModel::thumbnail(viewer_core::ImageId id, QSize deviceSize) con
     }
     const Row& entry = m_rows[static_cast<std::size_t>(row)];
     if (entry.thumbnail.size() != deviceSize) {
+        cv::Mat picture = m_maker ? m_maker(entry.id, deviceSize) : cv::Mat();
+        if (picture.empty()) {
+            picture = entry.display;
+        }
         // Area averaging when shrinking; nearest neighbour when enlarging, so a tiny image stays sharp.
-        const bool shrinking =
-            deviceSize.width() < entry.display.cols || deviceSize.height() < entry.display.rows;
-        cv::Mat scaled;
-        cv::resize(entry.display, scaled, cv::Size(deviceSize.width(), deviceSize.height()), 0, 0,
-                   shrinking ? cv::INTER_AREA : cv::INTER_NEAREST);
+        const cv::Size size(deviceSize.width(), deviceSize.height());
+        const bool shrinking = size.width < picture.cols || size.height < picture.rows;
+        cv::Mat scaled = picture;
+        if (picture.size() != size) {
+            cv::resize(picture, scaled, size, 0, 0, shrinking ? cv::INTER_AREA : cv::INTER_NEAREST);
+        }
         entry.thumbnail = QPixmap::fromImage(qt_common::toQImage(scaled));
     }
     return entry.thumbnail;
+}
+
+void ThumbnailModel::setThumbnailMaker(ThumbnailMaker maker) { m_maker = std::move(maker); }
+
+void ThumbnailModel::refreshThumbnails(const QString& name) {
+    for (std::size_t row = 0; row < m_rows.size(); ++row) {
+        if (m_rows[row].name == name) {
+            m_rows[row].thumbnail = QPixmap();
+            const QModelIndex changed = index(static_cast<int>(row));
+            emit dataChanged(changed, changed, {Qt::DecorationRole});
+        }
+    }
 }
 
 void ThumbnailModel::setTexts(Row& row, const viewer_core::ReceivedImage& image) {

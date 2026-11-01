@@ -1,5 +1,7 @@
 #pragma once
 
+#include "viewer_core/image_tags.h"
+
 #include <opencv2/core/mat.hpp>
 
 #include <chrono>
@@ -20,21 +22,24 @@ inline constexpr std::size_t kDefaultHistoryCapacity = 100;
 // 100 frames of 4K video, original plus display copy, would need about 11 GiB.
 inline constexpr std::size_t kDefaultHistoryByteBudget = std::size_t{2} * 1024 * 1024 * 1024;
 
-enum class ImageSource { Received, OpenedFile };
+// A LiveSnapshot is a live frame copied into the history; like live frames, it is never stored on disk.
+enum class ImageSource { Received, OpenedFile, LiveSnapshot };
 
-// Where an entry came from, and its times. The times live here so that storage keeps them with the rest.
+// Where an entry came from, its times, and what its sender said about it. They live here so that storage and
+// duplication keep them with the rest.
 struct ImageOrigin {
     ImageSource source = ImageSource::Received;
-    std::optional<std::uint64_t> fileBytes;             // size on disk, for an opened file
+    std::optional<std::uint64_t> fileBytes{};           // size on disk, for an opened file
     std::chrono::system_clock::time_point arrivedAt{};  // received or opened
     std::chrono::system_clock::time_point modifiedAt{}; // last rename or duplication; arrivedAt until then
+    ImageTags tags{};
 };
 
 struct ReceivedImage {
     ImageId id;
     std::string name;
     cv::Mat original; // as received; the pixel readout uses this
-    cv::Mat display;  // 8-bit RGBA from toDisplayImage
+    cv::Mat display;  // 8-bit RGBA from toDisplayImage, with the default settings for its tags
     std::string summary;
     ImageOrigin origin{};
 

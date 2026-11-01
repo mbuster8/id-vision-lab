@@ -1,5 +1,6 @@
 #include "image_info_bar.h"
 
+#include "display_settings_control.h"
 #include "display_text.h"
 #include "eliding_label.h"
 #include "outline_icons.h"
@@ -22,7 +23,9 @@ constexpr int kVerticalMargin = 2;
 
 ImageInfoBar::ImageInfoBar(QWidget* parent)
     : QWidget(parent), m_name(new ElidingLabel(Qt::ElideMiddle)), m_editor(new QLineEdit),
-      m_renameButton(new QToolButton), m_details(new ElidingLabel(Qt::ElideRight)) {
+      m_renameButton(new QToolButton), m_details(new ElidingLabel(Qt::ElideRight)),
+      m_displayControl(new DisplaySettingsControl), m_freezeButton(new QToolButton),
+      m_snapshotButton(new QToolButton) {
     m_name->setObjectName(QStringLiteral("imageName"));
     m_editor->setObjectName(QStringLiteral("renameEditor"));
     m_renameButton->setObjectName(QStringLiteral("renameButton"));
@@ -44,6 +47,16 @@ ImageInfoBar::ImageInfoBar(QWidget* parent)
     layout->addWidget(m_renameButton);
     layout->addWidget(m_details);
     layout->addStretch();
+    // After the stretch, so they stay put while the text changes.
+    layout->addWidget(m_displayControl);
+    m_freezeButton->setObjectName(QStringLiteral("freezeButton"));
+    m_snapshotButton->setObjectName(QStringLiteral("snapshotButton"));
+    for (QToolButton* button : {m_freezeButton, m_snapshotButton}) {
+        button->setAutoRaise(true);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->hide();
+        layout->addWidget(button);
+    }
 
     connect(m_renameButton, &QToolButton::clicked, this, &ImageInfoBar::startRename);
     // Enter, and leaving the field, as in Finder.
@@ -57,7 +70,27 @@ void ImageInfoBar::showImage(viewer_core::ImageId id, const QString& name, const
     m_shownName = name;
     m_name->setText(singleLine(name));
     m_name->setToolTip(name);
+    m_renameButton->setVisible(!isRenaming());
     m_details->setText(details);
+    m_details->setToolTip(QString());
+    m_freezeButton->hide();
+    m_snapshotButton->hide();
+    show();
+}
+
+void ImageInfoBar::showLiveChannel(const QString& name, const QString& details) {
+    cancelRename();
+    m_shownId.reset();
+    m_shownName = name;
+    m_name->setText(singleLine(name));
+    m_name->setToolTip(name);
+    m_renameButton->hide();
+    m_details->setText(details);
+    m_details->setToolTip(tr("Frames arrived and drawn in the last second, frames dropped while the viewer "
+                             "was busy, and the frame's age: the time it arrived minus the time the sender "
+                             "stamped on it, which means something only when both run on one computer."));
+    m_freezeButton->setVisible(m_freezeButton->defaultAction() != nullptr);
+    m_snapshotButton->setVisible(m_snapshotButton->defaultAction() != nullptr);
     show();
 }
 
@@ -66,6 +99,13 @@ void ImageInfoBar::clear() {
     m_shownId.reset();
     m_shownName.clear();
     hide();
+}
+
+DisplaySettingsControl* ImageInfoBar::displayControl() const { return m_displayControl; }
+
+void ImageInfoBar::setLiveActions(QAction* freeze, QAction* snapshot) {
+    m_freezeButton->setDefaultAction(freeze);
+    m_snapshotButton->setDefaultAction(snapshot);
 }
 
 void ImageInfoBar::startRename() {

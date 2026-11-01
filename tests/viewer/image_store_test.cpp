@@ -149,6 +149,34 @@ TEST(ImageStore, KeepsOrderNamesAndOrigin) {
     EXPECT_EQ(second.origin.arrivedAt, received.arrivedAt);
 }
 
+TEST(ImageStore, KeepsTheTags) {
+    const QTemporaryDir folder;
+    ImageStore store(folder.path());
+    const viewer_core::ImageTags tags{.valueRange = {0, 65535},
+                                      .transfer = viewer_core::Transfer::Hlg,
+                                      .primaries = viewer_core::Primaries::Bt2020};
+
+    const QString key = store.write("phone", cv::Mat(3, 4, CV_16UC3, cv::Scalar::all(4096)), tags);
+    ASSERT_TRUE(store.writeIndex({indexEntry(key, "phone")}));
+    const Loaded loaded = loadEverything(store);
+
+    ASSERT_EQ(loaded.images.size(), 1U);
+    EXPECT_EQ(loaded.images.front().origin.tags, tags);
+}
+
+// A file a viewer wrote before images had tags has none in its header: it loads with empty tags.
+TEST(ImageStore, LoadsAFileWithoutTags) {
+    const QTemporaryDir folder;
+    ImageStore store(folder.path());
+
+    const QString key = store.write("old", smallImage());
+    ASSERT_TRUE(store.writeIndex({indexEntry(key, "old")}));
+    const Loaded loaded = loadEverything(store);
+
+    ASSERT_EQ(loaded.images.size(), 1U);
+    EXPECT_EQ(loaded.images.front().origin.tags, viewer_core::ImageTags{});
+}
+
 // Images are handed over one at a time, so a caller that has enough reads no further.
 TEST(ImageStore, LoadStopsWhenTheCallerHasEnough) {
     const QTemporaryDir folder;

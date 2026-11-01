@@ -29,8 +29,17 @@ public:
     Client& operator=(const Client&) = delete;
 
     SendResult send(const cv::Mat& image, std::string_view name) noexcept override;
+    // Marks the frame live and stamps it with this machine's clock (sentAt), just before encoding it.
+    SendResult sendLive(const cv::Mat& frame, std::string_view channel) noexcept override;
+    SendResult send(const cv::Mat& image, std::string_view name,
+                    const ImageDescription& description) noexcept override;
+    SendResult sendLive(const cv::Mat& frame, std::string_view channel,
+                        const ImageDescription& description) noexcept override;
 
 private:
+    SendResult sendGuarded(const cv::Mat& image, std::string_view name, bool live,
+                           const ImageDescription& description) noexcept;
+
     class Impl; // keeps ZeroMQ out of host applications' headers
     std::unique_ptr<Impl> m_impl;
 };

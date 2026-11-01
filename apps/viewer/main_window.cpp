@@ -5,6 +5,7 @@
 #include "appearance.h"
 #include "application_identity.h"
 #include "controls.h"
+#include "display_settings_control.h"
 #include "display_text.h"
 #include "divider_splitter.h"
 #include "eliding_label.h"
@@ -12,23 +13,30 @@
 #include "image_file.h"
 #include "image_info_bar.h"
 #include "image_sidebar.h"
+#include "image_tags_conversion.h"
 #include "image_view.h"
+#include "live_channel_panel.h"
 #include "outline_icons.h"
 #include "qimage_conversion.h"
 #include "shades.h"
 #include "thumbnail_panel.h"
 #include "ui_main_window.h"
 
+#include "viewer_core/display_converter.h"
 #include "viewer_core/pixel_inspector.h"
+#include "viewer_core/region_statistics.h"
 #include "viewer_core/save_name.h"
 #include "visual_debug/wire_format.h"
 
+#include <QAbstractButton>
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -46,11 +54,15 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <opencv2/imgproc.hpp>
+
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <iterator>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -58,6 +70,14 @@ namespace {
 
 constexpr int kImageViewSizePlaceholder = 1000;
 constexpr int kDefaultLogHeight = 160;
+constexpr std::chrono::milliseconds kLiveTick{500};
+constexpr std::chrono::seconds kRejectionLinesEvery{1}; // at most one line per reason in this time
+// The server's replies, which the sink counts as rejections like any other.
+constexpr std::string_view kPausedReason = "viewer paused";
+constexpr std::string_view kTooManyChannelsReason = "too many live channels";
+// Refused live channels named in the log, once each; refusals of any more are only counted, so a sender that
+// puts a frame number in the channel name costs the log one line a second, not one a frame.
+constexpr std::size_t kNamedRefusedChannels = 8;
 const QString kSidebarWidthKey = QStringLiteral("viewer/sidebarWidth");
 const QString kLogOpenKey = QStringLiteral("viewer/logOpen");
 const QString kLogHeightKey = QStringLiteral("viewer/logHeight");
@@ -82,7 +102,12 @@ QString viewerWindowTitle(const QString& imageName, const QString& endpoint) {
 }
 
 MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString& dataRoot, QWidget* parent)
-    : QMainWindow(parent), m_ui(std::make_unique<Ui::MainWindow>()), m_server(m_sink, serverOptions),
+    : MainWindow(std::move(serverOptions), dataRoot, &Clock::now, parent) {}
+
+MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString& dataRoot,
+                       std::function<Clock::time_point()> clock, QWidget* parent)
+    : QMainWindow(parent), m_ui(std::make_unique<Ui::MainWindow>()), m_clock(std::move(clock)),
+      m_sink(m_clock), m_server(m_sink, serverOptions),
       m_endpoint(QString::fromStdString(serverOptions.endpoint)), m_allowRemote(serverOptions.allowRemote) {
     m_ui->setupUi(this);
     setWindowTitle(viewerWindowTitle(QString(), m_endpoint));
@@ -191,7 +216,9 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
 
     connect(m_ui->actionOpen, &QAction::triggered, this, &MainWindow::openFile);
     connect(m_ui->actionSaveAs, &QAction::triggered, this, [this] {
-        if (m_currentId) {
+        if (m_liveChannel) {
+            saveLiveFrame();
+        } else if (m_currentId) {
             saveImage(*m_currentId);
         } else {
             log(LogKind::Warning, tr("No image to save"));
@@ -205,6 +232,41 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     m_ui->menuView->addAction(m_ui->actionShowLog);
     connect(m_ui->actionShowLog, &QAction::triggered, this, &MainWindow::setLogOpen);
     qt_common::addAppearanceMenu(m_ui->menuView);
+    // The Image menu holds the info strip's own range and colour actions, in menus of its own: a native macOS
+    // menu has one parent.
+    DisplaySettingsControl* displayControl = m_infoBar->displayControl();
+    for (QMenu* shared : {displayControl->rangeMenu(), displayControl->coloursMenu()}) {
+        m_ui->menuImage->addMenu(shared->title())->addActions(shared->actions());
+    }
+    // Show Clipping follows them, and ends the info strip's Range menu too: added there only now, so the
+    // Image menu's Range lists it once.
+    m_ui->menuImage->addAction(m_ui->actionShowClipping);
+    displayControl->rangeMenu()->addSeparator();
+    displayControl->rangeMenu()->addAction(m_ui->actionShowClipping);
+    connect(m_ui->actionShowClipping, &QAction::toggled, this, &MainWindow::setShowClipping);
+    // Freeze and Snapshot act on the live channel in view. Space freezes from anywhere but a text field,
+    // which takes printable keys before shortcuts.
+    m_ui->actionFreeze->setShortcuts(
+        {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T), QKeySequence(Qt::Key_Space)});
+    m_ui->actionFreeze->setIcon(qt_common::makeOutlineIcon(qt_common::OutlineIcon::Pause));
+    m_ui->actionSnapshot->setIcon(qt_common::makeOutlineIcon(qt_common::OutlineIcon::Camera));
+    m_ui->menuImage->addSeparator();
+    m_ui->menuImage->addAction(m_ui->actionFreeze);
+    m_ui->menuImage->addAction(m_ui->actionSnapshot);
+    m_infoBar->setLiveActions(m_ui->actionFreeze, m_ui->actionSnapshot);
+    connect(m_ui->actionFreeze, &QAction::triggered, this, &MainWindow::setLiveFrozen);
+    connect(m_ui->actionSnapshot, &QAction::triggered, this, &MainWindow::takeSnapshot);
+    displayControl->setAutoRangeProvider([this] {
+        if (const auto* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
+            // The frame on screen, frozen or not.
+            return viewer_core::autoRange(channel->shown, channel->shownTags);
+        }
+        const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr;
+        return entry != nullptr ? viewer_core::autoRange(entry->original, entry->origin.tags)
+                                : viewer_core::DisplayRange{};
+    });
+    connect(displayControl, &DisplaySettingsControl::settingsChanged, this,
+            &MainWindow::changeDisplaySettings);
     qt_common::addHelpMenu(menuBar(), QCoreApplication::translate("About", qt_common::kViewerDescription));
     // Another viewer may have changed the shared setting since.
     const auto showKeepImages = [this] { m_ui->actionKeepImages->setChecked(keepImagesSetting()); };
@@ -222,9 +284,17 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     };
     connect(m_ui->actionRename, &QAction::triggered, this, onShownImage(&MainWindow::startRename));
     connect(m_ui->actionDuplicate, &QAction::triggered, this, onShownImage(&MainWindow::duplicateImage));
-    connect(m_ui->actionCopyImage, &QAction::triggered, this, onShownImage(&MainWindow::copyImage));
+    connect(m_ui->actionCopyImage, &QAction::triggered, this,
+            [this, copyShown = onShownImage(&MainWindow::copyImage)] {
+                if (m_liveChannel) {
+                    copyLiveFrame();
+                } else {
+                    copyShown();
+                }
+            });
     connect(m_ui->actionDelete, &QAction::triggered, this, onShownImage(&MainWindow::deleteImage));
     connect(qApp, &QApplication::focusChanged, this, &MainWindow::updateEditActions);
+    qApp->installEventFilter(this); // Space for a focused button, before the Freeze shortcut
     connect(m_ui->actionPauseServer, &QAction::triggered, this, &MainWindow::togglePause);
     connect(m_ui->actionStopServer, &QAction::triggered, this, &MainWindow::toggleRunning);
     connect(m_serverControls, &ServerControls::pauseClicked, this, &MainWindow::togglePause);
@@ -232,7 +302,25 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
 
     connect(&m_sink, &QtImageSink::imageReceived, this, &MainWindow::onImageReceived, Qt::QueuedConnection);
     connect(&m_sink, &QtImageSink::requestsRejected, this, &MainWindow::logRejections, Qt::QueuedConnection);
+    m_rejectionTimer = new QTimer(this);
+    m_rejectionTimer->setSingleShot(true);
+    m_rejectionTimer->setInterval(kRejectionLinesEvery);
+    connect(m_rejectionTimer, &QTimer::timeout, this, &MainWindow::writeRejections);
+    connect(&m_sink, &QtImageSink::liveFramesWaiting, this, &MainWindow::takeLiveFrames,
+            Qt::QueuedConnection);
+    m_liveTimer = new QTimer(this);
+    m_liveTimer->setInterval(kLiveTick);
+    connect(m_liveTimer, &QTimer::timeout, this, [this] { tick(m_clock()); });
+    LiveChannelPanel* livePanel = m_sidebar->liveChannels();
+    connect(livePanel, &LiveChannelPanel::channelSelected, this,
+            [this](const QString& name) { showLiveChannel(name.toStdString()); });
+    connect(livePanel, &LiveChannelPanel::closeRequested, this,
+            [this](const QString& name) { closeLiveChannel(name.toStdString()); });
+    connect(livePanel, &LiveChannelPanel::muteRequested, this,
+            [this](const QString& name, bool muted) { setLiveMuted(name.toStdString(), muted); });
     connect(m_thumbnails, &ThumbnailPanel::imageSelected, this, &MainWindow::showImage);
+    m_thumbnails->setThumbnailMaker(
+        [this](viewer_core::ImageId id, QSize deviceSize) { return thumbnailPicture(id, deviceSize); });
     connect(m_thumbnails, &ThumbnailPanel::actionRequested, this,
             [this](viewer_core::ImageId id, ThumbnailAction action) {
                 switch (action) {
@@ -256,6 +344,8 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(m_infoBar, &ImageInfoBar::renameRequested, this, &MainWindow::renameImage);
     connect(m_imageView, &ImageView::pixelHovered, this, &MainWindow::showPixel);
     connect(m_imageView, &ImageView::hoverLeft, m_pixelLabel, &QLabel::clear);
+    connect(m_imageView, &ImageView::scaleChanged, this, &MainWindow::redrawLiveFrameForScale);
+    connect(m_imageView, &ImageView::regionChanged, this, &MainWindow::showRegionStatistics);
     updateEditActions();
 
     switch (dataProblem) {
@@ -307,6 +397,7 @@ void MainWindow::togglePause() {
         break;
     case ServerState::Paused:
         m_server.setPaused(false);
+        logPausedRejections();
         setServerState(ServerState::Listening, listeningText());
         break;
     case ServerState::Starting:
@@ -323,6 +414,7 @@ void MainWindow::toggleRunning() {
     case ServerState::Paused: {
         const QString endpoint = QString::fromStdString(m_server.boundEndpoint());
         m_server.stop();
+        logPausedRejections();
         setServerState(ServerState::Stopped, tr("Stopped: released [%1]").arg(endpoint));
         break;
     }
@@ -354,14 +446,48 @@ QString MainWindow::listeningText() const {
                          : tr("Listening on [%1]").arg(endpoint);
 }
 
-// The sink counts rejections while the UI is busy, so a flood becomes one entry per reason. Reasons are fixed
-// ASCII texts of the server's, never the sender's bytes.
+// The sink counts rejections while the UI is busy, so a flood becomes one entry per reason; and a sender that
+// keeps streaming into a refusal gets at most one line a second. Reasons are fixed ASCII texts of the
+// server's, never the sender's bytes.
 void MainWindow::logRejections() {
+    if (!m_rejectionTimer->isActive()) {
+        writeRejections();
+    }
+}
+
+void MainWindow::writeRejections() {
+    const bool paused = m_serverControls->state() == ServerState::Paused;
+    bool logged = false;
     for (const auto& [reason, count] : m_sink.takeRejections()) {
+        if (paused && reason == kPausedReason) {
+            m_pausedRejections += count; // said once, at Resume or Stop
+            continue;
+        }
+        if (reason == kTooManyChannelsReason && !std::exchange(m_unnamedRefusals, false)) {
+            continue; // each refused channel was logged once by name
+        }
         const QString text = QString::fromStdString(reason);
         log(LogKind::Warning, count == 1 ? tr("Rejected a request: [%1]").arg(text)
                                          : tr("Rejected %1 requests: [%2]").arg(count).arg(text));
+        logged = true;
     }
+    if (logged) {
+        m_rejectionTimer->start();
+    }
+}
+
+// Called with the server already resumed or stopped, and the controls still saying Paused, so the counts
+// taken now are the paused ones.
+void MainWindow::logPausedRejections() {
+    writeRejections();
+    const int count = std::exchange(m_pausedRejections, 0);
+    if (count == 0) {
+        return;
+    }
+    const QString reason =
+        QString::fromUtf8(kPausedReason.data(), static_cast<qsizetype>(kPausedReason.size()));
+    log(LogKind::Warning, count == 1 ? tr("Rejected a request while paused: [%1]").arg(reason)
+                                     : tr("Rejected %1 requests while paused: [%2]").arg(count).arg(reason));
 }
 
 void MainWindow::log(LogKind kind, const QString& text) {
@@ -402,16 +528,50 @@ void MainWindow::setLogOpen(bool open) {
 // Child widgets outlive this window's members, and destroying them moves focus and ends a rename: stop them,
 // and the focus signal, reaching into a destroyed history.
 MainWindow::~MainWindow() {
+    qApp->removeEventFilter(this);
     disconnect(qApp, &QApplication::focusChanged, this, nullptr);
+    m_sidebar->liveChannels()->disconnect(this);
     m_thumbnails->disconnect(this);
+    m_thumbnails->setThumbnailMaker({}); // it reads the history
     m_infoBar->disconnect(this);
     m_imageView->disconnect(this);
     m_storage.reset();
 }
 
+// Space is the Freeze shortcut, which would otherwise take it from a button that has the keyboard focus (with
+// macOS keyboard navigation on, for one). Accepting the override sends the key to the button instead.
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // Esc clears a region, unless a text field has the focus: there it ends an edit or clears a search.
+    if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape &&
+        m_imageView->region()) {
+        const auto* widget = qobject_cast<QWidget*>(watched);
+        const QWidget* focus = QApplication::focusWidget();
+        const bool typing = qobject_cast<const QLineEdit*>(focus) != nullptr ||
+                            qobject_cast<const QAbstractSpinBox*>(focus) != nullptr ||
+                            qobject_cast<const QTextEdit*>(focus) != nullptr ||
+                            qobject_cast<const QPlainTextEdit*>(focus) != nullptr;
+        if (widget != nullptr && widget->window() == this && !typing) {
+            m_imageView->clearRegion();
+            return true;
+        }
+    }
+    if (event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const auto* button = qobject_cast<QAbstractButton*>(watched);
+        if (button != nullptr && button->window() == this && key->key() == Qt::Key_Space &&
+            key->modifiers() == Qt::NoModifier) {
+            event->accept();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
 void MainWindow::onImageReceived(const visual_debug::ImageMessage& message) {
     addImage(message.name, message.image,
-             {.source = viewer_core::ImageSource::Received, .arrivedAt = message.receivedAt});
+             {.source = viewer_core::ImageSource::Received,
+              .arrivedAt = message.receivedAt,
+              .tags = toImageTags(message.description)});
     m_sink.markHandled();
 }
 
@@ -423,17 +583,24 @@ bool MainWindow::addImage(std::string name, cv::Mat image, viewer_core::ImageOri
         log(LogKind::Error, tr("Cannot show image: %1").arg(error.what()));
         return false;
     }
-    // Timed when it arrived: for a received image, when the server thread finished decoding it.
+    // Timed when it arrived: for a received image, when the server thread finished decoding it. A snapshot is
+    // logged when it is taken; its entry keeps its frame's receive time.
     const auto& entry = *m_history.find(added.id);
-    const QString what = origin.source == viewer_core::ImageSource::OpenedFile ? tr("Opened [%1] (%2)")
-                                                                               : tr("Received [%1] (%2)");
-    const bool timed = origin.arrivedAt != std::chrono::system_clock::time_point{};
+    QString what = tr("Received [%1] (%2)");
+    if (origin.source == viewer_core::ImageSource::OpenedFile) {
+        what = tr("Opened [%1] (%2)");
+    } else if (origin.source == viewer_core::ImageSource::LiveSnapshot) {
+        what = tr("Snapshot [%1] (%2)");
+    }
+    const bool timed = origin.arrivedAt != std::chrono::system_clock::time_point{} &&
+                       origin.source != viewer_core::ImageSource::LiveSnapshot;
     m_log->append({timed ? origin.arrivedAt : std::chrono::system_clock::now(), LogKind::Info,
                    what.arg(singleLine(QString::fromStdString(entry.name)), imageDetails(entry))});
-    // While a rename is open, arrivals do not take the selection, so a burst cannot move the edit. One the
-    // search hides arrives quietly: it is listed later, if ever.
+    // While a rename is open, arrivals do not take the selection, so a burst cannot move the edit; while a
+    // live channel is shown, they do not take the view. One the search hides arrives quietly: it is listed
+    // later, if ever.
     m_thumbnails->addImage(entry, false);
-    if (!m_infoBar->isRenaming() && m_thumbnails->isListed(added.id)) {
+    if (!m_infoBar->isRenaming() && !m_liveChannel && m_thumbnails->isListed(added.id)) {
         m_thumbnails->selectImage(added.id);
     }
     m_storage->store(entry);
@@ -444,6 +611,10 @@ bool MainWindow::addImage(std::string name, cv::Mat image, viewer_core::ImageOri
 }
 
 std::optional<viewer_core::ImageId> MainWindow::shownImageId() const { return m_currentId; }
+
+std::optional<std::string> MainWindow::shownLiveChannel() const { return m_liveChannel; }
+
+QtImageSink& MainWindow::sinkForTests() { return m_sink; }
 
 void MainWindow::renameImage(viewer_core::ImageId id, QString name) {
     const auto* entry = m_history.find(id);
@@ -457,6 +628,10 @@ void MainWindow::renameImage(viewer_core::ImageId id, QString name) {
         return;
     }
     const QString oldName = singleLine(QString::fromStdString(entry->name));
+    // The display settings go with the name; the old name is left with none, not with an explicit Auto.
+    const std::optional<viewer_core::DisplaySettings> settings = m_displaySettings.find(entry->name);
+    setDisplaySettings(entry->name, std::nullopt);
+    setDisplaySettings(cut, settings);
     m_history.rename(id, std::move(cut));
     log(LogKind::Info,
         tr("Renamed [%1] to [%2]").arg(oldName, singleLine(QString::fromStdString(entry->name))));
@@ -514,23 +689,25 @@ void MainWindow::undoDelete() {
     updateEditActions();
 }
 
-// The displayed 8-bit picture: other programs cannot take the original's depths.
+// The displayed 8-bit picture, range and colours included: other programs cannot take the original's depths.
 void MainWindow::copyImage(viewer_core::ImageId id) {
     if (const auto* entry = m_history.find(id)) {
-        QGuiApplication::clipboard()->setImage(qt_common::toQImage(entry->display));
+        QGuiApplication::clipboard()->setImage(shownPicture(*entry));
         log(LogKind::Info,
             tr("Copied [%1] to the clipboard").arg(singleLine(QString::fromStdString(entry->name))));
     }
 }
 
-// Saves what is on screen (the 8-bit display image), not the original: PNG and JPEG cannot hold every
-// depth. QImage::save is used because cv::imwrite would swap red and blue in an RGBA image.
 void MainWindow::saveImage(viewer_core::ImageId id) {
-    const auto* entry = m_history.find(id);
-    if (entry == nullptr) {
-        return;
+    if (const auto* entry = m_history.find(id)) {
+        savePicture(shownPicture(*entry), QString::fromStdString(entry->name));
     }
-    QString suggestedName = QString::fromStdString(entry->name);
+}
+
+// Saves what is on screen (the 8-bit picture, range and colours included), not the original: PNG and JPEG
+// cannot hold every depth. QImage::save is used because cv::imwrite would swap red and blue in an RGBA image.
+void MainWindow::savePicture(const QImage& picture, const QString& name) {
+    QString suggestedName = name;
     suggestedName.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|])")), QStringLiteral("_"));
     suggestedName = QString::fromStdString(viewer_core::saveNameStem(suggestedName.toStdString()));
     QString path = QFileDialog::getSaveFileName(
@@ -543,22 +720,462 @@ void MainWindow::saveImage(viewer_core::ImageId id) {
         path += QStringLiteral(".png");
     }
     const QString shownPath = QDir::toNativeSeparators(path);
-    if (qt_common::toQImage(entry->display).save(path)) {
+    if (picture.save(path)) {
         log(LogKind::Info, tr("Saved [%1]").arg(shownPath));
     } else {
         log(LogKind::Error, tr("Could not save [%1]").arg(shownPath));
     }
 }
 
+// Also leaves a live channel: a history image takes its place.
 void MainWindow::showImage(viewer_core::ImageId id) {
     const auto* entry = m_history.find(id);
     if (entry == nullptr) {
         return;
     }
+    if (m_liveChannel) {
+        m_liveChannel.reset();
+        m_sink.protectLiveChannel(std::nullopt);
+        m_sidebar->liveChannels()->setSelected(std::nullopt);
+    }
     m_currentId = id;
-    m_imageView->setImage(qt_common::toQImage(entry->display));
+    m_lastHistoryId = id;
+    m_imageView->setImage(shownPicture(*entry, m_showClipping));
+    m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
+                                          entry->original.channels() == 1, entry->origin.tags.isHdr());
     showImageText(*entry);
+    showRegionStatistics(); // a region kept for an image of the same size is now this one's
     updateEditActions();
+}
+
+QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping) const {
+    const viewer_core::DisplaySettings settings = settingsFor(entry.name, entry.origin.tags);
+    return qt_common::toQImage(
+        settings == viewer_core::defaultSettings(entry.origin.tags) && !showClipping
+            ? entry.display
+            : viewer_core::toDisplayImage(entry.original, settings,
+                                          {.tags = entry.origin.tags, .showClipping = showClipping}));
+}
+
+// Of the original in view, the live channel's shown frame included; nothing without a region, whose label the
+// view has cleared itself.
+void MainWindow::showRegionStatistics() {
+    const std::optional<QRect> region = m_imageView->region();
+    if (!region) {
+        return;
+    }
+    const cv::Mat* original = nullptr;
+    if (const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
+        original = &channel->shown;
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        original = &entry->original;
+    }
+    if (original == nullptr || original->empty()) {
+        return;
+    }
+    const viewer_core::RegionStatistics statistics = viewer_core::regionStatistics(
+        *original, cv::Rect(region->x(), region->y(), region->width(), region->height()));
+    m_imageView->setRegionText(regionLines(statistics, original->channels(), original->depth()));
+}
+
+// For the session, and for the view only: what is copied, saved or listed is never marked.
+void MainWindow::setShowClipping(bool show) {
+    m_showClipping = show;
+    if (m_liveChannel) {
+        paintLiveFrame(ImageView::KeepView::IfSameSize);
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        m_imageView->setImage(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize);
+    }
+}
+
+viewer_core::DisplaySettings MainWindow::settingsFor(const std::string& name,
+                                                     const viewer_core::ImageTags& tags) const {
+    return m_displaySettings.find(name).value_or(viewer_core::defaultSettings(tags));
+}
+
+// For the shown image's name, so every image of that name, and later arrivals, look the same: in the view
+// and in the thumbnails, which a still sharing a live channel's name has too.
+void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& settings) {
+    if (m_liveChannel) {
+        setDisplaySettings(*m_liveChannel, settings);
+        drawLiveFrame(ImageView::KeepView::IfSameSize);
+        return;
+    }
+    const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr;
+    if (entry == nullptr) {
+        return;
+    }
+    setDisplaySettings(entry->name, settings);
+    m_imageView->setImage(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize);
+}
+
+// Also forgets what was drawn with the name's old settings: its thumbnails, made again when next painted, and
+// its live row's picture, made again at the next tick.
+void MainWindow::setDisplaySettings(const std::string& name,
+                                    const std::optional<viewer_core::DisplaySettings>& settings) {
+    if (settings) {
+        m_displaySettings.set(name, *settings);
+    } else {
+        m_displaySettings.forget(name);
+    }
+    m_thumbnails->refreshThumbnails(QString::fromStdString(name));
+    m_rowPictures.erase(name);
+}
+
+// A thumbnail with its name's display settings, made at its own size; nothing for its tags' default ones,
+// whose picture the history already holds.
+cv::Mat MainWindow::thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) const {
+    const auto* entry = m_history.find(id);
+    if (entry == nullptr) {
+        return {};
+    }
+    const viewer_core::DisplaySettings settings = settingsFor(entry->name, entry->origin.tags);
+    if (settings == viewer_core::defaultSettings(entry->origin.tags)) {
+        return {};
+    }
+    return viewer_core::toDisplayImage(
+        entry->original, settings,
+        {.size = cv::Size(std::max(deviceSize.width(), 1), std::max(deviceSize.height(), 1)),
+         .tags = entry->origin.tags});
+}
+
+// --- Live channels ----------------------------------------------------------------------------------------
+
+// Everything the sink kept since the last take: the newest frame of each channel, the channels it refused,
+// and the idle ones it closed to make room. Only the shown channel's frame is converted and drawn; the rest
+// waits for the tick.
+void MainWindow::takeLiveFrames() {
+    QtImageSink::LiveBatch batch = m_sink.takeLiveFrames();
+    const Clock::time_point now = m_clock();
+    LiveChannelPanel* panel = m_sidebar->liveChannels();
+
+    // An eviction made room for a channel that opened at the same moment, so its frame is in this batch.
+    std::vector<std::string> opened;
+    for (const QtImageSink::LiveFrame& frame : batch.frames) {
+        if (m_live.find(frame.message.name) == nullptr) {
+            opened.push_back(frame.message.name);
+        }
+    }
+    for (std::size_t i = 0; i < batch.evicted.size(); ++i) {
+        const QString idle = singleLine(QString::fromStdString(batch.evicted[i]));
+        log(LogKind::Info, i < opened.size() ? tr("Live channel [%1] replaced idle channel [%2]")
+                                                   .arg(singleLine(QString::fromStdString(opened[i])), idle)
+                                             : tr("Closed idle live channel [%1] to make room").arg(idle));
+        forgetLiveChannel(batch.evicted[i]);
+    }
+
+    for (QtImageSink::LiveFrame& frame : batch.frames) {
+        const std::string name = frame.message.name;
+        const viewer_core::LiveChannel* before = m_live.find(name);
+        const std::pair<std::uint64_t, std::uint64_t> countsBefore =
+            before != nullptr ? std::pair{before->received + before->dropped, before->dropped}
+                              : std::pair<std::uint64_t, std::uint64_t>{};
+        const viewer_core::LiveChannels::ReceiveResult result =
+            m_live.receive({.channel = name,
+                            .image = std::move(frame.message.image),
+                            .receivedAt = frame.message.receivedAt,
+                            .sentAt = frame.message.sentAt,
+                            .replaced = frame.replaced,
+                            .tags = toImageTags(frame.message.description)},
+                           now);
+        const bool muted = m_mutedChannels.contains(name);
+        if (result.started) {
+            if (!muted) {
+                log(LogKind::Info,
+                    tr("Live channel [%1] started").arg(singleLine(QString::fromStdString(name))));
+            }
+            m_startCounts[name] = countsBefore;
+            m_refusedChannels.erase(name);
+            panel->addChannel(QString::fromStdString(name));
+            updateLiveRow(*m_live.find(name), now);
+            m_liveTimer->start();
+        }
+        if (muted) {
+            continue; // counted, never shown
+        }
+        if (!m_currentId && !m_liveChannel) {
+            showLiveChannel(name); // the first channel, when nothing else is shown
+        } else if (m_liveChannel == name && result.shownChanged) {
+            drawLiveFrame(ImageView::KeepView::IfSameSize);
+        }
+    }
+
+    for (const std::string& name : batch.refused) {
+        if (m_refusedChannels.contains(name)) {
+            continue;
+        }
+        if (m_refusedChannels.size() >= kNamedRefusedChannels) {
+            m_unnamedRefusals = true; // counted with the rejections instead
+            continue;
+        }
+        m_refusedChannels.insert(name);
+        const QString shown = singleLine(QString::fromStdString(name));
+        const auto open = static_cast<int>(m_live.channels().size());
+        // An open channel is refused only for a frame that would take the frames past the byte budget.
+        log(LogKind::Warning,
+            m_live.find(name) == nullptr && open >= QtImageSink::kMaxLiveChannels
+                ? tr("Refused live channel [%1]: %2 channels are open").arg(shown).arg(open)
+                : tr("Refused live channel [%1]: the open channels' frames would take more than %2")
+                      .arg(shown, QLocale().formattedDataSize(static_cast<qint64>(QtImageSink::kMaxLiveBytes),
+                                                              0, QLocale::DataSizeIecFormat)));
+    }
+}
+
+// From a click on its row, or the first channel when nothing else is shown. The view is fitted to it; its
+// frames to come keep the zoom.
+void MainWindow::showLiveChannel(const std::string& name) {
+    const viewer_core::LiveChannel* channel = m_live.find(name);
+    if (channel == nullptr || m_liveChannel == name || m_mutedChannels.contains(name)) {
+        return;
+    }
+    m_currentId.reset();
+    m_liveChannel = name;
+    m_sink.protectLiveChannel(name); // never closed to make room while in view
+    m_thumbnails->clearChoice();
+    m_sidebar->liveChannels()->setSelected(QString::fromStdString(name));
+    m_infoBar->displayControl()->setState(settingsFor(name, channel->shownTags),
+                                          channel->shown.channels() == 1, channel->shownTags.isHdr());
+    m_ui->actionFreeze->setChecked(channel->frozen); // each channel is frozen or not by itself
+    m_pixelLabel->clear();
+    drawLiveFrame(ImageView::KeepView::No);
+    showLiveText(m_clock());
+    showRegionStatistics();
+    setWindowTitle(viewerWindowTitle(QString::fromStdString(name), m_endpoint));
+    updateEditActions();
+}
+
+void MainWindow::drawLiveFrame(ImageView::KeepView keep) {
+    if (paintLiveFrame(keep)) {
+        m_live.markDrawn(*m_liveChannel, m_clock());
+    }
+}
+
+// Converted at the size it will be drawn when that is smaller than the frame: a 4K frame in a window costs no
+// more than the window's pixels. At 1:1 or closer, the whole frame. Without a copy: the view holds the
+// converted frame until the next one replaces it.
+bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->shown.empty()) {
+        return false;
+    }
+    const cv::Mat& frame = channel->shown;
+    // Frames may change their channel count, or their tags.
+    m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
+    m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
+                              frame, settingsFor(channel->name, channel->shownTags),
+                              {.size = liveDrawnSize(frame, keep),
+                               .tags = channel->shownTags,
+                               .showClipping = m_showClipping})),
+                          keep, QSize(frame.cols, frame.rows));
+    return true;
+}
+
+// The size a live frame is converted at for a draw with `keep`: the drawn size when that is smaller than the
+// frame, else the frame's own.
+cv::Size MainWindow::liveDrawnSize(const cv::Mat& frame, ImageView::KeepView keep) const {
+    const double scale = m_imageView->deviceScaleFor(QSize(frame.cols, frame.rows), keep);
+    if (scale >= 1.0) {
+        return frame.size();
+    }
+    return viewer_core::sizeWithin(frame.size(), cv::Size(static_cast<int>(std::ceil(frame.cols * scale)),
+                                                          static_cast<int>(std::ceil(frame.rows * scale))));
+}
+
+// After a zoom, a fit or a resize: a frame converted for the old scale, a frozen one above all, would stay
+// blurred or coarse. Only when the size it is converted at changes, though: past 1:1 that is the whole frame
+// at every step, and converting it again for each step of a trackpad zoom would only cost.
+void MainWindow::redrawLiveFrameForScale() {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->shown.empty()) {
+        return;
+    }
+    const cv::Size drawn = liveDrawnSize(channel->shown, ImageView::KeepView::IfSameSize);
+    if (QSize(drawn.width, drawn.height) != m_imageView->picture().size()) {
+        paintLiveFrame(ImageView::KeepView::IfSameSize);
+    }
+}
+
+void MainWindow::showLiveText(Clock::time_point now) {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr) {
+        return;
+    }
+    m_infoBar->showLiveChannel(QString::fromStdString(channel->name),
+                               liveDetails(QString::fromStdString(viewer_core::describeImage(channel->shown)),
+                                           *channel, m_live.stats(channel->name, now)));
+}
+
+void MainWindow::tick(Clock::time_point now) {
+    for (const std::string& name : m_live.updateIdle(now)) {
+        if (m_mutedChannels.contains(name)) {
+            continue;
+        }
+        const viewer_core::LiveChannel* channel = m_live.find(name);
+        const auto [arrivedBefore, droppedBefore] = m_startCounts[name];
+        log(LogKind::Info, tr("Live channel [%1] idle after %2 frames (%3 dropped)")
+                               .arg(singleLine(QString::fromStdString(name)))
+                               .arg(channel->received + channel->dropped - arrivedBefore)
+                               .arg(channel->dropped - droppedBefore));
+    }
+    for (const viewer_core::LiveChannel& channel : m_live.channels()) {
+        updateLiveRow(channel, now);
+    }
+    showLiveText(now);
+    if (m_liveChannel) {
+        showRegionStatistics(); // twice a second, not per frame: a region of a 4K frame takes a while
+    }
+    if (m_live.channels().empty()) {
+        m_liveTimer->stop();
+    }
+}
+
+// The row's picture is the channel's newest frame, the one set aside while frozen included, converted at the
+// row's size: a 4K frame costs a row no more than a small one. With the shown frame's tags: a stream does not
+// change them between frames.
+void MainWindow::updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now) {
+    auto& [madeAtFrame, picture] = m_rowPictures[channel.name];
+    const cv::Mat& newest = channel.newest.empty() ? channel.shown : channel.newest;
+    const bool muted = m_mutedChannels.contains(channel.name);
+    if (!muted && (picture.isNull() || madeAtFrame != channel.received) && !newest.empty()) {
+        const int height =
+            std::max(1, static_cast<int>(std::lround(LiveChannelPanel::kRowHeight * devicePixelRatioF())));
+        picture = qt_common::toQImage(viewer_core::toDisplayImage(
+            newest, settingsFor(channel.name, channel.shownTags),
+            {.size = viewer_core::sizeWithin(newest.size(), cv::Size(newest.cols, height)),
+             .tags = channel.shownTags}));
+        madeAtFrame = channel.received;
+    }
+    m_sidebar->liveChannels()->updateChannel(
+        QString::fromStdString(channel.name), picture, m_live.stats(channel.name, now).arrivedPerSecond,
+        {.idle = channel.idle, .frozen = channel.frozen, .muted = muted});
+}
+
+// Only idle channels have a close button: a channel that is still sending would start again at once.
+void MainWindow::closeLiveChannel(const std::string& name) {
+    if (m_live.find(name) == nullptr) {
+        return;
+    }
+    m_sink.closeLiveChannel(name);
+    forgetLiveChannel(name);
+    log(LogKind::Info, tr("Closed live channel [%1]").arg(singleLine(QString::fromStdString(name))));
+}
+
+void MainWindow::forgetLiveChannel(const std::string& name) {
+    m_live.close(name);
+    m_rowPictures.erase(name);
+    m_startCounts.erase(name);
+    m_sidebar->liveChannels()->removeChannel(QString::fromStdString(name));
+    if (m_liveChannel == name) {
+        leaveLiveChannel();
+    }
+}
+
+void MainWindow::leaveLiveChannel() {
+    m_liveChannel.reset();
+    m_sink.protectLiveChannel(std::nullopt);
+    m_sidebar->liveChannels()->setSelected(std::nullopt);
+    if (m_lastHistoryId && m_history.find(*m_lastHistoryId) != nullptr) {
+        selectAndShow(*m_lastHistoryId);
+    } else {
+        clearView();
+    }
+}
+
+// Mute belongs to the name for the session. Muting also unfreezes the channel, which cannot be looked at
+// while muted, and gives the view back if it was in it.
+void MainWindow::setLiveMuted(const std::string& name, bool muted) {
+    if (muted == m_mutedChannels.contains(name)) {
+        return;
+    }
+    const QString shown = singleLine(QString::fromStdString(name));
+    if (muted) {
+        m_mutedChannels.insert(name);
+        m_live.setFrozen(name, false);
+        if (m_liveChannel == name) {
+            leaveLiveChannel();
+        }
+        log(LogKind::Info, tr("Muted live channel [%1]").arg(shown));
+    } else {
+        m_mutedChannels.erase(name);
+        m_rowPictures.erase(name); // from before the mute: the newest frame takes its place
+        log(LogKind::Info, tr("Unmuted live channel [%1]").arg(shown));
+    }
+    if (const viewer_core::LiveChannel* channel = m_live.find(name)) {
+        updateLiveRow(*channel, m_clock());
+    }
+}
+
+// Frames go on arriving and being counted while frozen; unfreezing shows the newest.
+void MainWindow::setLiveFrozen(bool frozen) {
+    if (!m_liveChannel) {
+        return;
+    }
+    if (m_live.setFrozen(*m_liveChannel, frozen)) {
+        drawLiveFrame(ImageView::KeepView::IfSameSize);
+    }
+    const Clock::time_point now = m_clock();
+    updateLiveRow(*m_live.find(*m_liveChannel), now);
+    showLiveText(now);
+}
+
+// The frame in view, frozen or not, into the history under "<channel> <its receive time>", with the channel's
+// display settings, so it looks as it did on screen. The channel stays in view.
+void MainWindow::takeSnapshot() {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->shown.empty()) {
+        return;
+    }
+    const qint64 milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(channel->shownReceivedAt.time_since_epoch())
+            .count();
+    // A channel's name may already be at the wire format's limit: the time is kept, the name cut.
+    QString channelName = QString::fromStdString(channel->name);
+    QString name = snapshotName(channelName, milliseconds);
+    while (static_cast<std::size_t>(name.toUtf8().size()) > visual_debug::kMaxNameBytes &&
+           !channelName.isEmpty()) {
+        channelName.chop(channelName.back().isLowSurrogate() ? 2 : 1);
+        name = snapshotName(channelName, milliseconds);
+    }
+    const std::string snapshot = name.toStdString();
+    setDisplaySettings(snapshot, m_displaySettings.find(channel->name));
+    addImage(snapshot, channel->shown,
+             {.source = viewer_core::ImageSource::LiveSnapshot,
+              .fileBytes = std::nullopt,
+              .arrivedAt = channel->shownReceivedAt,
+              .tags = channel->shownTags});
+}
+
+QImage MainWindow::livePicture() const {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->shown.empty()) {
+        return {};
+    }
+    return qt_common::toQImage(viewer_core::toDisplayImage(
+        channel->shown, settingsFor(channel->name, channel->shownTags), {.tags = channel->shownTags}));
+}
+
+void MainWindow::copyLiveFrame() {
+    const QImage picture = livePicture();
+    if (picture.isNull()) {
+        return;
+    }
+    QGuiApplication::clipboard()->setImage(picture);
+    log(LogKind::Info,
+        tr("Copied [%1] to the clipboard").arg(singleLine(QString::fromStdString(*m_liveChannel))));
+}
+
+// Named as its snapshot would be, so frames saved from one stream do not overwrite each other.
+void MainWindow::saveLiveFrame() {
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->shown.empty()) {
+        return;
+    }
+    const QImage picture =
+        livePicture(); // the frame shown now, even if a newer one arrives during the dialog
+    savePicture(picture, snapshotName(QString::fromStdString(channel->name),
+                                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          channel->shownReceivedAt.time_since_epoch())
+                                          .count()));
 }
 
 // Selecting it in the sidebar shows it; one the search hides is shown without a selection.
@@ -576,6 +1193,9 @@ void MainWindow::showImageText(const viewer_core::ReceivedImage& entry) {
 
 void MainWindow::clearView() {
     m_currentId.reset();
+    m_liveChannel.reset();
+    m_sink.protectLiveChannel(std::nullopt);
+    m_sidebar->liveChannels()->setSelected(std::nullopt);
     m_imageView->clear();
     m_infoBar->clear();
     m_pixelLabel->clear();
@@ -662,17 +1282,31 @@ void MainWindow::updateEditActions() {
     QWidget* focus = QApplication::focusWidget();
     const bool typing = isTextField(focus) || (focus != nullptr && m_logPanel->isAncestorOf(focus));
     const bool shown = m_currentId.has_value();
+    const bool live = m_liveChannel.has_value();
     m_ui->actionUndoDelete->setEnabled(m_history.undoDepth() > 0 && !typing);
     m_ui->actionRename->setEnabled(shown);
     m_ui->actionDuplicate->setEnabled(shown);
-    m_ui->actionCopyImage->setEnabled(shown && !typing);
+    m_ui->actionCopyImage->setEnabled((shown || live) && !typing);
     m_ui->actionDelete->setEnabled(shown && !typing);
     m_ui->actionClearHistory->setEnabled(m_history.size() > 0);
+    m_ui->menuImage->setEnabled(shown || live);
+    // Disabled, they leave Space to the thumbnails and buttons while no channel is shown.
+    m_ui->actionFreeze->setEnabled(live);
+    m_ui->actionSnapshot->setEnabled(live);
+    if (!live) {
+        m_ui->actionFreeze->setChecked(false);
+    }
 }
 
+// The original values: of the history image, or of the live frame on screen.
 void MainWindow::showPixel(int x, int y) {
-    const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr;
-    const auto text = entry != nullptr ? viewer_core::inspectPixel(entry->original, x, y) : std::nullopt;
+    const cv::Mat* original = nullptr;
+    if (const auto* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
+        original = &channel->shown;
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        original = &entry->original;
+    }
+    const auto text = original != nullptr ? viewer_core::inspectPixel(*original, x, y) : std::nullopt;
     m_pixelLabel->setText(text ? QString::fromStdString(*text) : QString());
 }
 
@@ -727,7 +1361,7 @@ void MainWindow::onRestoreFinished(int restored, int skipped, int dropped) {
         }
         log(skipped + dropped > 0 ? LogKind::Warning : LogKind::Info, text);
     }
-    if (!m_currentId && !m_infoBar->isRenaming()) {
+    if (!m_currentId && !m_liveChannel && !m_infoBar->isRenaming()) {
         if (const std::vector<viewer_core::ImageId> listed = m_thumbnails->listedIds(); !listed.empty()) {
             m_thumbnails->selectImage(listed.front());
         }
@@ -778,7 +1412,10 @@ void MainWindow::clearHistory() {
     if (m_infoBar->isRenaming()) {
         m_infoBar->cancelRename();
     }
-    clearView();
+    if (!m_liveChannel) {
+        clearView(); // a live channel stays in view
+    }
+    m_lastHistoryId.reset();
     for (const viewer_core::ReceivedImage& entry : m_history.entries()) {
         m_thumbnails->removeImage(entry.id);
     }

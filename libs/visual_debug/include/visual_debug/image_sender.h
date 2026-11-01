@@ -1,5 +1,7 @@
 #pragma once
 
+#include "visual_debug/image_description.h"
+
 #include <opencv2/core/mat.hpp>
 
 #include <string_view>
@@ -23,6 +25,22 @@ class ImageSender {
 public:
     virtual ~ImageSender() = default;
     virtual SendResult send(const cv::Mat& image, std::string_view name) = 0;
+    // One frame of a live channel: the viewer shows it in place of the channel's previous frame instead of
+    // adding it to the history. By default it is sent as an ordinary image, so existing implementations
+    // (a host application's own fake, say) keep working.
+    virtual SendResult sendLive(const cv::Mat& frame, std::string_view channel) {
+        return send(frame, channel);
+    }
+    // The same with a description of the image (its value range, transfer, primaries). By default the
+    // description is dropped, for the same reason.
+    virtual SendResult send(const cv::Mat& image, std::string_view name,
+                            const ImageDescription& /*description*/) {
+        return send(image, name);
+    }
+    virtual SendResult sendLive(const cv::Mat& frame, std::string_view channel,
+                                const ImageDescription& /*description*/) {
+        return sendLive(frame, channel);
+    }
 };
 
 } // namespace visual_debug

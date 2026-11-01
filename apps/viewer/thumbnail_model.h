@@ -12,6 +12,7 @@
 
 #include <opencv2/core/mat.hpp>
 
+#include <functional>
 #include <vector>
 
 // What each sidebar item shows. At least one is always on.
@@ -51,6 +52,14 @@ public:
     // unchanged size costs nothing; a new width or screen makes a new one. Null for an unknown id.
     QPixmap thumbnail(viewer_core::ImageId id, QSize deviceSize) const;
 
+    // Makes a row's picture, RGBA, about deviceSize, when its thumbnail is painted and not kept: the
+    // window's, which knows each name's display settings. An empty picture keeps the stored one.
+    using ThumbnailMaker = std::function<cv::Mat(viewer_core::ImageId, QSize deviceSize)>;
+    void setThumbnailMaker(ThumbnailMaker maker);
+    // Forgets the kept thumbnails of the rows of this name, after its settings changed. Nothing is made
+    // until they are painted: a name may cover hundreds of images, and only those on screen need one.
+    void refreshThumbnails(const QString& name);
+
 private:
     struct Row {
         viewer_core::ImageId id = 0;
@@ -70,6 +79,7 @@ private:
 
     std::vector<Row> m_rows;
     SidebarFields m_fields = SidebarField::Thumbnail | SidebarField::Name | SidebarField::Details;
+    ThumbnailMaker m_maker;
 };
 
 // The keys the sidebar sorts by. Received is the history's own order.

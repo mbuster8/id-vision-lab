@@ -40,6 +40,9 @@ public:
     // listed; an image the search hides is still remembered, and selected again once listed.
     bool selectImage(viewer_core::ImageId id);
     std::optional<viewer_core::ImageId> currentImageId() const;
+    // Quietly selects nothing and forgets the remembered image, so choosing any thumbnail afterwards, the one
+    // chosen before included, emits imageSelected. For while the window shows something else.
+    void clearChoice();
     bool isListed(viewer_core::ImageId id) const;
     std::vector<viewer_core::ImageId> listedIds() const; // top to bottom, as shown
     int listedCount() const;
@@ -52,6 +55,10 @@ public:
 
     void setShownFields(SidebarFields fields); // an empty set is ignored
     SidebarFields shownFields() const;         // all three by default
+
+    // As ThumbnailModel's: who makes the pictures, and the name whose thumbnails to make again.
+    void setThumbnailMaker(ThumbnailModel::ThumbnailMaker maker);
+    void refreshThumbnails(const QString& name);
 
     // In viewport coordinates; empty when the id is not listed. thumbnailRect is the picture as drawn.
     QRect cellRect(viewer_core::ImageId id) const;

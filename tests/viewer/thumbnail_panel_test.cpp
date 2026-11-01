@@ -77,6 +77,42 @@ int countPixelsOtherThan(const QImage& image, const QRect& rect, const QColor& c
     return count;
 }
 
+// (F5) A change of settings makes nothing until a thumbnail is painted, and then only that one: a name may
+// cover hundreds of images.
+TEST(ThumbnailModel, RefreshMakesNothingUntilDrawn) {
+    ThumbnailModel model;
+    model.insertImage(makeEntry(1, "g"), 0);
+    model.insertImage(makeEntry(2, "g"), 0);
+    int calls = 0;
+    model.setThumbnailMaker([&calls](ImageId, QSize size) {
+        ++calls;
+        return cv::Mat(size.height(), size.width(), CV_8UC4, cv::Scalar(0, 0, 255, 255)); // RGBA blue
+    });
+
+    model.refreshThumbnails(QStringLiteral("g"));
+    EXPECT_EQ(calls, 0);
+
+    const QImage made = model.thumbnail(1, QSize(16, 12)).toImage();
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(made.pixelColor(8, 6), QColor(0, 0, 255));
+    model.thumbnail(1, QSize(16, 12));
+    EXPECT_EQ(calls, 1); // kept
+    model.refreshThumbnails(QStringLiteral("g"));
+    model.thumbnail(1, QSize(16, 12));
+    EXPECT_EQ(calls, 2);
+}
+
+// A maker with nothing to say leaves the stored picture.
+TEST(ThumbnailModel, EmptyPictureKeepsTheStoredOne) {
+    ThumbnailModel model;
+    model.insertImage(makeEntry(1, "g"), 0);
+    const QImage stored = model.thumbnail(1, QSize(16, 12)).toImage();
+    model.setThumbnailMaker([](ImageId, QSize) { return cv::Mat(); });
+    model.refreshThumbnails(QStringLiteral("g"));
+
+    EXPECT_EQ(model.thumbnail(1, QSize(16, 12)).toImage(), stored);
+}
+
 TEST(ThumbnailPanel, NewestImageIsFirstAndSelected) {
     ThumbnailPanel panel;
     QSignalSpy selected(&panel, &ThumbnailPanel::imageSelected);
@@ -120,6 +156,26 @@ TEST(ThumbnailPanel, SelectingAnItemReportsItsId) {
     QSignalSpy selected(&panel, &ThumbnailPanel::imageSelected);
 
     panel.setCurrentIndex(panel.model()->index(1, 0));
+
+    ASSERT_EQ(selected.size(), 1);
+    EXPECT_EQ(selected.first().at(0).value<quint64>(), 1u);
+}
+
+// The window clears the choice while a live channel is shown, so a click on the image shown before it, or any
+// other, shows that image again.
+TEST(ThumbnailPanel, ClearChoiceLetsTheSameThumbnailBeChosenAgain) {
+    ThumbnailPanel panel;
+    panel.addImage(makeEntry(1, "a"));
+    QSignalSpy selected(&panel, &ThumbnailPanel::imageSelected);
+
+    panel.clearChoice();
+    EXPECT_TRUE(selected.isEmpty());
+    EXPECT_EQ(panel.currentImageId(), std::nullopt);
+    EXPECT_TRUE(panel.selectionModel()->selectedIndexes().isEmpty());
+    panel.addImage(makeEntry(2, "b"), false); // a change of the listing chooses nothing either
+    EXPECT_EQ(panel.currentImageId(), std::nullopt);
+
+    panel.setCurrentIndex(panel.model()->index(1, 0)); // "a", below the newer "b"
 
     ASSERT_EQ(selected.size(), 1);
     EXPECT_EQ(selected.first().at(0).value<quint64>(), 1u);

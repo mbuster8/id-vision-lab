@@ -4,12 +4,14 @@
 #include "appearance.h"
 #include "control_checks.h"
 #include "data_folder.h"
+#include "display_settings_control.h"
 #include "display_text.h"
 #include "epoch_time.h"
 #include "image_info_bar.h"
 #include "image_sidebar.h"
 #include "image_store.h"
 #include "image_view.h"
+#include "live_channel_panel.h"
 #include "palette_support.h"
 #include "server_controls.h"
 #include "shades.h"
@@ -33,8 +35,13 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QPalette>
 #include <QPoint>
+#include <QPushButton>
+#include <QRectF>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -44,6 +51,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
+#include <QWheelEvent>
 
 #include "visual_debug/client.h"
 
@@ -51,7 +59,9 @@
 #include <opencv2/core.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -592,26 +602,57 @@ TEST(MainWindowTest, LogsReceivedImageWithItsReceivedTime) {
     EXPECT_LE(received->time, sent);
 }
 
-TEST(MainWindowTest, LogsCombinedRejections) {
+// A sender streaming into a paused viewer is told so on every frame; the log says it once, when it matters.
+TEST(MainWindowTest, PausedStreamingLogsOnceAtResume) {
     const auto window = makeTestWindow();
     const QString endpoint = listeningEndpoint(*window);
     ASSERT_FALSE(endpoint.isEmpty());
     action(*window, "actionPauseServer")->trigger();
     const ActivityLog* log = logOf(*window);
+    visual_debug::Client client(
+        {.endpoint = endpoint.toStdString(), .replyTimeout = std::chrono::milliseconds(300)});
 
-    // The UI runs no events between the sends, as when it falls behind a flood.
     for (int i = 0; i < 3; ++i) {
-        ASSERT_EQ(sendTo(endpoint), visual_debug::SendResult::Rejected);
+        ASSERT_EQ(client.sendLive(makeImage(), "camera"), visual_debug::SendResult::Rejected);
     }
-    ASSERT_TRUE(
-        QTest::qWaitFor([log] { return findEntry(*log, QStringLiteral("Rejected")) != nullptr; }, 2000));
-    EXPECT_EQ(countEntries(*log, QStringLiteral("Rejected")), 1);
-    EXPECT_EQ(log->latest()->text, QStringLiteral("Rejected 3 requests: [viewer paused]"));
-    EXPECT_EQ(log->latest()->kind, LogKind::Warning);
+    QTest::qWait(50);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Rejected")), 0);
 
-    ASSERT_EQ(sendTo(endpoint), visual_debug::SendResult::Rejected);
-    ASSERT_TRUE(QTest::qWaitFor([log] { return countEntries(*log, QStringLiteral("Rejected")) == 2; }, 2000));
-    EXPECT_EQ(log->latest()->text, QStringLiteral("Rejected a request: [viewer paused]"));
+    action(*window, "actionPauseServer")->trigger(); // Resume
+
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Rejected")), 1);
+    const LogEntry* rejected = findEntry(*log, QStringLiteral("Rejected"));
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(rejected->text, QStringLiteral("Rejected 3 requests while paused: [viewer paused]"));
+    EXPECT_EQ(rejected->kind, LogKind::Warning);
+
+    // Stop says it too.
+    action(*window, "actionPauseServer")->trigger();
+    ASSERT_EQ(client.sendLive(makeImage(), "camera"), visual_debug::SendResult::Rejected);
+    action(*window, "actionStopServer")->trigger();
+    EXPECT_NE(findEntry(*log, QStringLiteral("Rejected a request while paused: [viewer paused]")), nullptr);
+}
+
+// Any other reason: the first count at once, then at most one line a second, however fast they come.
+TEST(MainWindowTest, RejectionsAreCoalescedPerSecond) {
+    const auto window = makeTestWindow();
+    const ActivityLog* log = logOf(*window);
+    QtImageSink& sink = window->sinkForTests();
+
+    for (int i = 0; i < 3; ++i) {
+        sink.onRequestRejected("viewer busy");
+    }
+    QApplication::processEvents();
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Rejected")), 1);
+    EXPECT_EQ(log->latest()->text, QStringLiteral("Rejected 3 requests: [viewer busy]"));
+
+    sink.onRequestRejected("viewer busy");
+    sink.onRequestRejected("viewer busy");
+    QTest::qWait(100);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Rejected")), 1);
+
+    ASSERT_TRUE(QTest::qWaitFor([log] { return countEntries(*log, QStringLiteral("Rejected")) == 2; }, 3000));
+    EXPECT_EQ(log->latest()->text, QStringLiteral("Rejected 2 requests: [viewer busy]"));
 }
 
 TEST(MainWindowTest, LogsServerStates) {
@@ -836,13 +877,204 @@ TEST(MainWindowTest, MenusAreInTheirOrder) {
     const auto window = makeTestWindow();
     EXPECT_EQ(entryTitles(window->menuBar()->actions()),
               (QStringList{QStringLiteral("File"), QStringLiteral("Edit"), QStringLiteral("View"),
-                           QStringLiteral("Server"), QStringLiteral("History"), QStringLiteral("Help")}));
+                           QStringLiteral("Image"), QStringLiteral("Server"), QStringLiteral("History"),
+                           QStringLiteral("Help")}));
+    EXPECT_EQ(
+        entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
+        (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"), QStringLiteral("Show Clipping"),
+                     QStringLiteral("-"), QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
     QStringList view{QStringLiteral("Show in Sidebar"), QStringLiteral("Sort By"), QStringLiteral("-"),
                      QStringLiteral("Show Log")};
     if (qt_common::canChooseAppearance()) {
         view << QStringLiteral("-") << QStringLiteral("Appearance");
     }
     EXPECT_EQ(entryTitles(window->findChild<QMenu*>(QStringLiteral("menuView"))->actions()), view);
+}
+
+// --- Display range and colours ----------------------------------------------------------------------------
+
+DisplaySettingsControl* displayControlOf(MainWindow& window) {
+    return window.findChild<DisplaySettingsControl*>();
+}
+
+QAction* entryTitled(const QMenu* menu, const QString& title) {
+    for (QAction* entry : menu->actions()) {
+        if (entry->text().remove(u'&') == title) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+QMenu* imageSubmenu(MainWindow& window, const QString& title) {
+    const QAction* entry = entryTitled(window.findChild<QMenu*>(QStringLiteral("menuImage")), title);
+    return entry != nullptr ? entry->menu() : nullptr;
+}
+
+QString buttonText(MainWindow& window, const char* name) {
+    return displayControlOf(window)->findChild<QToolButton*>(QString::fromLatin1(name))->text();
+}
+
+void applyFixedRange(MainWindow& window, const QString& minimum, const QString& maximum) {
+    DisplaySettingsControl* control = displayControlOf(window);
+    entryTitled(control->rangeMenu(), QStringLiteral("Fixed…"))->trigger();
+    control->findChild<QLineEdit*>(QStringLiteral("fixedMinimum"))->setText(minimum);
+    control->findChild<QLineEdit*>(QStringLiteral("fixedMaximum"))->setText(maximum);
+    control->findChild<QPushButton*>(QStringLiteral("applyFixedRange"))->click();
+}
+
+// The grey level at the middle of the picture in the view, which a fitted image fills.
+int viewedGrey(MainWindow& window) {
+    QImage view = window.findChild<ImageView*>()->grab().toImage();
+    return view.pixelColor(view.width() / 2, view.height() / 2).red();
+}
+
+int thumbnailGrey(MainWindow& window, ImageId id) {
+    const auto* model = panelOf(window)->findChild<ThumbnailModel*>(); // the view's own model is a filter
+    if (model == nullptr) {
+        return -1;
+    }
+    const QImage thumbnail = model->thumbnail(id, QSize(16, 16)).toImage();
+    return thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2).red();
+}
+
+// (F5) The view, Copy Image, Save As and the thumbnail all show the range.
+TEST(MainWindowTest, RangeChangesTheViewCopyAndTheThumbnail) {
+    const auto window = makeTestWindow();
+    window->resize(800, 600);
+    window->show();
+    window->addImage("a", cv::Mat(40, 40, CV_8UC1, cv::Scalar(100)));
+    QApplication::processEvents();
+    ASSERT_EQ(viewedGrey(*window), 100);
+
+    applyFixedRange(*window, QStringLiteral("0"), QStringLiteral("50"));
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewedGrey(*window), 255);
+    window->copyImage(1);
+    EXPECT_EQ(QGuiApplication::clipboard()->image().pixelColor(20, 20).red(), 255);
+    EXPECT_EQ(thumbnailGrey(*window, 1), 255);
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Fixed ▾"));
+}
+
+// A 16-bit left-to-right ramp, so a colour map shows as colour.
+cv::Mat ramp() {
+    cv::Mat image(30, 40, CV_16UC1);
+    for (int x = 0; x < image.cols; ++x) {
+        image.col(x).setTo(x * 1000);
+    }
+    return image;
+}
+
+// Whether the middle of a thumbnail is coloured, not grey.
+bool thumbnailIsColoured(MainWindow& window, ImageId id) {
+    const auto* model = panelOf(window)->findChild<ThumbnailModel*>();
+    const QImage thumbnail = model->thumbnail(id, QSize(40, 30)).toImage();
+    const QColor middle = thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+    return middle.red() != middle.green() || middle.green() != middle.blue();
+}
+
+void chooseColours(MainWindow& window, int entry) { // 0 Grey, 1 Turbo, 2 Viridis
+    imageSubmenu(window, QStringLiteral("Colours"))->actions().at(entry)->trigger();
+}
+
+// (F5) Every thumbnail of a name shows its colours, redrawn when they change.
+TEST(MainWindowTest, ThumbnailFollowsTheDisplaySettings) {
+    const auto window = makeTestWindow();
+    window->addImage("g", ramp());
+    ASSERT_FALSE(thumbnailIsColoured(*window, 1));
+
+    chooseColours(*window, 1);
+    EXPECT_TRUE(thumbnailIsColoured(*window, 1));
+    chooseColours(*window, 0);
+    EXPECT_FALSE(thumbnailIsColoured(*window, 1));
+}
+
+TEST(MainWindowTest, LaterArrivalOfTheNameGetsItsSettings) {
+    const auto window = makeTestWindow();
+    window->addImage("g", ramp());
+    chooseColours(*window, 1);
+
+    window->addImage("g", ramp());
+
+    EXPECT_TRUE(thumbnailIsColoured(*window, 2));
+}
+
+TEST(MainWindowTest, SettingsFollowTheName) {
+    const auto window = makeTestWindow();
+    window->addImage("a", makeImage());
+    imageSubmenu(*window, QStringLiteral("Colours"))->actions().at(1)->trigger(); // Turbo
+    window->addImage("b", makeImage());
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Grey ▾"));
+
+    panelOf(*window)->selectImage(1);
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Turbo ▾"));
+    window->addImage("a", makeImage()); // another image of the same name
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(3));
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Turbo ▾"));
+}
+
+TEST(MainWindowTest, RenameCarriesTheSettings) {
+    const auto window = makeTestWindow();
+    window->addImage("a", makeImage());
+    imageSubmenu(*window, QStringLiteral("Colours"))->actions().at(2)->trigger(); // Viridis
+
+    window->renameImage(1, QStringLiteral("z"));
+    window->addImage("a", makeImage());
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Grey ▾"));
+
+    panelOf(*window)->selectImage(1);
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Viridis ▾"));
+}
+
+// (F5) A rename moves the settings from one name to another, so the thumbnails of both names change: the
+// image left with the old name turns grey, and one that already had the new name takes its settings.
+TEST(MainWindowTest, RenameRefreshesTheThumbnailsOfBothNames) {
+    const auto window = makeTestWindow();
+    window->addImage("a", ramp());
+    window->addImage("a", ramp());
+    window->addImage("z", ramp());
+    chooseColours(*window, 1); // Turbo for "z"
+    panelOf(*window)->selectImage(1);
+    chooseColours(*window, 2); // Viridis for "a"
+    const auto* model = panelOf(*window)->findChild<ThumbnailModel*>();
+    const auto middleOf = [model](ImageId id) {
+        const QImage thumbnail = model->thumbnail(id, QSize(40, 30)).toImage();
+        return thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+    };
+    ASSERT_TRUE(thumbnailIsColoured(*window, 2));
+    ASSERT_NE(middleOf(3), middleOf(1)); // drawn, in Turbo and Viridis
+
+    window->renameImage(1, QStringLiteral("z"));
+
+    EXPECT_FALSE(thumbnailIsColoured(*window, 2));
+    EXPECT_EQ(middleOf(3), middleOf(1));
+}
+
+TEST(MainWindowTest, ImageMenuMirrorsTheControl) {
+    const auto window = makeTestWindow();
+    DisplaySettingsControl* control = displayControlOf(*window);
+    QMenu* range = imageSubmenu(*window, QStringLiteral("Range"));
+    QMenu* colours = imageSubmenu(*window, QStringLiteral("Colours"));
+    ASSERT_NE(range, nullptr);
+    ASSERT_NE(colours, nullptr);
+    EXPECT_NE(range, control->rangeMenu()); // a native menu has one parent
+    // The control's Range menu ends with Show Clipping, which the Image menu lists beside its Range menu.
+    QList<QAction*> rangeModes = control->rangeMenu()->actions();
+    ASSERT_GE(rangeModes.size(), 2);
+    EXPECT_EQ(rangeModes.takeLast(), action(*window, "actionShowClipping"));
+    EXPECT_TRUE(rangeModes.takeLast()->isSeparator());
+    EXPECT_EQ(range->actions(), rangeModes);
+    EXPECT_EQ(colours->actions(), control->coloursMenu()->actions());
+    EXPECT_FALSE(window->findChild<QMenu*>(QStringLiteral("menuImage"))->isEnabled()); // nothing shown
+
+    window->addImage("colour", cv::Mat(3, 4, CV_8UC3, cv::Scalar(1, 2, 3)));
+    EXPECT_TRUE(window->findChild<QMenu*>(QStringLiteral("menuImage"))->isEnabled());
+    EXPECT_FALSE(colours->actions().at(1)->isEnabled()); // colour maps are for single-channel images
+
+    window->addImage("grey", makeImage());
+    colours->actions().at(1)->trigger();
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Turbo ▾"));
 }
 
 // Not started: the event loop does not run, so the fixed port is never bound.
@@ -1197,6 +1429,1435 @@ TEST(MainWindowTest, ClearHistoryDuringRestoreStaysCleared) {
     EXPECT_TRUE(panelOf(*window)->listedIds().empty());
     EXPECT_EQ(findEntry(*logOf(*window), QStringLiteral("damaged")), nullptr);
     EXPECT_EQ(storedFiles(root.path()), 0);
+}
+
+// --- Live channels ----------------------------------------------------------------------------------------
+
+using Clock = std::chrono::steady_clock;
+using namespace std::chrono_literals;
+
+// A window on a clock the test moves, so channels go idle and rates change without waiting.
+struct ClockedWindow {
+    ClockedWindow() : window(test_support::makeClockedTestWindow([this] { return now; })) {}
+
+    Clock::time_point now = Clock::now();
+    std::unique_ptr<MainWindow> window;
+};
+
+cv::Mat liveFrame(int value, cv::Size size = {40, 30}) { return cv::Mat(size, CV_8UC1, cv::Scalar(value)); }
+
+// Hands a live frame to the window's sink as the server's thread would; the window takes it once events run.
+visual_debug::Acceptance
+feedLive(MainWindow& window, const std::string& channel, const cv::Mat& frame,
+         std::chrono::system_clock::time_point receivedAt = std::chrono::system_clock::now(),
+         std::optional<visual_debug::SentTime> sentAt = std::nullopt,
+         const visual_debug::ImageDescription& description = {}) {
+    return window.sinkForTests().onImageReceived({.name = channel,
+                                                  .image = frame,
+                                                  .receivedAt = receivedAt,
+                                                  .live = true,
+                                                  .sentAt = sentAt,
+                                                  .description = description});
+}
+
+LiveChannelPanel* livePanelOf(MainWindow& window) { return sidebarOf(window)->liveChannels(); }
+
+QWidget* liveRowOf(MainWindow& window, const QString& name) {
+    return livePanelOf(window)->findChild<QWidget*>(QStringLiteral("liveRow_") + name);
+}
+
+void chooseLiveRow(MainWindow& window, const QString& name) {
+    QTest::mouseClick(liveRowOf(window, name), Qt::LeftButton);
+}
+
+void clickMute(MainWindow& window, const QString& name) {
+    liveRowOf(window, name)->findChild<QToolButton*>(QStringLiteral("liveMute"))->click();
+}
+
+QString readoutText(MainWindow& window) {
+    return window.findChild<QLabel*>(QStringLiteral("pixelReadout"))->text();
+}
+
+QString infoDetails(MainWindow& window) {
+    return infoBarOf(window)->findChild<QLabel*>(QStringLiteral("imageDetails"))->text();
+}
+
+void showSized(MainWindow& window) {
+    window.resize(800, 600);
+    window.show();
+    QApplication::processEvents();
+}
+
+void moveMouseOver(QWidget& widget, QPointF position) {
+    QMouseEvent event(QEvent::MouseMove, position, widget.mapToGlobal(position), Qt::NoButton, Qt::NoButton,
+                      Qt::NoModifier);
+    QCoreApplication::sendEvent(&widget, &event);
+}
+
+void zoomIn(QWidget& widget, QPointF position) {
+    QWheelEvent event(position, widget.mapToGlobal(position), QPoint(), QPoint(0, 4 * 120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(&widget, &event);
+}
+
+TEST(MainWindowTest, LiveGroupAppearsAndDisappears) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    LiveChannelPanel* live = livePanelOf(window);
+    EXPECT_TRUE(live->isHidden());
+
+    ASSERT_EQ(feedLive(window, "camera", liveFrame(1)), visual_debug::Acceptance::Taken);
+    QApplication::processEvents();
+    EXPECT_FALSE(live->isHidden());
+    EXPECT_EQ(live->channelNames(), QStringList{QStringLiteral("camera")});
+
+    clocked.now += 6s;
+    window.tick(clocked.now);
+    auto* close =
+        liveRowOf(window, QStringLiteral("camera"))->findChild<QToolButton*>(QStringLiteral("liveClose"));
+    ASSERT_FALSE(close->isHidden());
+    close->click();
+
+    EXPECT_TRUE(live->isHidden());
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+    EXPECT_EQ(logOf(window)->latest()->text, QStringLiteral("Closed live channel [camera]"));
+    // The sink forgot it too: the next frame starts it again.
+    feedLive(window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    EXPECT_EQ(countEntries(*logOf(window), QStringLiteral("Live channel [camera] started")), 2);
+}
+
+TEST(MainWindowTest, FirstChannelIsShownAutomatically) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "camera", liveFrame(1));
+    feedLive(*window, "edges", liveFrame(2));
+    QApplication::processEvents();
+
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+    EXPECT_EQ(window->shownImageId(), std::nullopt);
+    EXPECT_EQ(livePanelOf(*window)->selectedChannel(), QStringLiteral("camera"));
+    EXPECT_TRUE(window->windowTitle().contains(QStringLiteral("camera")));
+    EXPECT_FALSE(infoBarOf(*window)->isHidden());
+    EXPECT_NE(findEntry(*logOf(*window), QStringLiteral("Live channel [camera] started")), nullptr);
+    EXPECT_NE(findEntry(*logOf(*window), QStringLiteral("Live channel [edges] started")), nullptr);
+
+    // With an image in view, a channel is listed but not shown.
+    const auto busy = makeTestWindow();
+    busy->addImage("a", makeImage());
+    feedLive(*busy, "camera", liveFrame(1));
+    QApplication::processEvents();
+    EXPECT_EQ(busy->shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(busy->shownLiveChannel(), std::nullopt);
+}
+
+TEST(MainWindowTest, ShowsTheNewestFrameOfAFlood) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+
+    // The UI runs no events between the frames, as when a sender outpaces it.
+    for (int i = 0; i < 200; ++i) {
+        ASSERT_EQ(feedLive(*window, "camera", liveFrame(i)), visual_debug::Acceptance::Taken);
+    }
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewedGrey(*window), 199);
+    EXPECT_EQ(countEntries(*logOf(*window), QStringLiteral("camera")), 1); // started, and no line per frame
+    window->tick(Clock::now());
+    EXPECT_TRUE(infoDetails(*window).contains(QStringLiteral("199 dropped")))
+        << infoDetails(*window).toStdString();
+}
+
+TEST(MainWindowTest, KeepsZoomAcrossSameSizeFrames) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+    const QPointF centre = QRectF(view->rect()).center();
+    zoomIn(*view, centre);
+    moveMouseOver(*view, centre + QPointF(40, 40));
+    const QString before = readoutText(*window).section(QStringLiteral(" ·"), 0, 0);
+    ASSERT_FALSE(before.isEmpty());
+
+    feedLive(*window, "camera", liveFrame(2));
+    QApplication::processEvents();
+
+    EXPECT_EQ(readoutText(*window).section(QStringLiteral(" ·"), 0, 0), before);
+}
+
+TEST(MainWindowTest, RefitsWhenTheFrameSizeChanges) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+    const QPointF centre = QRectF(view->rect()).center();
+    zoomIn(*view, centre);
+    moveMouseOver(*view, centre + QPointF(40, 40));
+    const QString before = readoutText(*window).section(QStringLiteral(" ·"), 0, 0);
+
+    feedLive(*window, "camera", liveFrame(2, {80, 60}));
+    QApplication::processEvents();
+
+    EXPECT_NE(readoutText(*window).section(QStringLiteral(" ·"), 0, 0), before);
+}
+
+TEST(MainWindowTest, ReadoutFollowsTheLiveFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+    moveMouseOver(*view, QRectF(view->rect()).center());
+    EXPECT_TRUE(readoutText(*window).endsWith(QStringLiteral("I=1"))) << readoutText(*window).toStdString();
+
+    feedLive(*window, "camera", liveFrame(7));
+    QApplication::processEvents();
+
+    EXPECT_TRUE(readoutText(*window).endsWith(QStringLiteral("I=7"))) << readoutText(*window).toStdString();
+}
+
+TEST(MainWindowTest, InfoStripShowsTheCounters) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    const auto receivedAt = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
+    const visual_debug::SentTime sentAt = receivedAt - 18ms;
+    for (int i = 0; i < 3; ++i) { // one taken, two replaced in the sink
+        feedLive(window, "camera", liveFrame(i), receivedAt, sentAt);
+    }
+    QApplication::processEvents();
+    feedLive(window, "camera", liveFrame(3), receivedAt, sentAt);
+    QApplication::processEvents();
+
+    window.tick(clocked.now);
+
+    EXPECT_EQ(infoBarOf(window)->findChild<QLabel*>(QStringLiteral("imageName"))->text(),
+              QStringLiteral("camera"));
+    EXPECT_EQ(infoDetails(window),
+              QString::fromUtf8("live · 40×30 · 1 ch · 8U · 4 fps in · 2 drawn · 2 dropped · 18 ms"));
+    EXPECT_FALSE(infoBarOf(window)->findChild<QToolButton*>(QStringLiteral("renameButton"))->isVisible());
+}
+
+TEST(MainWindowTest, StillAndLiveOfTheSameNameStayApart) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+
+    window->addImage("camera", makeImage());
+
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+    EXPECT_EQ(listedName(*window, 1), QStringLiteral("camera"));
+    EXPECT_EQ(livePanelOf(*window)->channelNames(), QStringList{QStringLiteral("camera")});
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(1));
+    EXPECT_FALSE(infoDetails(*window).startsWith(QStringLiteral("live")));
+    feedLive(*window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(1)); // a frame never takes the view
+}
+
+// (Q1) While a channel is watched, stills are listed, not shown, so the stream stays in view.
+TEST(MainWindowTest, StillArrivalKeepsTheChannelShown) {
+    const auto window = makeTestWindow();
+    window->addImage("a", makeImage());
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    chooseLiveRow(*window, QStringLiteral("camera"));
+
+    window->addImage("b", makeImage());
+
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+    EXPECT_EQ(window->shownImageId(), std::nullopt);
+    EXPECT_EQ(panelOf(*window)->currentImageId(), std::nullopt);
+    EXPECT_EQ(listedName(*window, 2), QStringLiteral("b"));
+}
+
+TEST(MainWindowTest, ReclickingTheLastThumbnailLeavesTheChannel) {
+    const auto window = makeTestWindow();
+    window->addImage("a", makeImage());
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    chooseLiveRow(*window, QStringLiteral("camera"));
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+
+    panelOf(*window)->setCurrentIndex(panelOf(*window)->model()->index(0, 0)); // a click on "a"
+
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(window->shownLiveChannel(), std::nullopt);
+}
+
+TEST(MainWindowTest, OneSelectionAtATime) {
+    const auto window = makeTestWindow();
+    window->addImage("a", makeImage());
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+
+    chooseLiveRow(*window, QStringLiteral("camera"));
+    EXPECT_EQ(livePanelOf(*window)->selectedChannel(), QStringLiteral("camera"));
+    EXPECT_TRUE(panelOf(*window)->selectionModel()->selectedIndexes().isEmpty());
+    EXPECT_FALSE(action(*window, "actionRename")->isEnabled());
+    EXPECT_FALSE(action(*window, "actionDuplicate")->isEnabled());
+    EXPECT_FALSE(action(*window, "actionDelete")->isEnabled());
+    EXPECT_TRUE(window->findChild<QMenu*>(QStringLiteral("menuImage"))->isEnabled());
+
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+    EXPECT_EQ(livePanelOf(*window)->selectedChannel(), std::nullopt);
+    EXPECT_EQ(panelOf(*window)->currentImageId(), std::optional<ImageId>(1));
+    EXPECT_TRUE(action(*window, "actionRename")->isEnabled());
+}
+
+TEST(MainWindowTest, ClosingTheShownChannelReturnsToTheHistory) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage());
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("camera"));
+    clocked.now += 6s;
+    window.tick(clocked.now);
+
+    liveRowOf(window, QStringLiteral("camera"))
+        ->findChild<QToolButton*>(QStringLiteral("liveClose"))
+        ->click();
+
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(panelOf(window)->currentImageId(), std::optional<ImageId>(1));
+
+    // With no image to go back to, nothing is shown.
+    ClockedWindow empty;
+    feedLive(*empty.window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    empty.now += 6s;
+    empty.window->tick(empty.now);
+    liveRowOf(*empty.window, QStringLiteral("camera"))
+        ->findChild<QToolButton*>(QStringLiteral("liveClose"))
+        ->click();
+    EXPECT_EQ(empty.window->shownLiveChannel(), std::nullopt);
+    EXPECT_FALSE(empty.window->findChild<ImageView*>()->hasImage());
+    EXPECT_TRUE(infoBarOf(*empty.window)->isHidden());
+}
+
+// (F3) Freezing a channel and then losing its sender leaves a row that can still be closed.
+TEST(MainWindowTest, FrozenIdleChannelCanBeClosed) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    ASSERT_EQ(window.shownLiveChannel(), std::optional<std::string>("camera"));
+    window.findChild<QAction*>(QStringLiteral("actionFreeze"))->trigger();
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    QWidget* row = liveRowOf(window, QStringLiteral("camera"));
+    EXPECT_EQ(row->findChild<QLabel*>(QStringLiteral("liveState"))->text(), QStringLiteral("frozen · idle"));
+    auto* close = row->findChild<QToolButton*>(QStringLiteral("liveClose"));
+    ASSERT_FALSE(close->isHidden());
+
+    close->click();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Closed live channel [camera]")), nullptr);
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+}
+
+TEST(MainWindowTest, GoesIdleInTheWindow) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (int i = 0; i < 3; ++i) {
+        feedLive(window, "camera", liveFrame(i));
+    }
+    QApplication::processEvents();
+    const ActivityLog* log = logOf(window);
+
+    window.tick(clocked.now + viewer_core::kIdleAfter - 1s);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("idle")), 0);
+    clocked.now += 6s;
+    window.tick(clocked.now);
+    window.tick(clocked.now + 1s);
+
+    EXPECT_EQ(countEntries(*log, QStringLiteral("idle")), 1);
+    EXPECT_NE(findEntry(*log, QStringLiteral("Live channel [camera] idle after 3 frames (2 dropped)")),
+              nullptr);
+    EXPECT_EQ(
+        liveRowOf(window, QStringLiteral("camera"))->findChild<QLabel*>(QStringLiteral("liveState"))->text(),
+        QStringLiteral("idle"));
+    EXPECT_TRUE(infoDetails(window).startsWith(QStringLiteral("idle · ")))
+        << infoDetails(window).toStdString();
+
+    feedLive(window, "camera", liveFrame(9));
+    QApplication::processEvents();
+    window.tick(clocked.now);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Live channel [camera] started")), 2);
+    EXPECT_EQ(
+        liveRowOf(window, QStringLiteral("camera"))->findChild<QLabel*>(QStringLiteral("liveState"))->text(),
+        QStringLiteral("live"));
+}
+
+// Each "started" line has its own "idle after" line, counting the frames since it.
+TEST(MainWindowTest, IdleLineCountsTheFramesSinceItStarted) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (int i = 0; i < 3; ++i) {
+        feedLive(window, "camera", liveFrame(i));
+    }
+    QApplication::processEvents();
+    clocked.now += 6s;
+    window.tick(clocked.now);
+
+    for (int i = 0; i < 2; ++i) {
+        feedLive(window, "camera", liveFrame(i));
+        QApplication::processEvents();
+    }
+    clocked.now += 6s;
+    window.tick(clocked.now);
+
+    const ActivityLog* log = logOf(window);
+    EXPECT_NE(findEntry(*log, QStringLiteral("Live channel [camera] idle after 3 frames (2 dropped)")),
+              nullptr);
+    EXPECT_NE(findEntry(*log, QStringLiteral("Live channel [camera] idle after 2 frames (0 dropped)")),
+              nullptr);
+}
+
+TEST(MainWindowTest, NinthChannelIsLoggedOncePerName) {
+    const auto window = makeTestWindow();
+    for (int i = 1; i <= 8; ++i) {
+        ASSERT_EQ(feedLive(*window, "cam" + std::to_string(i), liveFrame(i)),
+                  visual_debug::Acceptance::Taken);
+    }
+    QApplication::processEvents();
+
+    EXPECT_EQ(feedLive(*window, "cam9", liveFrame(9)), visual_debug::Acceptance::TooManyLiveChannels);
+    QApplication::processEvents();
+    for (int i = 0; i < 5; ++i) {
+        feedLive(*window, "cam9", liveFrame(9));
+        QApplication::processEvents();
+    }
+    // The server counts each refusal as a rejection too; the line above already says it.
+    window->sinkForTests().onRequestRejected("too many live channels");
+    QApplication::processEvents();
+
+    const ActivityLog* log = logOf(*window);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("cam9")), 1);
+    EXPECT_NE(findEntry(*log, QStringLiteral("Refused live channel [cam9]: 8 channels are open")), nullptr);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Rejected")), 0);
+    EXPECT_EQ(livePanelOf(*window)->channelNames().size(), 8);
+}
+
+// A sender that numbers its channel names makes every frame a new channel: the log names the first few it
+// refuses and counts the rest, coalesced like other rejections.
+TEST(MainWindowTest, NumberedChannelNamesDoNotFloodTheLog) {
+    const auto window = makeTestWindow();
+    for (int i = 1; i <= 8; ++i) {
+        ASSERT_EQ(feedLive(*window, "cam" + std::to_string(i), liveFrame(i)),
+                  visual_debug::Acceptance::Taken);
+    }
+    QApplication::processEvents();
+
+    for (int i = 0; i < 100; ++i) {
+        ASSERT_EQ(feedLive(*window, "frame " + std::to_string(i), liveFrame(i)),
+                  visual_debug::Acceptance::TooManyLiveChannels);
+        window->sinkForTests().onRequestRejected("too many live channels"); // as the server does
+        QApplication::processEvents();
+    }
+
+    const ActivityLog* log = logOf(*window);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Refused live channel")), 8);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("[too many live channels]")), 1);
+}
+
+// Every depth the wire format takes, in frames taller than a row, so each row's picture is shrunk.
+TEST(MainWindowTest, LiveRowsTakeEveryDepth) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (const int depth : {CV_8U, CV_8S, CV_16U, CV_16S, CV_32S, CV_32F, CV_64F}) {
+        ASSERT_EQ(feedLive(window, "depth " + std::to_string(depth),
+                           cv::Mat(480, 640, CV_MAKETYPE(depth, 1), cv::Scalar(depth))),
+                  visual_debug::Acceptance::Taken)
+            << depth;
+        QApplication::processEvents();
+    }
+    clocked.now += 1s;
+    window.tick(clocked.now);
+
+    EXPECT_EQ(livePanelOf(window)->channelNames().size(), 7);
+}
+
+// (Q3) A ninth channel takes the place of one that has gone idle.
+TEST(MainWindowTest, IdleChannelMakesRoomInTheWindow) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage()); // in view, so no channel is
+    for (int i = 1; i <= 8; ++i) {
+        feedLive(window, "cam" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    clocked.now += 6s;
+
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::Taken);
+    QApplication::processEvents();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [cam9] replaced idle channel [cam1]")),
+              nullptr);
+    const QStringList names = livePanelOf(window)->channelNames();
+    EXPECT_FALSE(names.contains(QStringLiteral("cam1")));
+    EXPECT_TRUE(names.contains(QStringLiteral("cam9")));
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+}
+
+// (R2) The channel in view, frozen on a frame someone is studying, is never the one closed to make room.
+TEST(MainWindowTest, ChannelInViewIsNeverReplaced) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (int i = 1; i <= 8; ++i) {
+        feedLive(window, "cam" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    ASSERT_EQ(window.shownLiveChannel(), std::optional<std::string>("cam1"));
+    action(window, "actionFreeze")->trigger();
+    clocked.now += viewer_core::kIdleAfter;
+
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::Taken);
+    QApplication::processEvents();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [cam9] replaced idle channel [cam2]")),
+              nullptr);
+    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("cam1"));
+    EXPECT_TRUE(action(window, "actionFreeze")->isChecked());
+}
+
+// --- Freeze and Snapshot ----------------------------------------------------------------------------------
+
+// A window that shows live channel "camera", whose frame is liveFrame(value), received at `receivedAt`.
+void showCamera(MainWindow& window, int value,
+                std::chrono::system_clock::time_point receivedAt = std::chrono::system_clock::now()) {
+    feedLive(window, "camera", liveFrame(value), receivedAt);
+    QApplication::processEvents();
+    if (window.shownLiveChannel() != std::optional<std::string>("camera")) {
+        chooseLiveRow(window, QStringLiteral("camera"));
+    }
+}
+
+void showActive(MainWindow& window) {
+    window.resize(800, 600);
+    window.show();
+    window.activateWindow();
+    ASSERT_TRUE(QTest::qWaitForWindowActive(&window));
+}
+
+TEST(MainWindowTest, LiveActionsOnlyWhileAChannelIsShown) {
+    const auto window = makeTestWindow();
+    QAction* freeze = action(*window, "actionFreeze");
+    QAction* snapshot = action(*window, "actionSnapshot");
+    ASSERT_NE(freeze, nullptr);
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_FALSE(freeze->isEnabled());
+    EXPECT_FALSE(snapshot->isEnabled());
+    EXPECT_TRUE(freeze->isCheckable());
+    EXPECT_EQ(freeze->shortcuts(), (QList<QKeySequence>{QKeySequence(QStringLiteral("Ctrl+Shift+T")),
+                                                        QKeySequence(Qt::Key_Space)}));
+    EXPECT_EQ(snapshot->shortcut(), QKeySequence(QStringLiteral("Ctrl+T")));
+    window->addImage("a", makeImage());
+    EXPECT_FALSE(freeze->isEnabled());
+
+    showCamera(*window, 1);
+    EXPECT_TRUE(freeze->isEnabled());
+    EXPECT_TRUE(snapshot->isEnabled());
+    auto* freezeButton = infoBarOf(*window)->findChild<QToolButton*>(QStringLiteral("freezeButton"));
+    auto* snapshotButton = infoBarOf(*window)->findChild<QToolButton*>(QStringLiteral("snapshotButton"));
+    ASSERT_NE(freezeButton, nullptr);
+    ASSERT_NE(snapshotButton, nullptr);
+    EXPECT_FALSE(freezeButton->isHidden());
+    EXPECT_FALSE(snapshotButton->isHidden());
+    EXPECT_EQ(freezeButton->defaultAction(), freeze);
+    EXPECT_EQ(snapshotButton->defaultAction(), snapshot);
+
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+    EXPECT_FALSE(freeze->isEnabled());
+    EXPECT_FALSE(snapshot->isEnabled());
+    EXPECT_TRUE(freezeButton->isHidden());
+    EXPECT_TRUE(snapshotButton->isHidden());
+}
+
+TEST(MainWindowTest, SnapshotAddsTheShownFrameToTheHistory) {
+    const auto window = makeTestWindow();
+    const auto receivedAt = std::chrono::system_clock::now();
+    showCamera(*window, 5, receivedAt);
+    const qint64 milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(receivedAt.time_since_epoch()).count();
+    const QString name = snapshotName(QStringLiteral("camera"), milliseconds);
+
+    action(*window, "actionSnapshot")->trigger();
+
+    ASSERT_EQ(panelOf(*window)->listedIds(), std::vector<ImageId>{1});
+    EXPECT_EQ(listedName(*window, 1), name);
+    EXPECT_EQ(copiedPicture(*window, 1).pixelColor(0, 0).red(), 5);
+    const LogEntry* logged = findEntry(*logOf(*window), QStringLiteral("Snapshot [%1] (40×30").arg(name));
+    ASSERT_NE(logged, nullptr);
+    EXPECT_EQ(logged->kind, LogKind::Info);
+}
+
+// (Q1) The snapshot is listed; the stream stays in view.
+TEST(MainWindowTest, SnapshotKeepsTheChannelShown) {
+    const auto window = makeTestWindow();
+    showCamera(*window, 5);
+
+    action(*window, "actionSnapshot")->trigger();
+
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+    EXPECT_EQ(window->shownImageId(), std::nullopt);
+    EXPECT_EQ(panelOf(*window)->currentImageId(), std::nullopt);
+}
+
+// The snapshot looks as the frame did on screen.
+TEST(MainWindowTest, SnapshotKeepsTheChannelsSettings) {
+    const auto window = makeTestWindow();
+    showCamera(*window, 5);
+    imageSubmenu(*window, QStringLiteral("Colours"))->actions().at(1)->trigger(); // Turbo
+
+    action(*window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Turbo ▾"));
+}
+
+// --- Image tags
+// ---------------------------------------------------------------------------------------------
+
+const visual_debug::ImageDescription kHlgDescription{.valueRange = {0, 65535},
+                                                     .transfer = visual_debug::Transfer::Hlg,
+                                                     .primaries = visual_debug::Primaries::Bt2020};
+const viewer_core::ImageTags kHlgTags{.valueRange = {0, 65535},
+                                      .transfer = viewer_core::Transfer::Hlg,
+                                      .primaries = viewer_core::Primaries::Bt2020};
+
+// Hands a still to the window's sink as the server's thread would, then lets the window take it.
+void feedStill(MainWindow& window, const std::string& name, const cv::Mat& image,
+               const visual_debug::ImageDescription& description) {
+    window.sinkForTests().onImageReceived({.name = name,
+                                           .image = image,
+                                           .receivedAt = std::chrono::system_clock::now(),
+                                           .description = description});
+    QApplication::processEvents();
+}
+
+QString expectedSize(std::uint64_t bytes) {
+    return QLocale().formattedDataSize(static_cast<qint64>(bytes), 1, QLocale::DataSizeSIFormat);
+}
+
+// 16384 of 0-65535 is a quarter: grey 64. Without the hint, a constant image is black.
+TEST(MainWindowTest, ReceivedHintSetsTheAutoRange) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+
+    feedStill(*window, "depth", cv::Mat(40, 40, CV_16UC1, cv::Scalar(16384)), {.valueRange = {0, 65535}});
+
+    EXPECT_EQ(viewedGrey(*window), 64);
+    EXPECT_EQ(thumbnailGrey(*window, 1), 64);
+}
+
+TEST(MainWindowTest, InfoStripNamesTheTags) {
+    const auto window = makeTestWindow();
+
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+
+    EXPECT_EQ(infoDetails(*window), QString::fromUtf8("40×30 · 3 ch · 16U · HLG · BT.2020 · 0–65535 · ") +
+                                        expectedSize(40 * 30 * 3 * 2));
+}
+
+TEST(MainWindowTest, LiveFrameKeepsItsTags) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+
+    feedLive(window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(
+        infoDetails(window).contains(QString::fromUtf8("40×30 · 3 ch · 16U · HLG · BT.2020 · 0–65535 · ")))
+        << infoDetails(window).toStdString();
+}
+
+TEST(MainWindowTest, SnapshotKeepsTheTags) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+
+    action(*window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    EXPECT_TRUE(infoDetails(*window).contains(QStringLiteral("HLG · BT.2020")))
+        << infoDetails(*window).toStdString();
+}
+
+TEST(MainWindowTest, KeptImagesKeepTheirTags) {
+    const QTemporaryDir root;
+    setKeepImagesSetting(true);
+    {
+        const auto window = makeRestoredWindow(root.path());
+        ASSERT_NE(window, nullptr);
+        window->addImage("phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), {.tags = kHlgTags});
+        ASSERT_TRUE(waitForStoredFiles(root.path(), 1));
+    }
+
+    const auto window = makeRestoredWindow(root.path());
+    ASSERT_NE(window, nullptr);
+    ASSERT_EQ(panelOf(*window)->listedIds().size(), 1U);
+    ASSERT_TRUE(panelOf(*window)->selectImage(panelOf(*window)->listedIds().front()));
+
+    EXPECT_TRUE(infoDetails(*window).contains(QStringLiteral("HLG · BT.2020")))
+        << infoDetails(*window).toStdString();
+}
+
+QAction* rangeEntry(MainWindow& window, const QString& title) {
+    return entryTitled(imageSubmenu(window, QStringLiteral("Range")), title);
+}
+
+TEST(MainWindowTest, HlgStillShowsInHdrByDefault) {
+    const auto window = makeTestWindow();
+
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: HDR ▾"));
+    EXPECT_TRUE(rangeEntry(*window, QStringLiteral("HDR"))->isVisible());
+}
+
+// Auto chosen by hand on an HDR image is kept for the name, though Auto is not its default.
+TEST(MainWindowTest, ExplicitAutoOnAnHdrNameIsKept) {
+    const auto window = makeTestWindow();
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+
+    rangeEntry(*window, QStringLiteral("Auto"))->trigger();
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(8192)), kHlgDescription);
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Auto ▾"));
+}
+
+// An untagged image of a name set to HDR cannot be tone-mapped: it is shown, and named, as Auto.
+TEST(MainWindowTest, HdrRangeOnlyForTaggedImages) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)), kHlgDescription);
+    rangeEntry(*window, QStringLiteral("HDR"))->trigger();
+
+    feedStill(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(16384)),
+              {.valueRange = {0, 65535}});
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Auto ▾"));
+    EXPECT_FALSE(rangeEntry(*window, QStringLiteral("HDR"))->isVisible());
+    EXPECT_EQ(viewedGrey(*window), 64); // Auto with the hint
+}
+
+TEST(MainWindowTest, HlgLiveFrameShowsInHdrByDefault) {
+    const auto window = makeTestWindow();
+
+    feedLive(*window, "phone", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(4096)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("phone"));
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: HDR ▾"));
+}
+
+// --- Clipping ---------------------------------------------------------------------------------------------
+
+QColor viewedColour(MainWindow& window) {
+    const QImage view = window.findChild<ImageView*>()->grab().toImage();
+    return view.pixelColor(view.width() / 2, view.height() / 2);
+}
+
+QColor thumbnailColour(MainWindow& window, ImageId id) {
+    const QImage thumbnail =
+        panelOf(window)->findChild<ThumbnailModel*>()->thumbnail(id, QSize(16, 16)).toImage();
+    return thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+}
+
+// White in 8 bits is at the top of Auto's 0-255, so clipped: magenta in the view, white everywhere else.
+TEST(MainWindowTest, ShowClippingMarksTheViewOnly) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("white", cv::Mat(40, 40, CV_8UC1, cv::Scalar(255)));
+    QAction* showClipping = action(*window, "actionShowClipping");
+    ASSERT_NE(showClipping, nullptr);
+    EXPECT_TRUE(showClipping->isCheckable());
+    EXPECT_EQ(showClipping->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+K")));
+    EXPECT_TRUE(displayControlOf(*window)->rangeMenu()->actions().contains(showClipping));
+
+    showClipping->trigger();
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewedColour(*window), QColor(255, 0, 255));
+    EXPECT_EQ(thumbnailColour(*window, 1), QColor(255, 255, 255));
+    EXPECT_EQ(copiedPicture(*window, 1).pixelColor(20, 20), QColor(255, 255, 255));
+    showClipping->trigger();
+    QApplication::processEvents();
+    EXPECT_EQ(viewedColour(*window), QColor(255, 255, 255));
+}
+
+TEST(MainWindowTest, ShowClippingMarksTheLiveFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", liveFrame(255));
+    QApplication::processEvents();
+
+    action(*window, "actionShowClipping")->trigger();
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewedColour(*window), QColor(255, 0, 255));
+}
+
+// --- Region statistics ------------------------------------------------------------------------------------
+
+void sendMouse(QWidget& widget, QEvent::Type type, QPointF position, Qt::KeyboardModifiers modifiers) {
+    QMouseEvent event(type, position, widget.mapToGlobal(position), Qt::LeftButton, Qt::LeftButton,
+                      modifiers);
+    QCoreApplication::sendEvent(&widget, &event);
+}
+
+// Shift-drags across the whole view, so the region is the whole image.
+ImageView* selectWholeImage(MainWindow& window) {
+    auto* view = window.findChild<ImageView*>();
+    const QPointF corner(view->width() - 1, view->height() - 1);
+    sendMouse(*view, QEvent::MouseButtonPress, {0, 0}, Qt::ShiftModifier);
+    sendMouse(*view, QEvent::MouseMove, corner, Qt::ShiftModifier);
+    sendMouse(*view, QEvent::MouseButtonRelease, corner, Qt::ShiftModifier);
+    return view;
+}
+
+cv::Mat countingImage() {
+    cv::Mat image(4, 4, CV_8UC1);
+    for (int i = 0; i < 16; ++i) {
+        image.at<uchar>(i / 4, i % 4) = static_cast<uchar>(i);
+    }
+    return image;
+}
+
+TEST(MainWindowTest, RegionShowsStatistics) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("counting", countingImage());
+
+    const ImageView* view = selectWholeImage(*window);
+
+    EXPECT_EQ(view->regionText(), (QStringList{QString::fromUtf8("4×4 at 0, 0"),
+                                               QString::fromUtf8("I  min 0 · max 15 · mean 7.5 · σ 4.61")}));
+}
+
+TEST(MainWindowTest, RegionNamesEveryChannelAndWhatIsLeftOut) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    cv::Mat image(2, 2, CV_32FC3, cv::Scalar(0.25, 1.5, 1000));
+    image.at<cv::Vec3f>(0, 0)[1] = std::numeric_limits<float>::quiet_NaN();
+    window->addImage("floats", image);
+
+    const ImageView* view = selectWholeImage(*window);
+
+    EXPECT_EQ(view->regionText(), (QStringList{QString::fromUtf8("2×2 at 0, 0"),
+                                               QString::fromUtf8("B  min 0.25 · max 0.25 · mean 0.25 · σ 0"),
+                                               QString::fromUtf8("G  min 1.5 · max 1.5 · mean 1.5 · σ 0"),
+                                               QString::fromUtf8("R  min 1000 · max 1000 · mean 1000 · σ 0"),
+                                               QStringLiteral("1 not finite")}));
+}
+
+TEST(MainWindowTest, RegionFollowsTheShownImage) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("ten", cv::Mat(4, 4, CV_8UC1, cv::Scalar(10)));
+    window->addImage("twenty", cv::Mat(4, 4, CV_8UC1, cv::Scalar(20)));
+    const ImageView* view = selectWholeImage(*window);
+    ASSERT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 20")));
+
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    EXPECT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 10")))
+        << view->regionText().join(u'|').toStdString();
+}
+
+TEST(MainWindowTest, RegionFollowsTheLiveFrame) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    feedLive(window, "camera", liveFrame(10));
+    QApplication::processEvents();
+    const ImageView* view = selectWholeImage(window);
+    ASSERT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 10")));
+
+    feedLive(window, "camera", liveFrame(20));
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(view->regionText().value(1).contains(QStringLiteral("mean 20")))
+        << view->regionText().join(u'|').toStdString();
+}
+
+TEST(MainWindowTest, EscapeClearsTheRegion) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("counting", countingImage());
+    ImageView* view = selectWholeImage(*window);
+    ASSERT_TRUE(view->region().has_value());
+
+    QTest::keyClick(QApplication::focusWidget() != nullptr ? QApplication::focusWidget() : window.get(),
+                    Qt::Key_Escape);
+
+    EXPECT_EQ(view->region(), std::nullopt);
+    EXPECT_TRUE(view->regionText().isEmpty());
+}
+
+TEST(MainWindowTest, FreezeStopsRedrawsWhileCounting) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    showCamera(window, 10);
+    QAction* freeze = action(window, "actionFreeze");
+
+    freeze->trigger();
+    feedLive(window, "camera", liveFrame(20));
+    feedLive(window, "camera", liveFrame(30));
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(freeze->isChecked());
+    EXPECT_EQ(viewedGrey(window), 10);
+    EXPECT_TRUE(infoDetails(window).startsWith(QStringLiteral("frozen · ")))
+        << infoDetails(window).toStdString();
+    EXPECT_TRUE(infoDetails(window).contains(QStringLiteral("1 dropped")))
+        << infoDetails(window).toStdString();
+    EXPECT_EQ(
+        liveRowOf(window, QStringLiteral("camera"))->findChild<QLabel*>(QStringLiteral("liveState"))->text(),
+        QStringLiteral("frozen"));
+
+    freeze->trigger();
+
+    EXPECT_FALSE(freeze->isChecked());
+    EXPECT_EQ(viewedGrey(window), 30);
+}
+
+TEST(MainWindowTest, SpaceFreezesFromTheThumbnails) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("a", makeImage());
+    showCamera(*window, 1);
+    panelOf(*window)->setFocus();
+
+    QTest::keyClick(panelOf(*window), Qt::Key_Space);
+    EXPECT_TRUE(action(*window, "actionFreeze")->isChecked());
+    QTest::keyClick(panelOf(*window), Qt::Key_Space);
+    EXPECT_FALSE(action(*window, "actionFreeze")->isChecked());
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+}
+
+TEST(MainWindowTest, SpaceTypesInTheSearchField) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    showCamera(*window, 1);
+    QLineEdit* search = sidebarOf(*window)->searchField();
+    search->setFocus();
+
+    QTest::keyClicks(search, QStringLiteral("a b"));
+
+    EXPECT_EQ(search->text(), QStringLiteral("a b"));
+    EXPECT_FALSE(action(*window, "actionFreeze")->isChecked());
+}
+
+// The view never takes the focus, so after a pan the arrow keys still step through the thumbnails.
+TEST(MainWindowTest, ArrowKeysStillStepAfterPanning) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("a", makeImage());
+    window->addImage("b", makeImage());
+    panelOf(*window)->setFocus();
+    showCamera(*window, 1);
+    auto* view = window->findChild<ImageView*>();
+    const QPointF centre = QRectF(view->rect()).center();
+
+    QTest::mousePress(view, Qt::LeftButton, Qt::NoModifier, centre.toPoint());
+    QTest::mouseMove(view, (centre + QPointF(30, 20)).toPoint());
+    QTest::mouseRelease(view, Qt::LeftButton, Qt::NoModifier, (centre + QPointF(30, 20)).toPoint());
+    ASSERT_TRUE(panelOf(*window)->hasFocus());
+
+    QTest::keyClick(panelOf(*window), Qt::Key_Down);
+
+    EXPECT_TRUE(window->shownImageId().has_value());
+    EXPECT_EQ(window->shownLiveChannel(), std::nullopt);
+}
+
+// (R3) Colours are offered while the frame in view has one channel, frame by frame.
+TEST(MainWindowTest, ColoursFollowTheFramesChannelCount) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    const auto* colours = displayControlOf(*window)->findChild<QToolButton*>(QStringLiteral("coloursButton"));
+    ASSERT_FALSE(colours->isHidden());
+
+    feedLive(*window, "camera", cv::Mat(30, 40, CV_8UC3, cv::Scalar(1, 2, 3)));
+    QApplication::processEvents();
+    EXPECT_TRUE(colours->isHidden());
+
+    feedLive(*window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    EXPECT_FALSE(colours->isHidden());
+}
+
+// (F5) A snapshot's thumbnail looks as the channel did when it was taken.
+TEST(MainWindowTest, SnapshotThumbnailHasTheChannelsColours) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "edges", ramp());
+    QApplication::processEvents();
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+    chooseColours(*window, 1);
+
+    action(*window, "actionSnapshot")->trigger();
+
+    EXPECT_TRUE(thumbnailIsColoured(*window, 1));
+}
+
+// --- Live frames at the size they are drawn (F10) ---------------------------------------------------------
+
+cv::Mat fourK() { return cv::Mat(3000, 4000, CV_8UC3, cv::Scalar(10, 20, 30)); }
+
+// A frame larger than the view is converted at the size it is drawn, not in full; the readout still names the
+// frame's own pixels.
+TEST(MainWindowTest, LiveFrameIsConvertedAtTheDrawnSize) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+
+    const QSize picture = view->picture().size();
+    EXPECT_LT(picture.width(), 4000);
+    EXPECT_LE(picture.width(), static_cast<int>(std::ceil(view->width() * view->devicePixelRatioF())) + 1);
+    QSignalSpy hovered(view, &ImageView::pixelHovered);
+    moveMouseOver(*view, QRectF(view->rect()).center());
+    ASSERT_EQ(hovered.size(), 1);
+    EXPECT_NEAR(hovered.last().at(0).toInt(), 2000, 20);
+    EXPECT_NEAR(hovered.last().at(1).toInt(), 1500, 20);
+}
+
+// Copy Image and Snapshot take the whole frame, whatever size it is drawn at.
+TEST(MainWindowTest, CopyAndSnapshotTakeTheWholeFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    QGuiApplication::clipboard()->clear();
+
+    action(*window, "actionCopyImage")->trigger();
+    action(*window, "actionSnapshot")->trigger();
+
+    EXPECT_EQ(QGuiApplication::clipboard()->image().size(), QSize(4000, 3000));
+    const auto* model = panelOf(*window)->findChild<ThumbnailModel*>();
+    ASSERT_EQ(model->rowCount(), 1);
+    EXPECT_EQ(model->index(0).data(ThumbnailModel::ImageSizeRole).toSize(), QSize(4000, 3000));
+}
+
+// Zoomed in to 1:1 or closer, the whole frame is converted, so every pixel shows.
+TEST(MainWindowTest, ZoomingInDrawsTheWholeFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    action(*window, "actionFreeze")->trigger();
+    auto* view = window->findChild<ImageView*>();
+
+    for (int i = 0; i < 20 && view->picture().size() != QSize(4000, 3000); ++i) {
+        zoomIn(*view, QRectF(view->rect()).center());
+    }
+
+    EXPECT_EQ(view->picture().size(), QSize(4000, 3000));
+}
+
+// Past 1:1 the picture is the whole frame already, so zooming further, or a resize, converts nothing again:
+// each step of a trackpad zoom would otherwise convert the whole frame.
+TEST(MainWindowTest, ZoomingPastOneToOneConvertsNothingAgain) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    action(*window, "actionFreeze")->trigger();
+    auto* view = window->findChild<ImageView*>();
+    for (int i = 0; i < 20 && view->picture().size() != QSize(4000, 3000); ++i) {
+        zoomIn(*view, QRectF(view->rect()).center());
+    }
+    ASSERT_EQ(view->picture().size(), QSize(4000, 3000));
+    const qint64 converted = view->picture().cacheKey();
+
+    zoomIn(*view, QRectF(view->rect()).center());
+    window->resize(window->width() + 40, window->height());
+    QApplication::processEvents();
+
+    EXPECT_EQ(view->picture().cacheKey(), converted);
+}
+
+// A resize redraws even a frozen frame at its new size, without counting it as a frame drawn.
+TEST(MainWindowTest, ResizingRedrawsAFrozenFrame) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    feedLive(window, "camera", fourK());
+    QApplication::processEvents();
+    action(window, "actionFreeze")->trigger();
+    window.tick(clocked.now);
+    auto* view = window.findChild<ImageView*>();
+    const QSize before = view->picture().size();
+    const QString details = infoDetails(window);
+
+    window.resize(1600, 1200);
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    EXPECT_GT(view->picture().size().width(), before.width());
+    EXPECT_EQ(infoDetails(window), details); // the same frames drawn
+}
+
+// --- The arrow keys across live rows and history (F8) -----------------------------------------------------
+
+// Channels camera and edges, and stills a (1) then b (2), so b is listed first; camera in view and the
+// keyboard on the thumbnails.
+std::unique_ptr<MainWindow> windowWithChannelsAndStills() {
+    auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("a", makeImage());
+    window->addImage("b", makeImage());
+    feedLive(*window, "camera", liveFrame(1));
+    feedLive(*window, "edges", liveFrame(2));
+    QApplication::processEvents();
+    chooseLiveRow(*window, QStringLiteral("camera"));
+    panelOf(*window)->setFocus();
+    return window;
+}
+
+void press(MainWindow& window, Qt::Key key) { QTest::keyClick(panelOf(window), key); }
+
+// The live rows, then the thumbnails as listed, are one list; nothing happens past either end.
+TEST(MainWindowTest, ArrowKeysMoveThroughLiveRowsAndHistory) {
+    const auto window = windowWithChannelsAndStills();
+    const auto shown = [&window]() -> std::string {
+        if (const auto channel = window->shownLiveChannel()) {
+            return *channel;
+        }
+        return window->shownImageId() ? "image " + std::to_string(*window->shownImageId()) : "nothing";
+    };
+    ASSERT_EQ(shown(), "camera");
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "edges");
+    EXPECT_EQ(livePanelOf(*window)->selectedChannel(), QStringLiteral("edges"));
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "image 2");
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "image 1");
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(shown(), "image 1");
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "image 2");
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "edges");
+    EXPECT_EQ(panelOf(*window)->currentImageId(), std::nullopt);
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "camera");
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(shown(), "camera");
+    EXPECT_TRUE(panelOf(*window)->hasFocus());
+}
+
+TEST(MainWindowTest, ArrowKeysSkipMutedRows) {
+    const auto window = windowWithChannelsAndStills();
+    clickMute(*window, QStringLiteral("edges"));
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(2));
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+}
+
+// With no history the keys still move among the channels, and from an empty view Down goes to the first.
+TEST(MainWindowTest, ArrowKeysWorkWithAnEmptyHistory) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    feedLive(*window, "camera", liveFrame(1));
+    feedLive(*window, "edges", liveFrame(2));
+    QApplication::processEvents();
+    panelOf(*window)->setFocus();
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("camera"));
+
+    clickMute(*window, QStringLiteral("camera")); // the view is empty now
+    ASSERT_EQ(window->shownLiveChannel(), std::nullopt);
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+}
+
+// The keys follow what the sidebar lists: here the search hides b.
+TEST(MainWindowTest, ArrowKeysFollowTheListedOrder) {
+    const auto window = windowWithChannelsAndStills();
+    chooseLiveRow(*window, QStringLiteral("edges"));
+    sidebarOf(*window)->searchField()->setText(QStringLiteral("a"));
+    panelOf(*window)->setFocus();
+
+    press(*window, Qt::Key_Down);
+    EXPECT_EQ(window->shownImageId(), std::optional<ImageId>(1));
+    press(*window, Qt::Key_Up);
+    EXPECT_EQ(window->shownLiveChannel(), std::optional<std::string>("edges"));
+}
+
+// The Live group shows three rows; a key that moves to a fourth or fifth scrolls it into sight.
+TEST(MainWindowTest, ArrowKeysScrollTheLiveRowsIntoView) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    for (int i = 1; i <= 5; ++i) {
+        feedLive(*window, "c" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    panelOf(*window)->setFocus();
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("c1"));
+    // The rows' layout settles through posted events, long before a person presses a key.
+    auto* scroll = livePanelOf(*window)->findChild<QScrollArea*>();
+    ASSERT_TRUE(QTest::qWaitFor([scroll] { return scroll->verticalScrollBar()->maximum() > 0; }));
+
+    for (int i = 0; i < 4; ++i) {
+        press(*window, Qt::Key_Down);
+    }
+
+    ASSERT_EQ(window->shownLiveChannel(), std::optional<std::string>("c5"));
+    const QWidget* row = liveRowOf(*window, QStringLiteral("c5"));
+    EXPECT_TRUE(scroll->viewport()->rect().contains(
+        QRect(row->mapTo(scroll->viewport(), QPoint(0, 0)), row->size())));
+}
+
+// (R5) Space presses a button that has the keyboard focus, instead of freezing the channel in view.
+TEST(MainWindowTest, SpacePressesAFocusedButton) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    showCamera(*window, 1);
+    auto* button = window->findChild<QToolButton*>(QStringLiteral("logToggle"));
+    button->setFocusPolicy(Qt::StrongFocus); // as with macOS keyboard navigation turned on
+    button->setFocus();
+    QSignalSpy clicked(button, &QAbstractButton::clicked);
+
+    QTest::keyClick(button, Qt::Key_Space);
+
+    EXPECT_EQ(clicked.size(), 1);
+    EXPECT_FALSE(action(*window, "actionFreeze")->isChecked());
+}
+
+TEST(MainWindowTest, CopyImageTakesTheLiveFrame) {
+    const auto window = makeTestWindow();
+    showCamera(*window, 77);
+    QGuiApplication::clipboard()->clear();
+
+    ASSERT_TRUE(action(*window, "actionCopyImage")->isEnabled());
+    action(*window, "actionCopyImage")->trigger();
+
+    const QImage copied = QGuiApplication::clipboard()->image();
+    EXPECT_EQ(copied.size(), QSize(40, 30));
+    EXPECT_EQ(copied.pixelColor(0, 0).red(), 77);
+    EXPECT_NE(findEntry(*logOf(*window), QStringLiteral("Copied [camera] to the clipboard")), nullptr);
+}
+
+// Live frames and snapshots stay in memory, even with Keep Images Between Sessions on.
+TEST(MainWindowTest, SnapshotsAndLiveFramesAreNeverStored) {
+    const QTemporaryDir root;
+    setKeepImagesSetting(true);
+    {
+        const auto window = makeRestoredWindow(root.path());
+        ASSERT_NE(window, nullptr);
+        for (int i = 0; i < 5; ++i) {
+            feedLive(*window, "camera", liveFrame(i));
+            QApplication::processEvents();
+        }
+        action(*window, "actionSnapshot")->trigger();
+        window->duplicateImage(1); // a copy of a snapshot is one too
+        window->addImage("still", makeImage());
+
+        ASSERT_TRUE(waitForStoredFiles(root.path(), 1));
+        QTest::qWait(200);
+        EXPECT_EQ(storedFiles(root.path()), 1);
+    }
+
+    const auto window = makeRestoredWindow(root.path());
+    ASSERT_NE(window, nullptr);
+    EXPECT_EQ(listedNames(*window), std::vector<QString>{QStringLiteral("still")});
+}
+
+// --- Mute -------------------------------------------------------------------------------------------------
+
+QString liveStateOf(MainWindow& window, const QString& name) {
+    return liveRowOf(window, name)->findChild<QLabel*>(QStringLiteral("liveState"))->text();
+}
+
+// The grey at the middle of a row's picture.
+int rowPictureGrey(MainWindow& window, const QString& name) {
+    const QImage picture =
+        liveRowOf(window, name)->findChild<QLabel*>(QStringLiteral("liveThumbnail"))->pixmap().toImage();
+    return picture.isNull() ? -1 : picture.pixelColor(picture.width() / 2, picture.height() / 2).red();
+}
+
+// (F5) A still and a live channel of one name share its settings: changing them on the still redraws the
+// channel's row too, even while no new frame comes.
+TEST(MainWindowTest, StillsSettingsRedrawTheLiveRowOfItsName) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(100));
+    QApplication::processEvents();
+    window.addImage("camera", liveFrame(100));
+    panelOf(window)->selectImage(1); // the still, leaving the channel
+    ASSERT_EQ(rowPictureGrey(window, QStringLiteral("camera")), 100);
+
+    chooseColours(window, 1); // Turbo
+    window.tick(clocked.now);
+
+    const QImage picture = liveRowOf(window, QStringLiteral("camera"))
+                               ->findChild<QLabel*>(QStringLiteral("liveThumbnail"))
+                               ->pixmap()
+                               .toImage();
+    const QColor middle = picture.pixelColor(picture.width() / 2, picture.height() / 2);
+    EXPECT_TRUE(middle.red() != middle.green() || middle.green() != middle.blue());
+}
+
+// (F7) A muted channel's frames are still taken and counted, so its sender is never slowed, but nothing is
+// drawn or logged for it until it is unmuted.
+TEST(MainWindowTest, MutedChannelStopsDrawingAndLogging) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(10));
+    feedLive(window, "edges", liveFrame(20));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("edges"));
+    window.tick(clocked.now);
+    ASSERT_EQ(rowPictureGrey(window, QStringLiteral("camera")), 10);
+
+    clickMute(window, QStringLiteral("camera"));
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(feedLive(window, "camera", liveFrame(100 + i)), visual_debug::Acceptance::Taken);
+        feedLive(window, "edges", liveFrame(30 + i));
+        QApplication::processEvents();
+    }
+    window.tick(clocked.now);
+
+    EXPECT_EQ(rowPictureGrey(window, QStringLiteral("camera")), 10);
+    EXPECT_FALSE(liveRowOf(window, QStringLiteral("camera"))
+                     ->findChild<QLabel*>(QStringLiteral("liveThumbnail"))
+                     ->isEnabled());
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("muted"));
+    EXPECT_TRUE(liveRowOf(window, QStringLiteral("camera"))
+                    ->findChild<QLabel*>(QStringLiteral("liveRate"))
+                    ->text()
+                    .isEmpty());
+    const ActivityLog* log = logOf(window);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Muted live channel [camera]")), 1);
+    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("edges"));
+
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Live channel [camera] idle")), 0);
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("muted · idle"));
+
+    clickMute(window, QStringLiteral("camera"));
+    EXPECT_EQ(countEntries(*log, QStringLiteral("Unmuted live channel [camera]")), 1);
+}
+
+// (F7) Muting the channel in view gives the view back, as closing it does, and unfreezes it.
+TEST(MainWindowTest, MutingTheFrozenChannelInViewUnfreezesIt) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage());
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("camera"));
+    action(window, "actionFreeze")->trigger();
+    ASSERT_TRUE(action(window, "actionFreeze")->isChecked());
+
+    clickMute(window, QStringLiteral("camera"));
+
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(panelOf(window)->currentImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(livePanelOf(window)->selectedChannel(), std::nullopt);
+    EXPECT_FALSE(action(window, "actionFreeze")->isChecked());
+
+    clickMute(window, QStringLiteral("camera"));
+    window.tick(clocked.now);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("live"));
+}
+
+// (F7) A click on a muted row does nothing, and a muted channel never takes an empty view.
+TEST(MainWindowTest, MutedChannelIsNeverShown) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    window.addImage("a", makeImage());
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("camera"));
+
+    chooseLiveRow(window, QStringLiteral("camera"));
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+
+    ClockedWindow empty;
+    feedLive(*empty.window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    ASSERT_EQ(empty.window->shownLiveChannel(), std::optional<std::string>("camera"));
+    clickMute(*empty.window, QStringLiteral("camera"));
+    EXPECT_EQ(empty.window->shownLiveChannel(), std::nullopt);
+    feedLive(*empty.window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    EXPECT_EQ(empty.window->shownLiveChannel(), std::nullopt);
+    EXPECT_FALSE(empty.window->findChild<ImageView*>()->hasImage());
+}
+
+// (F7) Mute belongs to the name for the session: closed and back, the channel is still muted, and says
+// nothing.
+TEST(MainWindowTest, MuteLastsWhenTheChannelComesBack) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("camera"));
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    liveRowOf(window, QStringLiteral("camera"))
+        ->findChild<QToolButton*>(QStringLiteral("liveClose"))
+        ->click();
+    ASSERT_EQ(liveRowOf(window, QStringLiteral("camera")), nullptr);
+
+    feedLive(window, "camera", liveFrame(2));
+    QApplication::processEvents();
+    window.tick(clocked.now);
+
+    ASSERT_NE(liveRowOf(window, QStringLiteral("camera")), nullptr);
+    EXPECT_EQ(liveStateOf(window, QStringLiteral("camera")), QStringLiteral("muted"));
+    EXPECT_TRUE(liveRowOf(window, QStringLiteral("camera"))
+                    ->findChild<QToolButton*>(QStringLiteral("liveMute"))
+                    ->isChecked());
+    EXPECT_EQ(countEntries(*logOf(window), QStringLiteral("Live channel [camera] started")), 1);
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+}
+
+// (F7) A muted channel keeps its place among the eight, and once idle can make room like any other.
+TEST(MainWindowTest, MutedIdleChannelCanBeReplaced) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    for (int i = 1; i <= 8; ++i) {
+        feedLive(window, "cam" + std::to_string(i), liveFrame(i));
+    }
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("cam1"));
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::TooManyLiveChannels);
+    clocked.now += viewer_core::kIdleAfter;
+
+    EXPECT_EQ(feedLive(window, "cam9", liveFrame(9)), visual_debug::Acceptance::Taken);
+    QApplication::processEvents();
+
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [cam9] replaced idle channel [cam1]")),
+              nullptr);
 }
 
 } // namespace

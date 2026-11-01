@@ -20,6 +20,7 @@ id_vision_lab_add_test_executable(visual_debug_tests
         visual_debug/endpoint_test.cpp
         visual_debug/client_server_test.cpp
         visual_debug/send_image_test.cpp
+        visual_debug/image_sender_test.cpp
     LIBRARIES
         visual_debug::visual_debug
         cppzmq
@@ -29,12 +30,17 @@ id_vision_lab_add_test_executable(visual_debug_tests
 id_vision_lab_add_test_executable(viewer_core_tests
     SOURCES
         viewer_core/display_converter_test.cpp
+        viewer_core/display_settings_test.cpp
+        viewer_core/hdr_tone_map_test.cpp
+        viewer_core/region_statistics_test.cpp
         viewer_core/image_history_test.cpp
+        viewer_core/live_channels_test.cpp
         viewer_core/pixel_inspector_test.cpp
         viewer_core/save_name_test.cpp
         viewer_core/viewport_test.cpp
     LIBRARIES
         viewer_core::viewer_core
+        opencv_imgproc
         GTest::gtest_main)
 
 if(ID_VISION_LAB_BUILD_EXAMPLES)
@@ -45,6 +51,33 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             pipeline
             visual_debug::visual_debug
             GTest::gtest_main)
+    # video_file_test.cpp writes and reads clips, so these tests need OpenCV's videoio, as live_sender does.
+    find_package(OpenCV REQUIRED COMPONENTS videoio)
+    # FFmpeg's libraries are optional; the tests write their clips with them too. Listed before
+    # visual_debug, which live_sender_ffmpeg needs, so it is linked once.
+    set(live_sender_ffmpeg_tests "")
+    set(live_sender_ffmpeg_libraries "")
+    if(TARGET live_sender_ffmpeg)
+        set(live_sender_ffmpeg_tests examples/ffmpeg_video_test.cpp)
+        set(live_sender_ffmpeg_libraries live_sender_ffmpeg PkgConfig::FFMPEG)
+    endif()
+    id_vision_lab_add_test_executable(live_sender_tests
+        SOURCES
+            examples/live_sender_test.cpp
+            examples/read_ahead_test.cpp
+            examples/video_file_test.cpp
+            ${live_sender_ffmpeg_tests}
+        LIBRARIES
+            live_sender_lib
+            live_sender_video
+            ${live_sender_ffmpeg_libraries}
+            opencv_videoio
+            visual_debug::visual_debug
+            cppzmq
+            nlohmann_json::nlohmann_json
+            GTest::gtest_main)
+    # test_support.h: the collecting sink the delivery test uses.
+    target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
 endif()
 
 # The Qt code, with an offscreen QApplication. Every Qt test program uses qt_common/test_main.cpp, which keeps
@@ -72,10 +105,12 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/activity_log_panel_test.cpp
             viewer/activity_log_test.cpp
             viewer/data_folder_test.cpp
+            viewer/display_settings_control_test.cpp
             viewer/image_info_bar_test.cpp
             viewer/image_sidebar_test.cpp
             viewer/image_store_test.cpp
             viewer/image_view_test.cpp
+            viewer/live_channel_panel_test.cpp
             viewer/main_window_test.cpp
             viewer/qt_image_sink_test.cpp
             viewer/server_controls_test.cpp
