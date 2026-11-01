@@ -35,7 +35,8 @@ struct Arguments {
     std::string endpoint;      // visual_debug::defaultEndpoint() unless given
     std::string name;          // the channels' name; empty for the default ones
     bool listCameras = false;
-    bool hdr = false; // a video file's frames as 16-bit data with their transfer and primaries
+    bool help = false; // print the usage and examples
+    bool hdr = false;  // a video file's frames as 16-bit data with their transfer and primaries
 };
 
 inline constexpr double kMinPatternFps = 0.1;
@@ -60,6 +61,11 @@ struct ChannelNames {
 // "camera" and "edges" for an empty name; otherwise NAME and "NAME edges", so several live_senders can share
 // a viewer.
 ChannelNames channelNames(const std::string& name);
+
+// The channels for these arguments: --name's; without it, "camera N" for camera N and a video file's name
+// (its first 32 characters, as valid UTF-8), so each row says where it comes from; the pattern's are the
+// default.
+ChannelNames channelNames(const Arguments& arguments);
 
 // The cameras that open among numbers 0 to count - 1, with their frame sizes; `open` tries one. With
 // stopAtFirstMissing, the first number that does not open ends the list: macOS numbers its cameras without

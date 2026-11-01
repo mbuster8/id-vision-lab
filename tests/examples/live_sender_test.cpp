@@ -167,6 +167,20 @@ TEST(LiveSender, HdrIsForFilesOnly) {
     }
 }
 
+// --help prints the usage and examples; like --list-cameras, it stands alone.
+TEST(LiveSender, ParsesHelp) {
+    for (const std::string word : {"--help", "-h"}) {
+        const std::optional<Arguments> help = parse({word});
+        ASSERT_TRUE(help) << word;
+        EXPECT_TRUE(help->help) << word;
+    }
+    const std::optional<Arguments> pattern = parse({"--pattern"});
+    ASSERT_TRUE(pattern);
+    EXPECT_FALSE(pattern->help);
+    EXPECT_FALSE(parse({"--help", "--pattern"}));
+    EXPECT_FALSE(parse({"--camera", "1", "-h"}));
+}
+
 TEST(LiveSender, ParsesName) {
     const auto named = parse({"--pattern", "--name", "cam1"});
     ASSERT_TRUE(named);
@@ -190,6 +204,38 @@ TEST(LiveSender, ChannelNamesDefaultAndGiven) {
     EXPECT_EQ(live_sender::channelNames("").edges, "edges");
     EXPECT_EQ(live_sender::channelNames("cam1").camera, "cam1");
     EXPECT_EQ(live_sender::channelNames("cam1").edges, "cam1 edges");
+}
+
+live_sender::ChannelNames namesFor(const std::vector<std::string>& words) {
+    const std::optional<Arguments> arguments = parse(words);
+    EXPECT_TRUE(arguments) << joined(words);
+    return arguments ? live_sender::channelNames(*arguments) : live_sender::ChannelNames{};
+}
+
+// Without --name, a camera's channels are named by its number and a file's by its name, so two live_senders
+// never share channels by accident, and each row says where it comes from. The pattern keeps "camera".
+TEST(LiveSender, ChannelsNamedAfterTheSource) {
+    EXPECT_EQ(namesFor({"--camera", "1"}).camera, "camera 1");
+    EXPECT_EQ(namesFor({"--camera", "1"}).edges, "camera 1 edges");
+    EXPECT_EQ(namesFor({}).camera, "camera 0");
+    EXPECT_EQ(namesFor({"docs/videos/Horses close to Tegernsee.MOV"}).camera,
+              "Horses close to Tegernsee.MOV");
+    EXPECT_EQ(namesFor({"--hdr", "clips/Horses close to Tegernsee.MOV"}).edges,
+              "Horses close to Tegernsee.MOV edges");
+    EXPECT_EQ(namesFor({"--pattern"}).camera, "camera");
+    EXPECT_EQ(namesFor({"--pattern"}).edges, "edges");
+    EXPECT_EQ(namesFor({"--camera", "1", "--name", "phone"}).camera, "phone");
+    EXPECT_EQ(namesFor({"clip.mov", "--name", "phone"}).edges, "phone edges");
+}
+
+// A file's name gives its first 32 characters, each whole ("Ž" is one character in two bytes); bytes that are
+// not UTF-8 become U+FFFD, as the wire format would make them.
+TEST(LiveSender, FileNamesGiveTheirFirst32Characters) {
+    const std::string tenLetters = "ŽŽŽŽŽŽŽŽŽŽ";
+
+    EXPECT_EQ(namesFor({"/videos/" + tenLetters + std::string(30, 'a') + ".mov"}).camera,
+              tenLetters + std::string(22, 'a'));
+    EXPECT_EQ(namesFor({"bad\xff.mov"}).camera, "bad\xEF\xBF\xBD.mov");
 }
 
 TEST(LiveSender, RunSendsUnderTheGivenNames) {

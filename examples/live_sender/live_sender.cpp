@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <future>
 #include <string_view>
 #include <system_error>
@@ -56,6 +57,22 @@ std::optional<cv::Size> patternSize(std::string_view text) {
         return std::nullopt;
     }
     return cv::Size(*width, *height);
+}
+
+// How much of a video file's name names its channels when --name does not.
+constexpr std::size_t kFileNameCharacters = 32;
+
+// The first `count` characters of valid UTF-8 `text`, each whole: a character is a lead byte and the
+// continuation bytes (10xxxxxx) after it.
+std::string firstCharacters(const std::string& text, std::size_t count) {
+    std::size_t end = 0;
+    for (std::size_t characters = 0; end < text.size() && characters < count; ++characters) {
+        ++end;
+        while (end < text.size() && (static_cast<unsigned char>(text[end]) & 0xC0U) == 0x80U) {
+            ++end;
+        }
+    }
+    return text.substr(0, end);
 }
 
 void count(ChannelTally& tally, visual_debug::SendResult result) {
@@ -119,6 +136,8 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
             }
         } else if (argument == "--list-cameras") {
             arguments.listCameras = true;
+        } else if (argument == "--help" || argument == "-h") {
+            arguments.help = true;
         } else if (argument == "--hdr") {
             arguments.hdr = true;
         } else if (!argument.empty() && !argument.starts_with('-')) {
@@ -130,7 +149,7 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
         }
     }
 
-    if (arguments.listCameras) {
+    if (arguments.listCameras || arguments.help) {
         return argc == 2 ? std::optional(arguments) : std::nullopt;
     }
     // HDR comes from a video file's own 10- or 12-bit data; a camera or the pattern has none.
@@ -156,6 +175,23 @@ ChannelNames channelNames(const std::string& name) {
         return {};
     }
     return {.camera = name, .edges = name + " edges"};
+}
+
+ChannelNames channelNames(const Arguments& arguments) {
+    if (!arguments.name.empty()) {
+        return channelNames(arguments.name);
+    }
+    if (const auto* camera = std::get_if<CameraSource>(&arguments.source)) {
+        return channelNames("camera " + std::to_string(camera->index));
+    }
+    if (const auto* file = std::get_if<FileSource>(&arguments.source)) {
+        const std::string fileName =
+            visual_debug::sanitiseName(std::filesystem::path(file->path).filename().string());
+        if (!fileName.empty()) {
+            return channelNames(firstCharacters(fileName, kFileNameCharacters));
+        }
+    }
+    return {};
 }
 
 std::vector<std::pair<int, cv::Size>> listCameras(const std::function<std::optional<cv::Size>(int)>& open,

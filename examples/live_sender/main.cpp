@@ -1,10 +1,12 @@
-// Streams frames to the viewer as live channels: each frame as "camera", its Canny edges as "edges", or as
-// NAME and "NAME edges" with --name, so several can share a viewer. The program has no window of its own:
-// the viewer is its screen, with Freeze, Snapshot and the display range.
+// Streams frames to the viewer as live channels: each frame as NAME and its Canny edges as "NAME edges". NAME
+// is --name's, else "camera N" for camera N or the video file's name, so several can share a viewer; the
+// pattern's channels are "camera" and "edges". The program has no window of its own: the viewer is its
+// screen, with Freeze, Snapshot and the display range.
 //
 //     live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
 //                 [--name NAME] [--endpoint <uri>]
 //     live_sender --list-cameras
+//     live_sender --help
 //
 // Without a source it reads camera 0. A camera runs until Ctrl+C and a file until its end, unless --frames
 // stops them sooner; a summary prints either way. A file plays in real time, read ahead on a thread of its
@@ -56,7 +58,33 @@ constexpr std::size_t kFramesReadAhead = 3;
 constexpr const char* kUsage =
     "usage: live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]\n"
     "                   [--name NAME] [--endpoint <uri>]\n"
-    "       live_sender --list-cameras\n";
+    "       live_sender --list-cameras\n"
+    "       live_sender --help\n";
+
+// The same examples as the user guide's "Running live_sender".
+constexpr const char* kExamples =
+    "\n"
+    "Sends each frame and its Canny edges to the Visual Debug Viewer as two live channels.\n"
+    "\n"
+    "examples:\n"
+    "  live_sender --list-cameras             the camera numbers that open, with their sizes\n"
+    "  live_sender --camera 0                 the first camera, as channels \"camera 0\" and \"camera 0 "
+    "edges\"\n"
+    "  live_sender --camera 1                 another camera beside it, such as an iPhone through "
+    "Continuity\n"
+    "                                         Camera, in channels of its own\n"
+    "  live_sender --camera 1 --name phone    the same camera, as channels \"phone\" and \"phone edges\"\n"
+    "  live_sender \"My video.mov\"             a video file in real time, in channels named after the file\n"
+    "  live_sender --hdr \"iPhone HDR.MOV\"     an HDR video as 16-bit frames with its HLG or PQ tags\n"
+    "  live_sender --pattern                  a moving test pattern, no camera needed\n"
+    "  live_sender --pattern --size 3840x2160 --fps 30\n"
+    "                                         a 4K load test\n"
+    "  live_sender --pattern --endpoint tcp://127.0.0.1:7140\n"
+    "                                         to a second viewer, started with --endpoint "
+    "tcp://127.0.0.1:7140\n"
+    "\n"
+    "Quote a file name that has spaces in straight quotes (\"), not typographic ones.\n"
+    "Ctrl+C stops it; a summary of what was sent and delivered prints either way.\n";
 
 using live_sender::TimedFrame;
 
@@ -186,8 +214,12 @@ std::unique_ptr<live_sender::FfmpegVideo> openHdrVideo(const std::string& path) 
 int main(int argc, char* argv[]) {
     const auto arguments = live_sender::parseArguments(argc, argv);
     if (!arguments) {
-        std::cerr << kUsage;
+        std::cerr << kUsage << "(live_sender --help shows examples)\n";
         return kExitUsageError;
+    }
+    if (arguments->help) {
+        std::cout << kUsage << kExamples;
+        return kExitAllDelivered;
     }
     if (arguments->listCameras) {
         return listCameras();
@@ -286,7 +318,7 @@ int main(int argc, char* argv[]) {
 
     std::signal(SIGINT, requestStop);
     visual_debug::Client client(visual_debug::ClientOptions{.endpoint = arguments->endpoint});
-    const live_sender::ChannelNames names = live_sender::channelNames(arguments->name);
+    const live_sender::ChannelNames names = live_sender::channelNames(*arguments);
     const live_sender::Tally tally =
         live_sender::run(next, client, arguments->frames, waitAndContinue, names, description);
 
