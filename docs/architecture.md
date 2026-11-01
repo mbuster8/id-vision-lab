@@ -39,20 +39,21 @@ flowchart LR
     pipeline --> vd
     minimal --> vd
     live --> vd
+    live -.-> ffmpeg["FFmpeg's libraries<br/>(optional, for --hdr)"]
     vd --> deps1["OpenCV core, ZeroMQ, nlohmann/json"]
     vc --> deps2["OpenCV core, imgproc"]
 ```
 
 | Component | Responsibility |
 |---|---|
-| `libs/visual_debug` | Everything both ends of the channel share. `wire_format`: encodes an image into the two frames and decodes them back, validating everything and never throwing. `ImageSender`: the interface a host application depends on. `Client`: its ZeroMQ implementation. `sendImage()` and `sendLive()`: the one-line convenience calls, using one process-wide `Client`. `Server`: the viewer's receive loop on its own thread. `ImageSink`: the interface through which the server hands images to whoever displays them. `endpoint`: the default endpoint and the loopback check. |
-| `libs/viewer_core` | The viewer's logic, free of any UI toolkit, so it is unit-tested without Qt. `toDisplayImage`: any supported image to 8-bit RGBA, with a display range and colour map, at full size or at the size it is drawn (`sizeWithin`). `DisplaySettings` and `DisplaySettingsStore`: those choices, by name, for the session. `ImageHistory`: the bounded list of received images. `LiveChannels`: per live channel, the frame to show, its counters and rates, and whether it is idle or frozen; `kIdleAfter`, the one idle time for the window and the sink. `inspectPixel`: the readout text for one pixel of the original. `Viewport`: zoom and pan arithmetic. |
+| `libs/visual_debug` | Everything both ends of the channel share. `wire_format`: encodes an image into the two frames and decodes them back, validating everything and never throwing. `ImageDescription`: what a sender may say about an image beyond its pixels (its value range, and a video's transfer and primaries), an optional extra argument of every send. `ImageSender`: the interface a host application depends on. `Client`: its ZeroMQ implementation. `sendImage()` and `sendLive()`: the one-line convenience calls, using one process-wide `Client`. `Server`: the viewer's receive loop on its own thread. `ImageSink`: the interface through which the server hands images to whoever displays them. `endpoint`: the default endpoint and the loopback check. |
+| `libs/viewer_core` | The viewer's logic, free of any UI toolkit, so it is unit-tested without Qt. `toDisplayImage`: any supported image to 8-bit RGBA, with a display range and colour map, at full size or at the size it is drawn (`sizeWithin`), with clipping marks if asked. `ImageTags`: an image's description as the viewer keeps it, and `defaultSettings`, which makes HDR the default range for HLG and PQ. `toneMapToSdr`: the HDR range, HLG or PQ signal to sRGB. `regionStatistics`: per channel, the minimum, maximum, mean and standard deviation of a rectangle's values. `DisplaySettings` and `DisplaySettingsStore`: those choices, by name, for the session. `ImageHistory`: the bounded list of received images. `LiveChannels`: per live channel, the frame to show, its counters and rates, and whether it is idle or frozen; `kIdleAfter`, the one idle time for the window and the sink. `inspectPixel`: the readout text for one pixel of the original. `Viewport`: zoom and pan arithmetic. |
 | `apps/qt_common` | The Qt code both apps need: `toQImage` (an RGBA `cv::Mat` to a `QImage`), choosing and reading an image file, `application_identity` (the apps' names and descriptions; `setApplicationIdentity`, which names what `QSettings` and the standard paths use), `about` (Help → About, which names the OpenCV and Qt versions the app runs with), `appearance` (the shared System, Light or Dark setting and its menu), `outline_icons` (the line icons, drawn in the palette's colours), `controls` (the shared control height, framed buttons and the regular font) and `shades` (the panel, hover, selection and divider greys, blended from the palette's window and text colours; `usePanelGrey`, which keeps a widget on the panel grey as the appearance changes; and `DividerLine`). |
 | `apps/viewer` | The Visual Debug Viewer. `MainWindow` composes the parts; `ImageView` paints through a `Viewport`; `ImageSidebar` holds the search field, the sort options and `ThumbnailPanel`, which shows the history: a list view over `ThumbnailModel` (the history's rows, in history order), seen through `ThumbnailFilterModel` (the names the search matches, in the chosen sort) and drawn by `ThumbnailDelegate`, and `LiveChannelPanel`, the Live group's rows with their mute and close buttons and right-click menu (the sidebar steps ↑ and ↓ across the live rows and the thumbnails as one list); `ImageInfoBar` is the strip above the view, with `DisplaySettingsControl` (the Range and Colours buttons) and Freeze and Snapshot; `QtImageSink` moves images and live frames from the server thread to the UI thread; `ActivityLog` is the activity log (a list model, stored in the endpoint's `DataFolder`) and `ActivityLogPanel` shows it; `DividerSplitter` is a splitter whose handles draw a divider line and a grip; `ImageStore` keeps images in files, `StorageWorker` drives it on its own thread, and `StorageController` owns that thread and the restore for the window. |
 | `apps/example_sender` | The Visual Debug Example Sender, which shows how a Qt app uses the library. Its window takes a factory that makes an `ImageSender` for an endpoint, so it never knows which transport is behind it, and a new endpoint in its **Send to** field gets a new sender. |
 | `examples/pipeline_demo` | An ordinary OpenCV program that sends each stage of a pipeline. Its stages are a separate `pipeline` library so tests can check them. |
 | `examples/minimal_sender` | The smallest use of `sendImage`, compiled so the user guide's first example cannot go stale. |
-| `examples/live_sender` | Streams a camera, a video file or a test pattern to live channels with `sendLive`, with an edge channel beside it. Everything but the reading of cameras and files is a separate `live_sender_lib`, so tests check it without a camera. Opening a video file (AVFoundation first on macOS, then OpenCV's default backend) is `live_sender_video`, which tests check with clips they write; only it and the executable link OpenCV's `videoio`. |
+| `examples/live_sender` | Streams a camera, a video file or a test pattern to live channels with `sendLive`, with an edge channel beside it. Everything but the reading of cameras and files is a separate `live_sender_lib`, so tests check it without a camera: the arguments, the pattern, the edges, `ReadAhead` (a file's frames read ahead on a thread of their own) and `Playback` (when each frame is due, and which are too late to send). Opening a video file (AVFoundation first on macOS, then OpenCV's default backend) is `live_sender_video`, which tests check with clips they write; only it and the executable link OpenCV's `videoio`. `live_sender_ffmpeg` (`FfmpegVideo`) reads a video with FFmpeg's libraries for `--hdr`, as 16-bit frames with their tags; it is built only when CMake finds FFmpeg's development files, and its tests write their clips through FFmpeg too. |
 
 ## The dependency rule
 
@@ -62,6 +63,7 @@ Dependencies point one way: applications and examples depend on the libraries, n
   not inherit Qt, which is large and could clash with its own Qt version.
 - `visual_debug` and `viewer_core` do not depend on each other.
 - Only `qt_common` and the apps may use Qt.
+- Only `live_sender_ffmpeg` and its tests use FFmpeg's libraries; both libraries and the viewer never do.
 
 CMake enforces this: each library's `CMakeLists.txt` links only OpenCV, ZeroMQ and nlohmann/json;
 `qt_standard_project_setup()` and automatic `moc`, `uic` and `rcc` are switched on in `apps/CMakeLists.txt`
@@ -97,6 +99,14 @@ sequenceDiagram
 
 The reply goes back as soon as the sink accepts the image, before the UI has drawn it, so a sender never
 waits for painting.
+
+**An image's description.** An `ImageDescription` passed to a send travels as the optional header fields
+`valueRange`, `transfer` and `primaries`; the decoder refuses invalid ones with reasons of their own and
+leaves absent ones absent. The viewer turns it into `viewer_core::ImageTags` (`image_tags_conversion`) as the
+image arrives, and the tags go wherever the image goes: its `ImageOrigin` in the history, a live channel's
+shown frame, duplicates and snapshots, and the header `ImageStore` writes for an image kept between sessions
+(an image stored before tags existed loads untagged). The info strip names them (`tagsText` in
+`display_text`).
 
 ## One live frame, end to end
 
@@ -171,6 +181,7 @@ shown frame to the history as an ordinary image with
 | The server's worker thread | `Server`'s receive loop: polls the socket every 100 ms, decodes, calls `ImageSink::onImageReceived`, replies. It checks a stop flag on each poll, so `stop()` returns promptly without killing the thread. |
 | The viewer's UI thread | Everything in `viewer_core` and all widgets. Nothing there needs a lock. |
 | The viewer's storage thread | `StorageWorker`, started by `StorageController`: writes, deletes and loads the images kept between sessions, and their index. Only a viewer with a data folder has one. |
+| `live_sender`'s threads | The main thread sends frames. A file's frames are decoded on `ReadAhead`'s thread, at most three ahead: it waits for room before it reads, so it never holds more. Each frame's edges are found on a `std::async` thread while the frame goes out. With `--hdr`, FFmpeg adds its own: frame threads for software decoding and slice threads in `sws_scale_frame`'s conversion. |
 
 `ImageSink::onImageReceived` is called **on the worker thread**; every sink is responsible for getting the
 image to its own UI thread. `QtImageSink` emits a signal connected with `Qt::QueuedConnection`, so the slot
@@ -245,8 +256,27 @@ Each image name and live channel can have its own `DisplaySettings`, kept for th
   depth, 8U included, clipping values outside it; a range whose minimum is not below its maximum shows
   black. The span is taken as `max / 2 − min / 2`, which cannot overflow even for −1e308 to 1e308, and a
   scale beyond a `float`'s range is applied in double precision, so such a range still maps linearly.
+  An image with a value range (`ImageTags::hasValueRange`) is stretched by Auto, and held by Hold, from that
+  range instead of its own extremes.
+- **HDR.** Only for images tagged HLG or PQ, whose names start with it (`defaultSettings`). `toneMapToSdr`
+  maps the signal, from the value range's minimum (black) to its maximum (nominal white), to light as BT.2100
+  defines it (1000 cd/m² peak), puts BT.2408's reference white (203 cd/m²) just below the screen's white with a
+  curve that is the identity up to a knee and logarithmic above it, reaching white at the scale's top (65535
+  for `live_sender --hdr`'s HLG), converts BT.2020 to BT.709 and encodes sRGB. 8- and 16-bit signals go through
+  lookup tables, in one `cv::parallel_for_` pass; a frame drawn smaller is shrunk first, which an integer
+  signal (no NaN) allows.
 - **Colours.** Grey, Turbo or Viridis, for single-channel images only. NaN and ±Inf are black whatever the
   map.
+- **Clipping marks** (`DisplayOptions::showClipping`, the view only). The original's pixels at or beyond an
+  end of the range in use are found at full size, max-pooled exactly onto the drawn size so a shrunk block
+  keeps a marked pixel, and painted over the picture: `kClippedAbove` (magenta), `kClippedBelowGrey` (blue) or,
+  under a colour map, `kClippedBelowMapped` (white). Auto without a value range marks nothing except 8-bit
+  images at 0 and 255.
+
+**Region statistics.** `ImageView` draws the region (Shift-drag) and its label, and emits `regionChanged`;
+`MainWindow` computes `regionStatistics` on the original of the image or frame in view, when the region
+changes, when another image of the same size is shown, and on the live timer's tick, and hands the lines
+from `regionLines` (in `display_text`) back to the view.
 
 The history keeps each image's display picture as it was converted on arrival; an image whose settings
 are not the default is converted again from the original whenever it is shown, copied or saved, so Copy
@@ -282,8 +312,9 @@ only with fixed ASCII reasons, and survives any malformed message. Details are i
 ## Extension points
 
 - **A new header field** (for example `timestamp` or `overlays`): add it in `encode` and read it in
-  `decode` as optional. Older viewers ignore unknown fields, so `version` stays 2; follow the
-  [versioning rule](wire-format.md#versioning-rule) and update `wire-format.md`.
+  `decode` as optional, as `valueRange`, `transfer` and `primaries` were. Older viewers ignore unknown fields,
+  so `version` stays 2; follow the [versioning rule](wire-format.md#versioning-rule) and update
+  `wire-format.md`.
 - **A new sink**: implement `visual_debug::ImageSink` and pass it to a `Server`. A recording sink that
   writes images to disk, or a viewer in another toolkit, needs nothing else from the library.
 - **A new sender**: implement `visual_debug::ImageSender` (for example a shared-memory transport for very

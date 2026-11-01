@@ -1,12 +1,12 @@
 # A tour of live channels
 
-Eight stops through the viewer's live channels, each with what it shows, the commands to run and what you
+Nine stops through the viewer's live channels, each with what it shows, the commands to run and what you
 should see. Each stop builds on the one before. The [user guide](user-guide.md#live-channels) is the
 reference for everything here.
 
 The commands assume the debug build on macOS and are run from the repository root (see the
-[build guide](build-guide.md)); stop 8 uses the release build. Run each `live_sender` in its own terminal
-window, and stop it with Ctrl+C. You need no camera until stop 7.
+[build guide](build-guide.md)); stops 8 and 9 use the release build. Run each `live_sender` in its own
+terminal window, and stop it with Ctrl+C. You need no camera until stop 7.
 
 ## 1. A test pattern
 
@@ -117,7 +117,7 @@ build/debug/examples/live_sender/live_sender --pattern
 
 ## 6. Video files
 
-**What it shows:** a recording sent at its own frame rate.
+**What it shows:** a recording sent in real time.
 
 Use any video: a recording from QuickTime Player (**File → New Movie Recording**), or a clip from a phone.
 
@@ -127,6 +127,9 @@ build/debug/examples/live_sender/live_sender path/to/video.mov
 
 - The video plays at its own rate (the strip's `fps in` matches the file's) and the sender stops at its end
   with `N sent, N delivered`.
+- It keeps the video's timing even when sending cannot keep up, as with a 4K video at 60 frames a second in
+  the debug build: a frame ready more than a frame late is skipped, and the summary counts them,
+  `N sent, N delivered, M skipped`. The video then takes as long as it lasts, not longer.
 - On macOS, files are read through AVFoundation, the Mac's own media framework. An iPhone's HDR video
   (HEVC 10-bit HLG) plays at full speed, with colours close to QuickTime Player's; a portrait clip arrives
   upright.
@@ -197,3 +200,44 @@ Run one at a time. `drawn` in the info strip should keep up with `fps in`, with 
 at all; Activity Monitor shows the viewer's CPU. While a frame is drawn smaller than its own pixels, the
 viewer shrinks it to the drawn size before colouring and drawing it; zoomed in to 1:1 or closer, it converts
 the whole frame.
+
+## 9. HDR video
+
+**What it shows:** a phone's HDR video as 16-bit data, tone-mapped for this screen, with its highlights,
+clipping and values readable.
+
+Use an iPhone's HDR video (the Camera app records HEVC 10-bit HLG, Dolby Vision 8.4), and an Android phone's
+if you have one. Keep the release viewer from stop 8 open:
+
+```sh
+build/release/examples/live_sender/live_sender --hdr path/to/iphone.MOV
+```
+
+- The sender prints what it found, such as
+  `Horses close to Tegernsee.MOV: 3840x2160, 10-bit, HLG, BT.2020, VideoToolbox`, and at the end a summary
+  that names the transfer: `camera (HLG, BT.2020): N sent, N delivered`, with `M skipped` if sending fell
+  behind. A portrait video arrives upright.
+- The info strip names the frame's tags: `camera  live · 3840×2160 · 3 ch · 16U · HLG · BT.2020 · 4100–60219
+  · …`. The range button reads **Range: HDR ▾**, the default for an HLG or PQ channel.
+- **Against QuickTime Player.** Open the same file in QuickTime Player beside the viewer and pause both on a
+  similar frame (Space freezes the channel). The viewer's picture should be close to QuickTime's: skin and
+  grass alike, the sky's highlights bright but not blown flat, colours not oversaturated. QuickTime shows HDR
+  on a Mac's HDR screen brighter than any SDR picture can be; compare the look, not the peak brightness.
+- **Auto and Fixed on the same frame.** Freeze a frame. **Range → Auto** shows the raw HLG signal stretched
+  from 4100 to 60219: flatter, and every super-white is white. **Range → Fixed…** with 0 and 65535 shows the
+  whole signal, nominal white a little below the screen's white and the highlights above it. **Range → HDR**
+  brings back the tone-mapped picture. The readout reads the same values in all three.
+- **Clipping on glare.** Choose **Image → Show Clipping** (⇧⌘K) and find glare: the sun on water, a car's
+  chrome, a hologram on a card turned to the light. Under HDR, magenta marks only what the camera itself
+  clipped (65535); under Auto, everything above nominal white turns magenta. Blue marks what is at or below
+  black. Zoom in and out: the marks stay visible at every zoom.
+- **A region over a highlight.** Shift-drag a rectangle over the glare. The label gives each channel's
+  minimum, maximum, mean and σ; with the channel unfrozen they follow the video, twice a second. Esc clears
+  it.
+- **Load.** Watch the strip's `fps in`, `drawn` and `dropped`, the summary's `skipped`, and the viewer's CPU in
+  Activity Monitor, for a 4K HDR video at 60 frames a second and, if you have one, at 30. A 16-bit 4K frame is
+  about 50 MB; on an M4 Pro, `live_sender` kept a 60 fps 4K video's timing by skipping 80 of its first 680
+  frames. If `drawn` stays well below `fps in`, note it: converting live frames off the viewer's UI thread is
+  then the next round's first item.
+- An SDR video with `--hdr` arrives as `SDR, BT.709` on the same 16-bit scale, and the HDR range is not
+  offered for it.

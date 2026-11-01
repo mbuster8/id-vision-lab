@@ -86,7 +86,7 @@ Run these from the repository root. The [build guide](docs/build-guide.md) and t
 ```sh
 cmake --preset debug                    # configure; once, or after changing a CMakeLists.txt
 cmake --build --preset debug            # build everything into build/debug
-ctest --preset debug                    # all 571 tests, about 85 seconds
+ctest --preset debug                    # all 675 tests, about 96 seconds
 ctest --preset debug -R ClientServer    # only the tests whose name matches
 
 cmake --preset release                  # an optimised build, into build/release
@@ -95,7 +95,7 @@ ctest --preset release
 
 cmake --preset asan                     # Debug with AddressSanitizer and UndefinedBehaviorSanitizer
 cmake --build --preset asan             # into build/asan
-ctest --preset asan                     # the same tests under the sanitizers, about 110 seconds
+ctest --preset asan                     # the same tests under the sanitizers, about 127 seconds
 ```
 
 ### Check before a push
@@ -134,11 +134,13 @@ build/debug/examples/live_sender/live_sender --pattern
 # ... or a video file, or a camera (macOS may first ask to let the terminal use it)
 build/debug/examples/live_sender/live_sender path/to/video.mov
 build/debug/examples/live_sender/live_sender --camera 0
+# ... or a phone's HDR video as 16-bit frames with its HLG or PQ tags, read with FFmpeg's libraries
+build/debug/examples/live_sender/live_sender --hdr path/to/iphone.MOV
 ```
 
 Senders started before the viewer's status bar says `Listening on [tcp://127.0.0.1:7139]` get
 `ViewerUnavailable` and carry on; later sends reach the viewer once it is up. The
-[tour of live channels](docs/live-channels-tour.md) tries every live feature in eight steps, with what to
+[tour of live channels](docs/live-channels-tour.md) tries every live feature in nine steps, with what to
 expect at each.
 
 ![The Visual Debug Example Sender after sending a photo: Open, Send image and the Send to field along the top, the result in the status bar](docs/images/example-sender.png)
@@ -149,7 +151,9 @@ to the history and **File → Save As…** saves the displayed image. The sideba
 deletes images (with undo), searches and sorts them; its **Live** group lists the live channels, each
 with its frame rate and a button to mute it, and **Image → Freeze** and **Snapshot** hold a channel's frame
 or keep it in the history; **Range** and **Colours** above the view set how values map to the screen, with false colour for
-single-channel images; the status bar pauses or stops the viewer's server;
+single-channel images and an **HDR** range that tone-maps HLG and PQ video; **Image → Show Clipping** marks
+the pixels at the ends of the range, and Shift-drag gives a region's minimum, maximum, mean and σ per channel;
+the status bar pauses or stops the viewer's server;
 the activity log records what arrived and what was refused; the history can be kept between sessions;
 **View → Appearance** picks light or dark; and **About** names the OpenCV and Qt versions it runs with. The
 [user guide](docs/user-guide.md) covers each of these.
@@ -200,7 +204,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | C++ | pre-C++11 style: `0` for null, manual `new` and `delete` | C++20 |
 | Build | three qmake `.pro` files with hard-coded build paths | one CMake project with presets, warning-free under `-Wall -Wextra -Wpedantic` |
 | Message | a hand-packed binary header | a JSON header plus a pixel frame, validated field by field |
-| Tests | none | 505 GoogleTest tests, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
+| Tests | none | 668 GoogleTest tests, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | Documentation | one paragraph in `readme.txt` | this README, four guides and a decision record |
 
 ### Defects found in the 2013 code, and what fixed them

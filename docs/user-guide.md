@@ -13,7 +13,7 @@ build.
 | `visual_debug_example_sender` (the **Visual Debug Example Sender**) | A small Qt app: open an image file and send it to the viewer. Shows how a GUI application uses the library. |
 | `pipeline_demo` | A command-line OpenCV pipeline that sends the result of each of its ten stages. Exercises every image type the viewer handles. |
 | `minimal_sender` | The smallest real use of the library: one include, one call per image. |
-| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels: the frames as `camera` and their Canny edges as `edges`, or under a name you give it. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
+| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels: the frames as `camera` and their Canny edges as `edges`, or under a name you give it. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
 
 All senders reach the viewer through the `visual_debug` library, over ZeroMQ on `tcp://127.0.0.1:7139` by
 default. Start the viewer first.
@@ -166,6 +166,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | Drag with the left button | Pan. The image cannot be dragged past its edges. |
 | Double-click | Fit the whole image to the window again. |
 | Hover | The status bar shows the pixel under the cursor (see below). Leaving the image clears it. |
+| Shift-drag | Draw a region: its size and each channel's minimum, maximum, mean and standard deviation show beside it (see [Region statistics](#region-statistics)). A click in the view, or Esc, clears it. |
 | Click a thumbnail | Show that image, fitted. The newest image is at the top and is shown as it arrives, unless a live channel is in the view. |
 | Click a live channel's row | Show that channel, updating in place (see [Live channels](#live-channels)). |
 | ↑ and ↓ | With the sidebar focused, as it is when the window opens, show the entry above or below: the live channels first, then the images as listed (see [The sidebar](#the-sidebar)). |
@@ -182,6 +183,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | **View → Show in Sidebar**, **View → Sort By** | The same choices as the sidebar's options button (see [The sidebar](#the-sidebar)). |
 | **View → Show Log** (⌘L) | Open or close the activity log, as **Log ▴** in the status bar does (see [Activity log](#activity-log)). |
 | **Image → Range**, **Image → Colours** | The same choices as the info strip's **Range** and **Colours** buttons (see [Display range and colours](#display-range-and-colours)). |
+| **Image → Show Clipping** (⇧⌘K) | Mark the pixels at or beyond the ends of the range in use, in the view (see [Display range and colours](#display-range-and-colours)). Also at the foot of the **Range** button's menu. |
 | **Image → Freeze** (⇧⌘T, or Space) | Keep a live channel's frame in view while frames go on arriving; again to show the newest. Space freezes from anywhere but a text field or a button that has the keyboard focus, which Space presses instead. Only while a live channel is shown (see [Live channels](#live-channels)). |
 | **Image → Snapshot** (⌘T) | Copy the live frame in view into the history, as `camera 14:03:22.517`. Only while a live channel is shown. |
 | **View → Appearance** | **System** (the default) follows the system's light or dark appearance; **Light** and **Dark** keep one whatever the system does. The choice is kept, and the example sender shares it (see [Running the example sender](#running-the-example-sender)). Needs Qt 6.8 or newer: built with older Qt, the menu is absent and both programs follow the system. |
@@ -283,7 +285,8 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
   take the frame on screen.
 - **The info strip** shows, for example,
   `camera  live · 1920×1080 · 3 ch · 8U · 30 fps in · 30 drawn · 12 dropped · 18 ms`: the state, the frame's
-  size and type, the frames that arrived and the frames the view drew in the last second, the frames dropped
+  size and type (and its description, if the sender gave one: see [The info strip](#the-info-strip)), the
+  frames that arrived and the frames the view drew in the last second, the frames dropped
   since the channel's row appeared, idle spells included (a newer frame arrived before the view could take
   the older one), and the frame's
   age: the time it arrived minus the time the sender stamped on it. The age compares two clocks, so it means
@@ -329,6 +332,12 @@ units, as Finder shows them. With no image, the strip is hidden. At its right en
 **Colours** buttons (see [Display range and colours](#display-range-and-colours)) and, while a live channel is
 shown, **Freeze** and **Snapshot**; a live channel's name has no pencil.
 
+An image sent with a description (see [worked example 1](#1-one-line-debugging-with-sendimage)) names it
+after its type: its transfer, primaries and value range, for example
+`camera  live · 3840×2160 · 3 ch · 16U · HLG · BT.2020 · 4100–60219 · …` for a frame of an iPhone's HLG video
+from `live_sender --hdr`. The description stays with the image in the history, its snapshots and duplicates, and
+the images kept between sessions.
+
 **Renaming.** Click the pencil (here or on the thumbnail) and type. Enter saves, Esc cancels, and clicking
 elsewhere saves, as in Finder. The rename stays with the image it started on, even if new images arrive
 meanwhile.
@@ -350,6 +359,26 @@ X=12 Y=40 · B=12 G=200 R=3
 
 Integers print exactly, including negative values of signed images. Floating-point values print with up
 to six significant digits, always with a decimal point regardless of the system's language settings.
+
+### Region statistics
+
+Shift-drag in the view to draw a rectangle. It is outlined, and a label beside it gives its size and place and,
+per channel, the minimum, maximum, mean and standard deviation of the original values. Over a whole 2×2
+floating-point BGR image whose one green value is NaN:
+
+```text
+2×2 at 0, 0
+B  min 0.25 · max 0.25 · mean 0.25 · σ 0
+G  min 1.5 · max 1.5 · mean 1.5 · σ 0
+R  min 1000 · max 1000 · mean 1000 · σ 0
+1 not finite
+```
+
+The labels and number format are the readout's; the mean and σ (the population standard deviation) have up to
+four significant digits. NaN and infinite values are left out of the figures and counted on the last line.
+The region stays while the images or frames shown have the same size, so you can compare them; on a live
+channel its figures follow the frame in view, refreshed twice a second. A click in the view, Esc (unless a text
+field has the keyboard), or an image of another size clears it. A plain drag still pans.
 
 ### How images are displayed
 
@@ -375,9 +404,35 @@ picture in the view maps the original values to the screen, for history images a
 | **Auto** (the default) | As in the table above: 8-bit values as they are, other depths stretched from each image's smallest value to its largest. |
 | **Hold** | The range Auto shows now, kept for the frames that follow, so a live channel's brightness stops changing with each frame's range. |
 | **Fixed…** | A minimum and maximum that you type, with a full stop as the decimal mark. **Apply** is enabled while the minimum is below the maximum. The popup opens below the Range button, its right edge at the button's, and moves left or up as needed to stay inside the window and the screen. |
+| **HDR** | Only for an image or frame tagged HLG or PQ, such as `live_sender --hdr`'s, and the default for its name until you choose another range. Tone-maps the video for this screen (see below). |
 
 Hold and Fixed apply to 8-bit images too. The minimum shows black and the maximum white, and values outside
 the range are clipped to them.
+
+**A sender's value range.** An image sent with a value range (see
+[worked example 1](#1-one-line-debugging-with-sendimage)) is shown by Auto and Hold from that range's minimum to
+its maximum, instead of from its own smallest to largest value, so a 10-bit picture held in 16 bits, or a
+mask from 0 to 1, shows right without typing a Fixed range, and a live channel's brightness stops changing
+with each frame. Values beyond the range are clipped. Fixed overrides it.
+
+**HDR.** HLG and PQ video keeps its highlights above the white an SDR screen can show. The HDR range turns the
+signal into light as ITU-R BT.2100 defines it (a 1000 cd/m² peak), puts HDR reference white (203 cd/m²,
+ITU-R BT.2408) just below the screen's white and compresses brighter light smoothly into the room above it,
+converts BT.2020 colours to BT.709, and encodes the result for an sRGB screen. An HLG video's codes above its
+nominal white are highlights, kept up to the top of the scale, so glare keeps its gradations; PQ is clipped at
+its nominal 10 000 cd/m². Auto, Hold and Fixed still show such an image's raw signal, which is what to use to
+read values against a range: raw HLG looks reasonable on an SDR screen, raw PQ dark. A frame drawn smaller
+than its pixels is shrunk before it is tone-mapped.
+
+**Show Clipping** (**Image → Show Clipping**, ⇧⌘K, or the foot of the **Range** menu) marks the pixels whose
+original value is at or beyond an end of the range in use: magenta at or above the maximum, blue at or below
+the minimum (white under Turbo and Viridis, which have blue). A pixel is marked when any channel is at an end,
+magenta when one channel is above and another below. Under HDR "above" means the top of the scale, the
+camera's own clipping; under Auto or Hold with a video's value range it means brighter than nominal white.
+Auto on an image without a value range stretches the image's own extremes to black and white, so it marks
+nothing, apart from 8-bit images at 0 and 255. A shrunk picture keeps every mark: a block with a marked pixel
+is marked. The marks are in the view only, never in thumbnails, live rows, Copy Image or Save As, and the
+setting holds for every image until the viewer quits.
 
 | Colours | On screen |
 |---|---|
@@ -435,7 +490,7 @@ processing while the viewer shows the stages. The [tour of live channels](live-c
 through it step by step.
 
 ```text
-live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
+live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
             [--name NAME] [--endpoint <uri>]
 live_sender --list-cameras
 ```
@@ -444,6 +499,7 @@ live_sender --list-cameras
 |---|---|
 | `--camera N` | Read camera number `N`. `0` is the first camera macOS lists; a USB camera, or an iPhone through Continuity Camera, may be `1` or `2`. |
 | `<video file>` | Read a video file instead, such as a `.mov` recorded with QuickTime Player (**File → New Movie Recording**) or a clip from a phone: any format the installed OpenCV decodes. On macOS the file is read through AVFoundation first, then through OpenCV's default reader (FFmpeg, with Homebrew's OpenCV) if AVFoundation cannot read it, so `.mov`, `.mp4`, `.mkv` and `.avi` all work (see below). |
+| `--hdr` | Read the video file with FFmpeg's libraries instead, as 16-bit frames with its HDR tags (see [HDR video](#hdr-video) below). Only with a video file. |
 | `--pattern` | Send a generated moving test pattern; needs no camera and no file. `--size WxH` sets its size (default `640x480`, at most what the viewer takes) and `--fps N` its rate (default 30, from 0.1 to 1000). |
 | *(none of the three)* | The same as `--camera 0`. |
 | `--frames N` | Stop after `N` frames. Without it, a camera runs until Ctrl+C and a file until its end. |
@@ -451,7 +507,9 @@ live_sender --list-cameras
 | `--endpoint <uri>` | The viewer to send to: by default `$VISUAL_DEBUG_ENDPOINT` if set, else `tcp://127.0.0.1:7139`. |
 | `--list-cameras` | Print the camera numbers that open, with their frame size, and exit. On macOS, which numbers cameras without gaps, it stops at the first number that does not open; elsewhere it tries 0 to 9. OpenCV cannot read cameras' names, so this is how you find your USB camera's number. |
 
-A video file is sent at its own frame rate, and the pattern at `--fps`, so they play like a recording; a
+A video file plays in real time, at its own frame rate: it is decoded ahead on a thread of its own, and a frame
+that is ready more than a frame late is skipped, so a slow send drops frames instead of slowing the video
+down. The summary counts them (`, 12 skipped`); they are not counted as sent. The pattern is sent at `--fps`; a
 camera delivers frames at its own pace. On macOS, camera access is granted to the program that starts
 `live_sender` (Terminal, Qt Creator or VS Code), so macOS may ask that program for permission the first time.
 Ctrl+C stops it, and the summary still prints:
@@ -479,6 +537,39 @@ OpenCV's default reader.
 
 OpenCV also prints a line or two of its own for a camera number that does not open, outside its logger, so
 `live_sender` cannot silence them; its own message follows them.
+
+### HDR video
+
+A phone records HDR video in 10 bits, and keeps glare and highlights in the codes above nominal white;
+OpenCV's readers hand such a video over as 8-bit pictures, without those codes or the tags that say how to show
+it. With `--hdr`, `live_sender` reads the file with FFmpeg's libraries and sends every frame as 16-bit BGR
+(`16U`, 3 channels) on one scale whatever the video's depth: 0 to 65535, each code keeping its place, so a
+10-bit video's nominal black (code 64) lands at 4100, its nominal white (940) at 60219, and its brightest code
+(1023) at 65535. Each frame carries that black and white as its value range, and the video's transfer (HLG, PQ
+or SDR) and primaries (BT.2020 or BT.709), so the viewer can tone-map it with the
+[HDR range](#display-range-and-colours) and every value stays readable. The edges channel is computed from each
+frame's top 8 bits.
+
+It decodes with VideoToolbox on macOS and D3D11VA on Windows when they can decode the video, in software
+otherwise, turns a phone's portrait video upright as players do, and times the frames by the video's own
+timestamps. It first prints what it found, and the summary names the transfer:
+
+```text
+$ live_sender --hdr "Horses close to Tegernsee.MOV" --frames 600
+Horses close to Tegernsee.MOV: 3840x2160, 10-bit, HLG, BT.2020, VideoToolbox
+camera (HLG, BT.2020): 600 sent, 600 delivered, 80 skipped
+edges: 600 sent, 600 delivered
+```
+
+That 4K video runs at 60 frames a second, and each 16-bit 4K frame is about 50 MB: on an M4 Pro, with the
+viewer on the same Mac, `live_sender` kept the video's timing by skipping 80 of its first 680 frames.
+
+- A video that is not HDR works too, on the same scale, tagged SDR and BT.709.
+- Dolby Vision profiles 8.1 and 8.4 (iPhones record 8.4) play through their HDR10 or HLG base layer. Profile 5
+  has no such layer, so `live_sender` warns that its colours will be wrong, and goes on.
+- `--hdr` with a camera or the pattern is a usage error. A `live_sender` built without FFmpeg's development
+  files (see the [build guide](build-guide.md)) prints `live_sender was built without FFmpeg, so --hdr is not
+  available` and exits with code 2.
 
 To try every live feature in turn, follow the [tour of live channels](live-channels-tour.md).
 
@@ -570,7 +661,9 @@ visual_debug::sendLive(frame, "phone", {.valueRange = {0, 65535},
 ```
 
 Every field is optional. The description travels in the `valueRange`, `transfer` and `primaries` header
-fields; a viewer that predates them ignores them.
+fields; a viewer that predates them ignores them. This viewer shows the image from the range's minimum to its
+maximum in Auto and Hold, offers the HDR range for HLG and PQ (see
+[Display range and colours](#display-range-and-colours)), and names the description in the info strip.
 
 ### 2. A `Client` with your own options
 

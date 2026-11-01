@@ -20,6 +20,9 @@ also builds and tests every push on Ubuntu 24.04; Windows is planned for a separ
    brew install cmake ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest
    ```
 
+   Homebrew's `opencv` brings `ffmpeg` with it, whose libraries `live_sender --hdr` reads videos with. They
+   are optional: CMake finds them through `pkgconf`, and without them `live_sender` builds without `--hdr`.
+
 3. Qt Creator, the reference IDE (optional; any CMake-aware editor works):
 
    ```sh
@@ -36,6 +39,7 @@ Versions this was verified with:
 | `opencv` | 5.0.0 (the code also uses only API that exists in OpenCV 4) |
 | `zeromq` / `cppzmq` | 4.3.5 / 4.11.0 |
 | `nlohmann-json` | 3.12.0 (3.11 or newer is required) |
+| `ffmpeg` | 9.0.2 (optional; 6.1 or newer, which Ubuntu 24.04's CI job tests) |
 | `googletest` | 1.18.0 |
 | Qt Creator | 20.0.2 |
 
@@ -87,8 +91,9 @@ or library cannot break the build, but a new warning from project code should be
 | `pipeline` | The demo's OpenCV stages | `examples/pipeline_demo/libpipeline.a` |
 | `pipeline_demo` | Command-line demo: an OpenCV pipeline that sends every stage | `examples/pipeline_demo/pipeline_demo` |
 | `minimal_sender` | The smallest use of `sendImage` | `examples/minimal_sender/minimal_sender` |
-| `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
+| `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel, read-ahead, real-time playback and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
 | `live_sender_video` | Opens a video file for `live_sender`: AVFoundation first on macOS, then OpenCV's default backend | `examples/live_sender/liblive_sender_video.a` |
+| `live_sender_ffmpeg` | Reads a video with FFmpeg's libraries for `live_sender --hdr`, as 16-bit frames with their HDR tags. Built only when CMake finds FFmpeg's development files (`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not | `examples/live_sender/liblive_sender_ffmpeg.a` |
 | `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels. With `live_sender_video` and the tests, the only targets that need OpenCV's `videoio` module | `examples/live_sender/live_sender` |
 | `visual_debug_tests`, `viewer_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
 
@@ -116,7 +121,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the 238 tests that need no Qt (236 on Linux)
+ctest --test-dir build/no-qt               # the 317 tests that need no Qt (314 on Linux)
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -124,10 +129,10 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (571 tests, about 85 seconds; 569 on Linux)
+ctest --preset debug                       # everything (675 tests, about 96 seconds; 672 on Linux)
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
-ctest --preset asan                        # the same tests under the sanitizers (about 110 seconds)
+ctest --preset asan                        # the same tests under the sanitizers (about 127 seconds)
 ctest --preset debug -L whole              # only the whole-program runs
 ctest --preset debug -LE whole             # everything except them
 ```
@@ -237,6 +242,10 @@ error names the file, not the antivirus. Add the tool to the antivirus's trusted
 path is in Homebrew (`/opt/homebrew`), the Xcode Command Line Tools (`/Library/Developer/CommandLineTools`)
 or this project's `build` folder; otherwise, find out what the tool is first.
 
+**`live_sender was built without FFmpeg, so --hdr is not available`.** CMake did not find FFmpeg's
+development files when it configured. Install them (`brew install ffmpeg`, or Ubuntu's four `-dev` packages
+above), check that `pkg-config --modversion libavformat` answers, and configure again.
+
 **`ld: symbol(s) not found` after adding a source file.** Add the file to the target's `add_library` or
 `add_executable` list in its `CMakeLists.txt`; CMake does not pick up new files by itself.
 
@@ -248,7 +257,9 @@ in the user guide.
 ## Linux
 
 Continuous integration builds and tests every push on Ubuntu 24.04 with the distribution's packages, which
-give OpenCV 4.6 and Qt 6.4, the oldest versions supported. The list lives in
+give OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest versions supported. FFmpeg's four development packages
+(`libavcodec-dev`, `libavformat-dev`, `libswscale-dev`, `libavutil-dev`) are among them, so its tests run there
+too, decoding in software: CI has no GPU. The list lives in
 [`scripts/install-ubuntu-deps.sh`](../scripts/install-ubuntu-deps.sh), which CI and the Docker image both run;
 on an Ubuntu 24.04 machine:
 
