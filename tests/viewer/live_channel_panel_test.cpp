@@ -11,6 +11,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
+#include <QRectF>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -354,6 +356,82 @@ TEST(LiveChannelPanel, ScrollsBeyondThreeRows) {
     EXPECT_TRUE(QTest::qWaitFor([scroll] { return scroll->verticalScrollBar()->maximum() > 0; }));
     EXPECT_EQ(scroll->viewport()->height(), LiveChannelPanel::kVisibleRows * LiveChannelPanel::kRowHeight);
     EXPECT_EQ(scroll->verticalScrollBar()->maximum(), LiveChannelPanel::kRowHeight);
+}
+
+// Sends a left-button event to `widget` at `local`, with the global position the drag has reached.
+void sendGripEvent(QWidget& widget, QEvent::Type type, QPointF local, QPointF global) {
+    QMouseEvent event(type, local, global, Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&widget, &event);
+}
+
+// Drags the grip below the rows down by `dy` (up when negative), as a person would: it moves with the panel.
+void dragGrip(LiveChannelPanel& panel, int dy) {
+    auto* grip = panel.findChild<QWidget*>(QStringLiteral("liveRowsGrip"));
+    ASSERT_NE(grip, nullptr);
+    const QPointF centre = QRectF(grip->rect()).center();
+    const QPointF start = grip->mapToGlobal(centre);
+    sendGripEvent(*grip, QEvent::MouseButtonPress, centre, start);
+    sendGripEvent(*grip, QEvent::MouseMove, centre + QPointF(0, dy), start + QPointF(0, dy));
+    sendGripEvent(*grip, QEvent::MouseButtonRelease, centre + QPointF(0, dy), start + QPointF(0, dy));
+}
+
+void addChannels(LiveChannelPanel& panel, int count) {
+    for (int i = 0; i < count; ++i) {
+        panel.addChannel(QStringLiteral("camera %1").arg(i));
+    }
+}
+
+int shownRowsHeight(const LiveChannelPanel& panel) {
+    return panel.findChild<QScrollArea*>()->viewport()->height();
+}
+
+// (Owner, walkthrough 2026-11-01) The grip below the rows shows more or fewer of them, in whole rows: from
+// one up to every channel the viewer takes.
+TEST(LiveChannelPanel, DraggingTheGripShowsMoreOrFewerRows) {
+    ShownPanel shown;
+    addChannels(*shown.panel, 8);
+    QApplication::processEvents();
+    ASSERT_EQ(shownRowsHeight(*shown.panel), LiveChannelPanel::kVisibleRows * LiveChannelPanel::kRowHeight);
+
+    dragGrip(*shown.panel, 2 * LiveChannelPanel::kRowHeight + 5);
+    QApplication::processEvents();
+    EXPECT_EQ(shown.panel->visibleRows(), 5);
+    EXPECT_EQ(shownRowsHeight(*shown.panel), 5 * LiveChannelPanel::kRowHeight);
+
+    dragGrip(*shown.panel, 20 * LiveChannelPanel::kRowHeight);
+    EXPECT_EQ(shown.panel->visibleRows(), LiveChannelPanel::kMaxVisibleRows);
+
+    dragGrip(*shown.panel, -20 * LiveChannelPanel::kRowHeight);
+    QApplication::processEvents();
+    EXPECT_EQ(shown.panel->visibleRows(), 1);
+    EXPECT_EQ(shownRowsHeight(*shown.panel), LiveChannelPanel::kRowHeight);
+}
+
+// Fewer channels than the rows chosen take only their own rows; the choice is kept for when more come.
+TEST(LiveChannelPanel, FewerChannelsThanRowsFitThemselves) {
+    ShownPanel shown;
+    shown.panel->setVisibleRows(6);
+    addChannels(*shown.panel, 2);
+    QApplication::processEvents();
+
+    EXPECT_EQ(shownRowsHeight(*shown.panel), 2 * LiveChannelPanel::kRowHeight);
+    EXPECT_EQ(shown.panel->visibleRows(), 6);
+}
+
+TEST(LiveChannelPanel, VisibleRowsAreRemembered) {
+    {
+        LiveChannelPanel panel;
+        EXPECT_EQ(panel.visibleRows(), LiveChannelPanel::kVisibleRows);
+        panel.setVisibleRows(6);
+    }
+    EXPECT_EQ(LiveChannelPanel().visibleRows(), 6);
+
+    LiveChannelPanel panel;
+    panel.setVisibleRows(0);
+    EXPECT_EQ(panel.visibleRows(), 1);
+    panel.setVisibleRows(100);
+    EXPECT_EQ(panel.visibleRows(), LiveChannelPanel::kMaxVisibleRows);
 }
 
 TEST(LiveChannelPanel, SidebarShowsItAboveTheSearch) {

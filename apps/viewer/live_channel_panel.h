@@ -32,10 +32,16 @@ class LiveChannelPanel : public QWidget {
     Q_OBJECT
 
 public:
-    static constexpr int kRowHeight = 40;  // compact; independent of the thumbnails' width-scaled cells
-    static constexpr int kVisibleRows = 3; // more scroll
+    static constexpr int kRowHeight = 40;     // compact; independent of the thumbnails' width-scaled cells
+    static constexpr int kVisibleRows = 3;    // at first; more scroll
+    static constexpr int kMaxVisibleRows = 8; // every channel the viewer takes
 
     explicit LiveChannelPanel(QWidget* parent = nullptr);
+
+    // How many rows show at once, 1 to kMaxVisibleRows, as the grip below them was dragged; remembered.
+    // Fewer channels take only their own rows.
+    int visibleRows() const;
+    void setVisibleRows(int rows);
 
     void addChannel(const QString& name); // appended; shows the panel. Nothing if the name is already here
     // Called on the window's tick, not per frame. A frozen row's dot still shows whether frames arrive, which
@@ -62,10 +68,11 @@ protected:
 
 private:
     LiveChannelRow* rowOf(const QString& name) const;
-    void fitHeight(); // as many rows as there are, up to kVisibleRows
+    void fitHeight(); // as many rows as there are, up to visibleRows()
 
     QScrollArea* m_scroll;
     QVBoxLayout* m_rowsLayout;
     std::vector<LiveChannelRow*> m_rows; // in the order they started
     std::optional<QString> m_selected;
+    int m_visibleRows = kVisibleRows;
 };

@@ -1,6 +1,7 @@
 #include "live_channel_panel.h"
 
 #include "display_text.h"
+#include "divider_splitter.h"
 #include "eliding_label.h"
 #include "outline_icons.h"
 #include "shades.h"
@@ -20,11 +21,14 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSizePolicy>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 
 namespace {
 
@@ -218,8 +222,59 @@ private:
     bool m_hovered = false;
 };
 
+namespace {
+
+// Below the rows, drawn as the sidebar's divider: dragged, it shows more or fewer rows, in whole rows. It
+// follows the global position, as the grip itself moves while the panel grows.
+class LiveRowsGrip : public QWidget {
+public:
+    explicit LiveRowsGrip(LiveChannelPanel* panel) : m_panel(panel) {
+        setObjectName(QStringLiteral("liveRowsGrip"));
+        setFixedHeight(DividerSplitter::kHandleWidth);
+        setCursor(Qt::SplitVCursor);
+        setToolTip(LiveChannelPanel::tr("Drag to show more or fewer rows"));
+    }
+
+protected:
+    void paintEvent(QPaintEvent* /*event*/) override {
+        QPainter painter(this);
+        paintDivider(painter, size(), false);
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() != Qt::LeftButton) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+        m_dragStart = event->globalPosition().y();
+        m_rowsAtStart = m_panel->visibleRows();
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (!m_dragStart || !event->buttons().testFlag(Qt::LeftButton)) {
+            return;
+        }
+        const double moved = event->globalPosition().y() - *m_dragStart;
+        m_panel->setVisibleRows(m_rowsAtStart +
+                                static_cast<int>(std::lround(moved / LiveChannelPanel::kRowHeight)));
+    }
+
+    void mouseReleaseEvent(QMouseEvent* /*event*/) override { m_dragStart.reset(); }
+
+private:
+    LiveChannelPanel* m_panel;
+    std::optional<double> m_dragStart;
+    int m_rowsAtStart = 0;
+};
+
+const QString kVisibleRowsKey = QStringLiteral("viewer/liveVisibleRows");
+
+} // namespace
+
 LiveChannelPanel::LiveChannelPanel(QWidget* parent)
-    : QWidget(parent), m_scroll(new QScrollArea), m_rowsLayout(new QVBoxLayout) {
+    : QWidget(parent), m_scroll(new QScrollArea), m_rowsLayout(new QVBoxLayout),
+      m_visibleRows(
+          std::clamp(QSettings().value(kVisibleRowsKey, kVisibleRows).toInt(), 1, kMaxVisibleRows)) {
     auto* heading = new QLabel(tr("Live"));
     heading->setObjectName(QStringLiteral("liveHeading"));
     heading->setContentsMargins(kMargin, kMargin, kMargin, kPadding);
@@ -245,6 +300,7 @@ LiveChannelPanel::LiveChannelPanel(QWidget* parent)
     layout->setSpacing(0);
     layout->addWidget(heading);
     layout->addWidget(m_scroll);
+    layout->addWidget(new LiveRowsGrip(this));
     hide();
 }
 
@@ -386,7 +442,19 @@ LiveChannelRow* LiveChannelPanel::rowOf(const QString& name) const {
     return found != m_rows.end() ? *found : nullptr;
 }
 
+int LiveChannelPanel::visibleRows() const { return m_visibleRows; }
+
+void LiveChannelPanel::setVisibleRows(int rows) {
+    const int clamped = std::clamp(rows, 1, kMaxVisibleRows);
+    if (clamped == m_visibleRows) {
+        return;
+    }
+    m_visibleRows = clamped;
+    QSettings().setValue(kVisibleRowsKey, m_visibleRows);
+    fitHeight();
+}
+
 void LiveChannelPanel::fitHeight() {
-    const auto shown = std::min<std::size_t>(m_rows.size(), kVisibleRows);
+    const auto shown = std::min<std::size_t>(m_rows.size(), static_cast<std::size_t>(m_visibleRows));
     m_scroll->setFixedHeight(static_cast<int>(shown) * kRowHeight);
 }
