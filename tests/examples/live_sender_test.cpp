@@ -58,6 +58,7 @@ public:
         std::string name;
         bool live;
         int type;
+        visual_debug::ImageDescription description{};
     };
 
     explicit RecordingSender(std::function<SendResult(std::string_view)> answer =
@@ -71,6 +72,12 @@ public:
 
     SendResult sendLive(const cv::Mat& frame, std::string_view channel) override {
         calls.push_back({std::string(channel), true, frame.type()});
+        return m_answer(channel);
+    }
+
+    SendResult sendLive(const cv::Mat& frame, std::string_view channel,
+                        const visual_debug::ImageDescription& description) override {
+        calls.push_back({std::string(channel), true, frame.type(), description});
         return m_answer(channel);
     }
 
@@ -146,6 +153,20 @@ TEST(LiveSender, ParsesEverySource) {
 }
 
 // (F12) Several live_senders on one viewer, each under its own name.
+TEST(LiveSender, HdrIsForFilesOnly) {
+    const auto hdr = parse({"--hdr", "clip.mov"});
+    ASSERT_TRUE(hdr);
+    EXPECT_TRUE(hdr->hdr);
+    ASSERT_TRUE(std::holds_alternative<FileSource>(hdr->source));
+    EXPECT_EQ(std::get<FileSource>(hdr->source).path, "clip.mov");
+    EXPECT_FALSE(parse({"clip.mov"})->hdr);
+
+    for (const auto& words : std::vector<std::vector<std::string>>{
+             {"--hdr"}, {"--hdr", "--pattern"}, {"--hdr", "--camera", "1"}, {"--hdr", "--list-cameras"}}) {
+        EXPECT_FALSE(parse(words)) << joined(words);
+    }
+}
+
 TEST(LiveSender, ParsesName) {
     const auto named = parse({"--pattern", "--name", "cam1"});
     ASSERT_TRUE(named);
@@ -236,6 +257,36 @@ TEST(LiveSender, EdgesAreSingleChannelOfTheSameSize) {
     EXPECT_GT(cv::countNonZero(edges), 0);
     EXPECT_EQ(live_sender::edgesOf(cv::Mat(10, 12, CV_8UC1, cv::Scalar(7))).type(), CV_8UC1);
     EXPECT_EQ(live_sender::edgesOf(cv::Mat(10, 12, CV_8UC4, cv::Scalar(1, 2, 3, 4))).type(), CV_8UC1);
+}
+
+// An HDR video's frames are 16-bit: their edges are those of the top 8 bits.
+TEST(LiveSender, EdgesOfSixteenBitMatchEightBit) {
+    const cv::Mat frame8 = live_sender::patternFrame(3, {64, 48});
+    cv::Mat frame16;
+    frame8.convertTo(frame16, CV_16U, 257.0); // 255 becomes 65535
+
+    const cv::Mat edges = live_sender::edgesOf(frame16);
+
+    ASSERT_EQ(edges.type(), CV_8UC1);
+    EXPECT_EQ(cv::norm(edges, live_sender::edgesOf(frame8), cv::NORM_INF), 0.0);
+}
+
+TEST(LiveSender, SendsTheDescription) {
+    RecordingSender sender;
+    int read = 0;
+    const visual_debug::ImageDescription hlg{.valueRange = {4100, 60218},
+                                             .transfer = visual_debug::Transfer::Hlg,
+                                             .primaries = visual_debug::Primaries::Bt2020};
+
+    live_sender::run(patternSource(read), sender, 2, [] { return true; }, {}, hlg);
+
+    ASSERT_EQ(sender.calls.size(), 4u);
+    for (std::size_t i = 0; i < 4; i += 2) {
+        EXPECT_EQ(sender.calls[i].name, "camera");
+        EXPECT_EQ(sender.calls[i].description, hlg);
+        EXPECT_EQ(sender.calls[i + 1].name, "edges");
+        EXPECT_EQ(sender.calls[i + 1].description, visual_debug::ImageDescription{}); // 8-bit edges
+    }
 }
 
 TEST(LiveSender, SendsBothChannelsPerFrame) {

@@ -2,16 +2,18 @@
 // NAME and "NAME edges" with --name, so several can share a viewer. The program has no window of its own:
 // the viewer is its screen, with Freeze, Snapshot and the display range.
 //
-//     live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
+//     live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
 //                 [--name NAME] [--endpoint <uri>]
 //     live_sender --list-cameras
 //
 // Without a source it reads camera 0. A camera runs until Ctrl+C and a file until its end, unless --frames
-// stops them sooner; a summary prints either way. A file is sent at its own frame rate, the pattern at
-// --fps (30 by default). Exit code: 0 when every frame was delivered, 1 when any was not, 2 for bad
-// arguments or an unreadable source.
+// stops them sooner; a summary prints either way. A file plays in real time, read ahead on a thread of its
+// own: a frame that is ready more than a frame late is skipped and counted, never counted as undelivered.
+// The pattern is sent at --fps (30 by default). Exit code: 0 when every frame sent was delivered, 1 when any
+// was not, 2 for bad arguments or an unreadable source.
 
 #include "live_sender.h"
+#include "read_ahead.h"
 #include "video_file.h"
 
 #include "visual_debug/client.h"
@@ -41,11 +43,18 @@ constexpr int kExitNotDelivered = 1;
 constexpr int kExitUsageError = 2;
 constexpr int kCamerasToTry = 10;
 constexpr auto kStopCheckInterval = 50ms; // how quickly Ctrl+C ends a wait between slow frames
+constexpr std::size_t kFramesReadAhead = 3;
 
 constexpr const char* kUsage =
-    "usage: live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N]\n"
+    "usage: live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]\n"
     "                   [--name NAME] [--endpoint <uri>]\n"
     "       live_sender --list-cameras\n";
+
+// A video's frame and when it is due, from the start of the video.
+struct TimedFrame {
+    cv::Mat frame;
+    Clock::duration at;
+};
 
 #if defined(__APPLE__)
 constexpr bool kCamerasNumberedWithoutGaps = true; // AVFoundation numbers the cameras it finds
@@ -106,12 +115,23 @@ bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
     }
 }
 
-void printTally(const std::string& channel, const live_sender::ChannelTally& tally) {
+void printTally(const std::string& channel, const live_sender::ChannelTally& tally, int skipped = 0) {
     std::cout << channel << ": " << tally.sent << " sent, " << tally.delivered << " delivered";
     for (const auto& [result, times] : tally.failed) {
         std::cout << ", " << times << ' ' << visual_debug::toString(result);
     }
+    if (skipped > 0) {
+        std::cout << ", " << skipped << " skipped";
+    }
     std::cout << '\n';
+}
+
+// Sleeps until `due`, waking often enough to notice Ctrl+C. False if Ctrl+C came first.
+bool waitUntil(Clock::time_point due) {
+    while (!stopRequested && Clock::now() < due) {
+        std::this_thread::sleep_for(std::min<Clock::duration>(due - Clock::now(), kStopCheckInterval));
+    }
+    return !stopRequested;
 }
 
 } // namespace
@@ -125,13 +145,22 @@ int main(int argc, char* argv[]) {
     if (arguments->listCameras) {
         return listCameras();
     }
+    if (arguments->hdr) {
+        std::cerr << "live_sender was built without FFmpeg, so --hdr is not available\n";
+        return kExitUsageError;
+    }
 
     cv::VideoCapture capture;
     std::optional<Clock::duration> interval;
     std::function<std::optional<cv::Mat>()> next;
+    std::optional<live_sender::FramePacer> pacer;            // the pattern's
+    std::optional<live_sender::ReadAhead<TimedFrame>> ahead; // a file's, after `capture`: it reads from it
+    std::optional<live_sender::Playback> playback;
+    int skipped = 0;
     if (const auto* pattern = std::get_if<live_sender::PatternSource>(&arguments->source)) {
         interval =
             std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / pattern->fps));
+        pacer.emplace(*interval, Clock::now());
         next = [size = pattern->size, index = 0]() mutable -> std::optional<cv::Mat> {
             return live_sender::patternFrame(index++, size);
         };
@@ -146,25 +175,53 @@ int main(int argc, char* argv[]) {
             }
             return kExitUsageError;
         }
-        next = [&capture]() -> std::optional<cv::Mat> {
+        const auto read = [&capture]() -> std::optional<cv::Mat> {
             cv::Mat frame;
             if (!capture.read(frame) || frame.empty()) {
                 return std::nullopt;
             }
             return frame;
         };
+        if (std::holds_alternative<live_sender::CameraSource>(arguments->source)) {
+            next = read; // a camera delivers at its own pace
+        } else {
+            // A file is decoded ahead on a thread of its own and played at its own rate from its first frame:
+            // a frame due long ago is skipped rather than shown late. Without a frame rate it is sent as fast
+            // as it reads.
+            ahead.emplace(
+                [read, interval, index = 0]() mutable -> std::optional<TimedFrame> {
+                    std::optional<cv::Mat> frame = read();
+                    if (!frame) {
+                        return std::nullopt;
+                    }
+                    const Clock::duration at = interval ? *interval * index++ : Clock::duration::zero();
+                    return TimedFrame{std::move(*frame), at};
+                },
+                kFramesReadAhead);
+            next = [&ahead, &playback, &skipped, interval]() -> std::optional<cv::Mat> {
+                while (std::optional<TimedFrame> timed = ahead->take()) {
+                    if (!interval) {
+                        return std::move(timed->frame);
+                    }
+                    if (!playback) {
+                        playback.emplace(Clock::now() - timed->at, *interval);
+                    }
+                    if (playback->late(timed->at, Clock::now())) {
+                        ++skipped;
+                        continue;
+                    }
+                    if (!waitUntil(playback->due(timed->at))) {
+                        return std::nullopt; // Ctrl+C
+                    }
+                    return std::move(timed->frame);
+                }
+                return std::nullopt;
+            };
+        }
     }
 
-    std::optional<live_sender::FramePacer> pacer;
-    if (interval) {
-        pacer.emplace(*interval, Clock::now());
-    }
     const auto waitAndContinue = [&pacer] {
-        if (pacer) {
-            while (!stopRequested && Clock::now() < pacer->due()) {
-                std::this_thread::sleep_for(
-                    std::min<Clock::duration>(pacer->due() - Clock::now(), kStopCheckInterval));
-            }
+        if (pacer && waitUntil(pacer->due())) {
             pacer->sent(Clock::now());
         }
         return !stopRequested;
@@ -180,7 +237,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "no frame could be read\n";
         return kExitUsageError;
     }
-    printTally(names.camera, tally.camera);
+    printTally(names.camera, tally.camera, skipped);
     printTally(names.edges, tally.edges);
     const bool allDelivered =
         tally.camera.delivered == tally.camera.sent && tally.edges.delivered == tally.edges.sent;

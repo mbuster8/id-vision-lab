@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <string_view>
 #include <system_error>
 
@@ -118,6 +119,8 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
             }
         } else if (argument == "--list-cameras") {
             arguments.listCameras = true;
+        } else if (argument == "--hdr") {
+            arguments.hdr = true;
         } else if (!argument.empty() && !argument.starts_with('-')) {
             if (!choose(FileSource{std::string(argument)})) {
                 return std::nullopt;
@@ -129,6 +132,10 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
 
     if (arguments.listCameras) {
         return argc == 2 ? std::optional(arguments) : std::nullopt;
+    }
+    // HDR comes from a video file's own 10- or 12-bit data; a camera or the pattern has none.
+    if (arguments.hdr && !(source && std::holds_alternative<FileSource>(*source))) {
+        return std::nullopt;
     }
     if (size || fps) {
         PatternSource* pattern = source ? std::get_if<PatternSource>(&*source) : nullptr;
@@ -190,11 +197,17 @@ cv::Mat patternFrame(int index, cv::Size size) {
 }
 
 cv::Mat edgesOf(const cv::Mat& frame) {
-    cv::Mat grey = frame;
-    if (frame.channels() == 3) {
-        cv::cvtColor(frame, grey, cv::COLOR_BGR2GRAY);
-    } else if (frame.channels() == 4) {
-        cv::cvtColor(frame, grey, cv::COLOR_BGRA2GRAY);
+    cv::Mat eightBit = frame;
+    if (frame.depth() == CV_16U) {
+        // The top 8 bits: the offset makes convertTo's rounding a truncation, so 257 · v gives back v
+        // exactly.
+        frame.convertTo(eightBit, CV_8U, 1.0 / 256.0, -127.5 / 256.0);
+    }
+    cv::Mat grey = eightBit;
+    if (eightBit.channels() == 3) {
+        cv::cvtColor(eightBit, grey, cv::COLOR_BGR2GRAY);
+    } else if (eightBit.channels() == 4) {
+        cv::cvtColor(eightBit, grey, cv::COLOR_BGRA2GRAY);
     }
     cv::Mat edges;
     cv::Canny(grey, edges, 50, 150);
@@ -210,9 +223,20 @@ void FramePacer::sent(Clock::time_point now) {
     m_due = now - m_due < m_interval ? m_due + m_interval : now + m_interval;
 }
 
+Playback::Playback(Clock::time_point start, Clock::duration frameInterval)
+    : m_start(start), m_frameInterval(frameInterval) {}
+
+Playback::Clock::time_point Playback::due(Clock::duration at) const { return m_start + at; }
+
+bool Playback::late(Clock::duration at, Clock::time_point now) const {
+    return now - due(at) > m_frameInterval;
+}
+
+// The edges are found on another thread while the frame goes out: a 4K frame's take about as long as sending
+// it.
 Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::ImageSender& sender,
-          std::optional<int> frames, const std::function<bool()>& waitAndContinue,
-          const ChannelNames& names) {
+          std::optional<int> frames, const std::function<bool()>& waitAndContinue, const ChannelNames& names,
+          const visual_debug::ImageDescription& description) {
     Tally tally;
     while (!frames || tally.camera.sent < *frames) {
         if (!waitAndContinue()) {
@@ -222,8 +246,9 @@ Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::Ima
         if (!frame) {
             break;
         }
-        count(tally.camera, sender.sendLive(*frame, names.camera));
-        count(tally.edges, sender.sendLive(edgesOf(*frame), names.edges));
+        std::future<cv::Mat> edges = std::async(std::launch::async, [&frame] { return edgesOf(*frame); });
+        count(tally.camera, sender.sendLive(*frame, names.camera, description));
+        count(tally.edges, sender.sendLive(edges.get(), names.edges));
     }
     return tally;
 }

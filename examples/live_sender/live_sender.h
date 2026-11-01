@@ -35,16 +35,18 @@ struct Arguments {
     std::string endpoint;      // visual_debug::defaultEndpoint() unless given
     std::string name;          // the channels' name; empty for the default ones
     bool listCameras = false;
+    bool hdr = false; // a video file's frames as 16-bit data with their transfer and primaries
 };
 
 inline constexpr double kMinPatternFps = 0.1;
 inline constexpr double kMaxPatternFps = 1000.0;
 
-// live_sender [--camera N | <video file> | --pattern [--size WxH] [--fps N]] [--frames N] [--name NAME]
-//             [--endpoint <uri>]
+// live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
+//             [--name NAME] [--endpoint <uri>]
 // live_sender --list-cameras
 // Nothing for anything else: an unknown option, a missing or malformed value, two sources, --size or --fps
-// without --pattern, a pattern the viewer could not take or a rate outside kMinPatternFps to
+// without --pattern, --hdr without a video file, a pattern the viewer could not take or a rate outside
+// kMinPatternFps to
 // kMaxPatternFps, a name that is empty or would not keep "NAME edges" whole on the wire (invalid UTF-8, or
 // more than visual_debug::kMaxNameBytes less 6 bytes), or --list-cameras with other arguments.
 std::optional<Arguments> parseArguments(int argc, char* argv[]);
@@ -69,7 +71,8 @@ std::vector<std::pair<int, cv::Size>> listCameras(const std::function<std::optio
 // indices give different frames and the edges channel has outlines to show. `index` from 0, size from 1×1.
 cv::Mat patternFrame(int index, cv::Size size);
 
-// The Canny edges (thresholds 50 and 150) of an 8-bit greyscale, BGR or BGRA frame: CV_8UC1, the same size.
+// The Canny edges (thresholds 50 and 150) of an 8- or 16-bit greyscale, BGR or BGRA frame (of a 16-bit one,
+// its top 8 bits): CV_8UC1, the same size.
 cv::Mat edgesOf(const cv::Mat& frame);
 
 // When each frame is due: one interval after the previous one was due, so a timer that wakes a little late
@@ -89,6 +92,22 @@ private:
     Clock::time_point m_due;
 };
 
+// Plays a video in real time from `start`: the frame at `at` into the video is due at start + at. A frame
+// more than one frame interval past due when it is ready is late, and skipped, so a slow reader or sender
+// drops frames instead of slowing the video down.
+class Playback {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    Playback(Clock::time_point start, Clock::duration frameInterval);
+    Clock::time_point due(Clock::duration at) const;
+    bool late(Clock::duration at, Clock::time_point now) const;
+
+private:
+    Clock::time_point m_start;
+    Clock::duration m_frameInterval;
+};
+
 struct ChannelTally {
     int sent = 0;
     int delivered = 0;
@@ -102,9 +121,9 @@ struct Tally {
 
 // Until `frames` frames have been sent, `next` has none left, or `waitAndContinue` returns false: calls
 // `waitAndContinue` (which paces the frames and watches for Ctrl+C), reads a frame, and sends it as live
-// channel names.camera and its edges as live channel names.edges.
+// channel names.camera, described by `description`, and its edges as live channel names.edges.
 Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::ImageSender& sender,
           std::optional<int> frames, const std::function<bool()>& waitAndContinue,
-          const ChannelNames& names = ChannelNames{});
+          const ChannelNames& names = ChannelNames{}, const visual_debug::ImageDescription& description = {});
 
 } // namespace live_sender

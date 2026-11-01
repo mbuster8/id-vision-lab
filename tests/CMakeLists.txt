@@ -56,6 +56,7 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(live_sender_tests
         SOURCES
             examples/live_sender_test.cpp
+            examples/read_ahead_test.cpp
             examples/video_file_test.cpp
         LIBRARIES
             live_sender_lib
