@@ -13,7 +13,7 @@ build.
 | `visual_debug_example_sender` (the **Visual Debug Example Sender**) | A small Qt app: open an image file and send it to the viewer. Shows how a GUI application uses the library. |
 | `pipeline_demo` | A command-line OpenCV pipeline that sends the result of each of its ten stages. Exercises every image type the viewer handles. |
 | `minimal_sender` | The smallest real use of the library: one include, one call per image. |
-| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels: the frames as `camera` and their Canny edges as `edges`, or under a name you give it. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
+| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels, the frames and their Canny edges, named after the source (`camera 0`, the video file's name) or as you name them. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
 
 All senders reach the viewer through the `visual_debug` library, over ZeroMQ on `tcp://127.0.0.1:7139` by
 default. Start the viewer first.
@@ -273,8 +273,9 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
   state as a dot and a word or two. The dot is in the accent colour while frames arrive, grey otherwise. The
   words are **live** while frames arrive; **idle** once none has come for 3 seconds; **frozen** while frozen;
   **muted** while muted (below); and **frozen · idle** or **muted · idle** for a frozen or muted channel that
-  has gone idle. Three rows show at once; more scroll, and the arrow keys scroll the row they reach into
-  view.
+  has gone idle. Three rows show at first; more scroll, and the arrow keys scroll the row they reach into
+  view. Drag the grip below the rows, which looks like the sidebar's divider, to show more or fewer of
+  them at once, in whole rows, from one to all eight; the viewer remembers how many.
 - **Showing a channel.** Click its row, or reach it with ↑ and ↓ (see [The sidebar](#the-sidebar)). The
   first channel to start is shown at once if nothing else is in the view. The view shows a history image or a
   channel, never both: clicking a thumbnail leaves the channel, and clicking the row again returns to it.
@@ -334,8 +335,8 @@ shown, **Freeze** and **Snapshot**; a live channel's name has no pencil.
 
 An image sent with a description (see [worked example 1](#1-one-line-debugging-with-sendimage)) names it
 after its type: its transfer, primaries and value range, for example
-`camera  live · 3840×2160 · 3 ch · 16U · HLG · BT.2020 · 4100–60219 · …` for a frame of an iPhone's HLG video
-from `live_sender --hdr`. The description stays with the image in the history, its snapshots and duplicates, and
+`Horses close to Tegernsee.MOV  live · 3840×2160 · 3 ch · 16U · HLG · BT.2020 · 4100–60219 · …` for a frame
+of an iPhone's HLG video from `live_sender --hdr`. The description stays with the image in the history, its snapshots and duplicates, and
 the images kept between sessions.
 
 **Renaming.** Click the pencil (here or on the thumbnail) and type. Enter saves, Esc cancels, and clicking
@@ -483,17 +484,41 @@ outlines the field in red until you edit it, and is not remembered. A variable s
 
 ## Running live_sender
 
-`live_sender` reads frames, sends each one to the viewer as live channel `camera` and its Canny edges as live
-channel `edges`, and prints a summary when it stops. Everything you look at and every control (Freeze,
-Snapshot, the display range) is in the viewer: this is how a vision program uses the library, doing the
-processing while the viewer shows the stages. The [tour of live channels](live-channels-tour.md) walks
-through it step by step.
+`live_sender` reads frames, sends each one to the viewer as a live channel and its Canny edges as a second
+one, and prints a summary when it stops. The channels are named after the source: `camera 0` and
+`camera 0 edges` for camera 0, `My video.mp4` and `My video.mp4 edges` for that video (the first 32
+characters of the file's name), or `camera` and `edges` for the test pattern; `--name` names them yourself. Everything you look at and every control (Freeze, Snapshot, the display range) is in the viewer:
+this is how a vision program uses the library, doing the processing while the viewer shows the stages. The
+[tour of live channels](live-channels-tour.md) walks through it step by step.
 
 ```text
 live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
             [--name NAME] [--endpoint <uri>]
 live_sender --list-cameras
+live_sender --help
 ```
+
+### Examples
+
+Run from the repository root, with the viewer open; `live_sender --help` prints the same list. Quote a file
+name that has spaces in straight quotes (`"`): a note-taking app's typographic quotes (`”`) leave the shell
+waiting for the closing one.
+
+| Command | What it does |
+|---|---|
+| `live_sender --list-cameras` | Prints the camera numbers that open, with their sizes. |
+| `live_sender --camera 0` | Streams the first camera as channels `camera 0` and `camera 0 edges`. |
+| `live_sender --camera 1` | Streams another camera beside it, such as an iPhone through Continuity Camera, in channels of its own: run both at once and the Live group has four rows. |
+| `live_sender --camera 1 --name phone` | The same camera as channels `phone` and `phone edges`. |
+| `live_sender "path/to/My video.mp4"` | Plays a video file in real time, as channels `My video.mp4` and `My video.mp4 edges`, and stops at its end. |
+| `live_sender --hdr "path/to/iPhone HDR.MOV"` | Plays a phone's HDR video as 16-bit frames with its HLG or PQ tags; the viewer tone-maps it (see [HDR video](#hdr-video)). |
+| `live_sender --pattern` | Streams a moving test pattern; no camera or file needed. |
+| `live_sender --pattern --size 3840x2160 --fps 30` | A 4K load test: compare `fps in` with `drawn` in the info strip. |
+| `live_sender --pattern --endpoint tcp://127.0.0.1:7140` | Streams to a second viewer, started with `--endpoint tcp://127.0.0.1:7140`. |
+| `live_sender --camera 0 --frames 300` | Stops after 300 frames and prints the summary. |
+
+The program is `build/debug/examples/live_sender/live_sender` (or `build/release/…`); the commands above
+leave the folder out.
 
 | Argument | Meaning |
 |---|---|
@@ -503,9 +528,10 @@ live_sender --list-cameras
 | `--pattern` | Send a generated moving test pattern; needs no camera and no file. `--size WxH` sets its size (default `640x480`, at most what the viewer takes) and `--fps N` its rate (default 30, from 0.1 to 1000). |
 | *(none of the three)* | The same as `--camera 0`. |
 | `--frames N` | Stop after `N` frames. Without it, a camera runs until Ctrl+C and a file until its end. |
-| `--name NAME` | Name the channels `NAME` and `NAME edges` instead of `camera` and `edges`, so several `live_sender`s can stream to one viewer side by side; the summary uses the same names. An empty name, one that is not valid UTF-8, or one longer than 1018 bytes (so that `NAME edges` fits the 1024 a channel name may have), is a usage error. |
+| `--name NAME` | Name the channels `NAME` and `NAME edges` instead of after the source (`camera N`, the file's name, or `camera` and `edges` for the pattern), for instance to tell two patterns apart on one viewer; the summary uses the same names. An empty name, one that is not valid UTF-8, or one longer than 1018 bytes (so that `NAME edges` fits the 1024 a channel name may have), is a usage error. |
 | `--endpoint <uri>` | The viewer to send to: by default `$VISUAL_DEBUG_ENDPOINT` if set, else `tcp://127.0.0.1:7139`. |
 | `--list-cameras` | Print the camera numbers that open, with their frame size, and exit. On macOS, which numbers cameras without gaps, it stops at the first number that does not open; elsewhere it tries 0 to 9. OpenCV cannot read cameras' names, so this is how you find your USB camera's number. |
+| `--help`, `-h` | Print the usage and the examples above, and exit. |
 
 A video file plays in real time, at its own frame rate: it is decoded ahead on a thread of its own, and a frame
 that is ready more than a frame late is skipped, so a slow send drops frames instead of slowing the video
@@ -558,12 +584,13 @@ timestamps. It first prints what it found, and the summary names the transfer:
 ```text
 $ live_sender --hdr "Horses close to Tegernsee.MOV" --frames 600
 Horses close to Tegernsee.MOV: 3840x2160, 10-bit, HLG, BT.2020, VideoToolbox
-camera (HLG, BT.2020): 600 sent, 600 delivered, 80 skipped
-edges: 600 sent, 600 delivered
+Horses close to Tegernsee.MOV (HLG, BT.2020): 600 sent, 600 delivered, 145 skipped
+Horses close to Tegernsee.MOV edges: 600 sent, 600 delivered
 ```
 
 That 4K video runs at 60 frames a second, and each 16-bit 4K frame is about 50 MB: on an M4 Pro, with the
-viewer on the same Mac, `live_sender` kept the video's timing by skipping 80 of its first 680 frames.
+viewer on the same Mac, `live_sender` kept the video's timing by skipping frames, 145 of its first 745 in
+this run and 80 of 680 in another; how many depends on what else the Mac is doing.
 
 - A video that is not HDR works too, on the same scale, tagged SDR and BT.709.
 - Dolby Vision profiles 8.1 and 8.4 (iPhones record 8.4) play through their HDR10 or HLG base layer. Profile 5

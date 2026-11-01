@@ -125,8 +125,9 @@ Use any video: a recording from QuickTime Player (**File → New Movie Recording
 build/debug/examples/live_sender/live_sender path/to/video.mov
 ```
 
-- The video plays at its own rate (the strip's `fps in` matches the file's) and the sender stops at its end
-  with `N sent, N delivered`.
+- The channels are named after the file, `video.mov` and `video.mov edges` (the first 32 characters of
+  its name). The video plays at its own rate (the strip's `fps in` matches the file's) and the sender stops
+  at its end with `video.mov: N sent, N delivered`.
 - It keeps the video's timing even when sending cannot keep up, as with a 4K video at 60 frames a second in
   the debug build: a frame ready more than a frame late is skipped, and the summary counts them,
   `N sent, N delivered, M skipped`. The video then takes as long as it lasts, not longer. If decoding is
@@ -153,8 +154,11 @@ build/debug/examples/live_sender/live_sender --list-cameras
 build/debug/examples/live_sender/live_sender --camera 0
 ```
 
-- `camera` streams at the camera's own rate, often 24 to 30 frames a second and fewer in dim light. The age
-  in the info strip is a few milliseconds.
+- `camera 0` and `camera 0 edges` stream at the camera's own rate, often 24 to 30 frames a second and fewer
+  in dim light. The age in the info strip is a few milliseconds.
+- With a second camera (an iPhone through Continuity Camera, say), run `live_sender --camera 1` in another
+  terminal at the same time: `camera 1` and `camera 1 edges` join the Live group, four rows in all, each
+  stream in its own.
 - `--camera 9` (a number that does not open) prints
   `cannot open camera 9 (live_sender --list-cameras shows the numbers that open)` and exits with 2; OpenCV
   may print a line or two of its own first.
@@ -177,16 +181,18 @@ build/debug/examples/live_sender/live_sender --pattern --endpoint tcp://127.0.0.
 
 The stream appears in the second viewer only.
 
-**Several senders on one viewer.** Give each a name, so their channels stay apart:
+**Several senders on one viewer.** Cameras and files are named after their source, so two cameras, or a
+camera and a video, keep apart by themselves (stop 7). Two patterns would both send `camera` and `edges`, and
+take turns in the same rows; give each a name:
 
 ```sh
 build/debug/examples/live_sender/live_sender --pattern --name pattern
-build/debug/examples/live_sender/live_sender --camera 0 --name cam0
+build/debug/examples/live_sender/live_sender --pattern --size 1280x720 --name wide
 ```
 
-The Live group has four rows: `pattern`, `pattern edges`, `cam0` and `cam0 edges`, and each summary names
-its own channels. Without `--name`, both senders would send `camera` and `edges`, and the two streams would
-take turns in the same rows.
+The Live group has four rows: `pattern`, `pattern edges`, `wide` and `wide edges`, and each summary names
+its own channels. Drag the divider below the Live group down to see more rows at once, up to every channel;
+the viewer remembers its height.
 
 **Load.** Build the release preset (`cmake --preset release`, `cmake --build --preset release`), open its
 viewer, and send large frames fast:
@@ -216,10 +222,10 @@ build/release/examples/live_sender/live_sender --hdr path/to/iphone.MOV
 
 - The sender prints what it found, such as
   `Horses close to Tegernsee.MOV: 3840x2160, 10-bit, HLG, BT.2020, VideoToolbox`, and at the end a summary
-  that names the transfer: `camera (HLG, BT.2020): N sent, N delivered`, with `M skipped` if sending fell
-  behind. A portrait video arrives upright.
-- The info strip names the frame's tags: `camera  live · 3840×2160 · 3 ch · 16U · HLG · BT.2020 · 4100–60219
-  · …`. The range button reads **Range: HDR ▾**, the default for an HLG or PQ channel.
+  that names the transfer: `Horses close to Tegernsee.MOV (HLG, BT.2020): N sent, N delivered`, with
+  `M skipped` if sending fell behind. A portrait video arrives upright.
+- The info strip names the frame's tags: `Horses close to Tegernsee.MOV  live · 3840×2160 · 3 ch · 16U · HLG ·
+  BT.2020 · 4100–60219 · …`. The range button reads **Range: HDR ▾**, the default for an HLG or PQ channel.
 - **Against QuickTime Player.** Open the same file in QuickTime Player beside the viewer and pause both on a
   similar frame (Space freezes the channel). The viewer's picture should be close to QuickTime's: skin and
   grass alike, the sky's highlights bright but not blown flat, colours not oversaturated. QuickTime shows HDR
@@ -237,8 +243,8 @@ build/release/examples/live_sender/live_sender --hdr path/to/iphone.MOV
   it.
 - **Load.** Watch the strip's `fps in`, `drawn` and `dropped`, the summary's `skipped`, and the viewer's CPU in
   Activity Monitor, for a 4K HDR video at 60 frames a second and, if you have one, at 30. A 16-bit 4K frame is
-  about 50 MB; on an M4 Pro, `live_sender` kept a 60 fps 4K video's timing by skipping 80 of its first 680
-  frames. If `drawn` stays well below `fps in`, note it: converting live frames off the viewer's UI thread is
-  then the next round's first item.
+  about 50 MB; on an M4 Pro, `live_sender` kept a 60 fps 4K video's timing by skipping 80 to 145 of its first
+  600 to 750 frames, depending on what else the Mac was doing. If `drawn` stays well below `fps in`, note it:
+  converting live frames off the viewer's UI thread is then the next round's first item.
 - An SDR video with `--hdr` arrives as `SDR, BT.709` on the same 16-bit scale, and the HDR range is not
   offered for it.
