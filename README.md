@@ -34,7 +34,7 @@ visual_debug::sendLive(frame, "phone", {.valueRange = {4100, 60219},
                                         .primaries = visual_debug::Primaries::Bt2020});
 ```
 
-![The Visual Debug Viewer showing a photo the example sender sent, the pipeline_demo stages below it in the sidebar, the activity log open, and the pixel under the cursor read out in the status bar](docs/images/viewer.png)
+![The Visual Debug Viewer with six live channels in its Live group (a 4K video and two cameras, each with its Canny edges), a frozen frame of the video in view, snapshots in the history below, and the pixel under the cursor read out in the status bar](docs/images/viewer.jpg)
 
 ### What it does
 
@@ -186,6 +186,8 @@ expect at each: start there.
 Senders started before the viewer's status bar says `Listening on [tcp://127.0.0.1:7139]` get
 `ViewerUnavailable` and carry on; later sends reach the viewer once it is up.
 
+![Two cameras and a video streaming at once, the Live group stretched to show all six channels, camera 0's edges in the Turbo colour map with the Colours menu open, and the activity log below](docs/images/live-channels.jpg)
+
 ![The Visual Debug Example Sender after sending a photo: Open, Send image and the Send to field along the top, the result in the status bar](docs/images/example-sender.png)
 
 ### In the viewer
@@ -199,6 +201,8 @@ values map to the screen, **Image → Show Clipping** (⇧⌘K) marks clipped pi
 **Snapshot** hold or keep a live frame, the status bar pauses or stops the viewer's server, the activity log
 records what arrived and what was refused, and **View → Appearance** picks light or dark. The
 [user guide](docs/user-guide.md) covers each of these.
+
+![Show Clipping marking the clipped highlights of a horse's mane in magenta, and a Shift-drag region labelled with its size and each channel's minimum, maximum, mean and σ](docs/images/clipping-and-statistics.jpg)
 
 ```sh
 # A second viewer on another port, and a sender aimed at it
@@ -222,7 +226,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 5. Click in the margin next to a line to set a breakpoint and press **⌘Y** to debug with LLDB. The first
    time, macOS may ask for your password to let the debugger attach.
 
-![Qt Creator after Run All Tests: 389 passes, grouped by test suite](docs/images/qt-creator-tests.png)
+![Qt Creator after Run All Tests: 682 passes and no failures, grouped by test suite](docs/images/qt-creator-tests.jpg)
 
 ## Documentation
 

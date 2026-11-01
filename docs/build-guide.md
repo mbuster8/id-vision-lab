@@ -217,12 +217,18 @@ Creator from a terminal.
 **A test or the viewer crashes in `ImageIO` (`SIGBUS`) only when started from Qt Creator.** Qt Creator's
 run setting **Add build library search path to DYLD_LIBRARY_PATH and DYLD_FRAMEWORK_PATH** puts
 `/opt/homebrew/lib`, where Homebrew's OpenCV, ZeroMQ and Qt live, on `DYLD_LIBRARY_PATH`. macOS then loads
-Homebrew's `libpng` in place of its own, and drawing a colour emoji (an image name such as `ž😀`, as in
-`ThumbnailPanel.LongNameKeepsCellSize`) crashes. In **Projects → Run Settings**, pick each run configuration
-in turn (the viewer, the example sender and each test program) and untick that setting, just below **Run
-in terminal**: the executables find their libraries through their rpath and need no search path. A run
-configuration Qt Creator makes for a new or renamed target starts with the setting ticked again. `ctest` and
-Finder never set it.
+Homebrew's `libpng`, `libjpeg`, `libtiff` and `libgif` in place of ImageIO's own, and drawing a colour emoji
+(an image name such as `ž😀`, as in `ThumbnailPanel.LongNameKeepsCellSize`) crashes. The executables find
+their libraries through their rpath and need no search path, so turn it off in two places:
+
+1. **Preferences → Build & Run → General**: untick **Add linker library search paths to run environment**.
+   Run configurations Qt Creator makes from then on start without the search path.
+2. Run configurations it has already made keep their own setting. In **Projects → Run Settings**, pick each
+   in turn (the viewer, the example sender and each test program, for every preset you configured) and
+   untick **Add build library search path to DYLD_LIBRARY_PATH and DYLD_FRAMEWORK_PATH**, just below **Run
+   in terminal**.
+
+`ctest` and Finder never set it.
 
 **`Could NOT find WrapVulkanHeaders` during configure.** Qt looks for optional Vulkan support. Harmless;
 nothing in this project uses Vulkan.
