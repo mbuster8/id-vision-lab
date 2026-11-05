@@ -1,3 +1,4 @@
 add_subdirectory(pipeline_demo)
 add_subdirectory(minimal_sender)
+add_subdirectory(overlay_sender)
 add_subdirectory(live_sender)

@@ -1,0 +1,4 @@
+add_executable(overlay_sender main.cpp)
+target_link_libraries(overlay_sender PRIVATE opencv_imgproc visual_debug::visual_debug)
+id_vision_lab_set_warnings(overlay_sender)
+id_vision_lab_add_sanitizer_defaults(overlay_sender)
