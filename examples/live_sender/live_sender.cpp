@@ -342,9 +342,11 @@ std::optional<std::vector<cv::Point2d>> documentOutline(const cv::Mat& frame) {
     if (best.empty()) {
         return std::nullopt;
     }
+    // A pixel of the small copy covers 1/scale frame pixels: its centre, x + 0.5, maps to (x + 0.5) / scale
+    // in the frame's coordinates, where a pixel's centre is at + 0.5 again.
     std::vector<cv::Point2d> points;
     for (const cv::Point& corner : best) {
-        points.emplace_back(corner.x / scale, corner.y / scale);
+        points.emplace_back((corner.x + 0.5) / scale - 0.5, (corner.y + 0.5) / scale - 0.5);
     }
     return points;
 }

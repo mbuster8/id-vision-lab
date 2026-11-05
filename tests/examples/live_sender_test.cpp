@@ -512,6 +512,28 @@ TEST(LiveSender, FindsItInALargeFrame) {
     EXPECT_TRUE(findsTheCorners(*outline, 3, 8.0));
 }
 
+// The outline is found on a copy 6 times smaller; mapping its corners back must take each copy pixel's
+// centre, or the whole outline shifts by 2.5 frame pixels up and to the left. The corners' centroid shows it,
+// free of the edge detector's own spread, which is the same on every side.
+TEST(LiveSender, OutlineIsNotShiftedByTheShrinking) {
+    const cv::Mat frame = cardFrame(6); // 3840×2880, found at 640×480
+    cv::Point2d expected;
+    for (const cv::Point& corner : kCorners) {
+        expected += cv::Point2d(corner * 6) / 4.0;
+    }
+
+    const auto outline = live_sender::documentOutline(frame);
+
+    ASSERT_TRUE(outline);
+    ASSERT_EQ(outline->size(), 4U);
+    cv::Point2d centroid;
+    for (const cv::Point2d& corner : *outline) {
+        centroid += corner / 4.0;
+    }
+    EXPECT_NEAR(centroid.x, expected.x, 1.0);
+    EXPECT_NEAR(centroid.y, expected.y, 1.0);
+}
+
 TEST(LiveSender, NoOutlineInAPlainFrame) {
     EXPECT_FALSE(live_sender::documentOutline(cv::Mat(480, 640, CV_8UC3, cv::Scalar::all(128))));
 }
