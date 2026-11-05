@@ -410,17 +410,22 @@ TEST(ImageViewMeasurement, DISABLED_OverlayPaintCost) {
     // render() calls paintEvent into an image made once, so only the paint is timed (an offscreen window
     // is never exposed, so repaint() would paint nothing).
     QImage target(view.size(), QImage::Format_ARGB32_Premultiplied);
-    const auto meanPaint = [&](viewer_core::ImageTags::Overlays list) {
+    // A Retina screen's backing store: twice the pixels, with the painter scaled by 2. Labels laid out once
+    // must stay laid out there too.
+    QImage retina(view.size() * 2, QImage::Format_ARGB32_Premultiplied);
+    retina.setDevicePixelRatio(2.0);
+    const auto meanPaintOn = [&](QImage& onto, viewer_core::ImageTags::Overlays list) {
         view.setImage(picture, ImageView::KeepView::No, QSize(3840, 2160), list);
-        view.render(&target); // the first paint loads fonts
+        view.render(&onto); // the first paint loads fonts
         constexpr int kPaints = 100;
         QElapsedTimer timer;
         timer.start();
         for (int i = 0; i < kPaints; ++i) {
-            view.render(&target);
+            view.render(&onto);
         }
         return static_cast<double>(timer.nsecsElapsed()) / kPaints / 1e6;
     };
+    const auto meanPaint = [&](viewer_core::ImageTags::Overlays list) { return meanPaintOn(target, list); };
     const double without = meanPaint(nullptr);
     const double with = meanPaint(tags.overlays);
     // The parts of the cost: the polygon alone, the rectangles without and with their labels.
@@ -446,6 +451,14 @@ TEST(ImageViewMeasurement, DISABLED_OverlayPaintCost) {
               << "[ overlays ] the 1024-point polygon alone: " << polygonOnly
               << " ms; 255 rectangles: " << rectangles << " ms; with their labels: " << labelled << " ms\n"
               << "[ overlays ] a document check's 8 overlays: " << typical << " ms\n";
+    // At a device pixel ratio of 2: the rectangles without and with their labels. Labels laid out again on
+    // every paint would make the second far more than the first, as they did before the label cache (about 10
+    // ms).
+    const double retinaRectangles = meanPaintOn(retina, viewer_core::makeOverlays(unlabelled));
+    const double retinaLabelled =
+        meanPaintOn(retina, viewer_core::makeOverlays({overlays.begin() + 1, overlays.end()}));
+    std::cout << "[ overlays ] at DPR 2: 255 rectangles: " << retinaRectangles
+              << " ms; with their labels: " << retinaLabelled << " ms\n";
 }
 
 } // namespace
