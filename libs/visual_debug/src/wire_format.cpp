@@ -371,9 +371,11 @@ std::optional<double> readCoordinate(const Json& item, const char* key) {
     return it == item.end() ? std::nullopt : readCoordinate(*it);
 }
 
+// Above 0 once rounded to a thousandth of a pixel, as the sender rounds: what rounds to 0 would be left out
+// the next time the image is encoded, so it is refused here rather than accepted and later lost.
 std::optional<double> readSize(const Json& item, const char* key) {
     const auto value = readCoordinate(item, key);
-    return value && *value > 0.0 ? value : std::nullopt;
+    return value && rounded(*value) > 0.0 ? value : std::nullopt;
 }
 
 int hexValue(char digit) {
@@ -676,12 +678,29 @@ std::variant<EncodedMessage, EncodeError> encode(const cv::Mat& image, std::stri
         header["primaries"] = nameOf(kPrimaries, *description.primaries);
     }
     if (auto overlays = overlaysField(description.overlays); !overlays.empty()) {
-        header["overlays"] = std::move(overlays);
+        // As many overlays as fit 64 KiB, from the first: the trailing ones are left out like invalid ones,
+        // rather than the image refused. Each item is measured once, so this is linear in the header's size.
+        constexpr std::size_t kFieldBytes = std::string_view(R"(,"overlays":[])").size();
+        std::size_t bytes = header.dump().size() + kFieldBytes;
+        std::size_t fit = 0;
+        for (const auto& item : overlays) {
+            const std::size_t itemBytes = item.dump().size() + (fit > 0 ? 1 : 0); // and its comma
+            if (bytes + itemBytes > kMaxHeaderBytes) {
+                break;
+            }
+            bytes += itemBytes;
+            ++fit;
+        }
+        if (fit > 0) {
+            overlays.erase(overlays.begin() + static_cast<std::ptrdiff_t>(fit), overlays.end());
+            header["overlays"] = std::move(overlays);
+        }
     }
 
     EncodedMessage message;
     message.header = header.dump();
-    // Only overlays can make it this large; the viewer would refuse it, so it is never sent.
+    // Only overlays could make it this large, and they were cut to fit; kept so that no header the viewer
+    // would refuse is ever sent.
     if (message.header.size() > kMaxHeaderBytes) {
         return EncodeError{"header too large"};
     }

@@ -188,17 +188,41 @@ TEST(OverlayWire, MakesALabelValidUtf8) {
 ImageDescription oversizedDescription() {
     ImageDescription description;
     for (int i = 0; i < 256; ++i) {
-        description.overlays.push_back(Polygon{std::vector<cv::Point2d>(1000, cv::Point2d(123456.789, 1.5))});
+        // About 0.7 KB each in the header: fine-grained enough to fill 64 KiB to within one of them.
+        description.overlays.push_back(Polygon{std::vector<cv::Point2d>(40, cv::Point2d(123456.789, 1.5))});
     }
     return description;
 }
 
-TEST(OverlayWire, AHeaderOver64KiBIsNotEncoded) {
-    const auto result =
-        visual_debug::encode(cv::Mat(4, 4, CV_8UC1), "card", {.description = oversizedDescription()});
+// The trailing overlays that would take the header past 64 KiB are left out, as invalid ones are: the image
+// and the overlays that fit still go.
+TEST(OverlayWire, OverlaysPast64KiBAreLeftOut) {
+    const ImageDescription description = oversizedDescription();
 
-    ASSERT_TRUE(std::holds_alternative<EncodeError>(result));
-    EXPECT_EQ(std::get<EncodeError>(result).reason, "header too large");
+    const auto encoded = encodeOrFail(description);
+    const auto overlays = roundTrip(description);
+
+    EXPECT_LE(encoded.header.size(), visual_debug::kMaxHeaderBytes);
+    EXPECT_GT(encoded.header.size(), visual_debug::kMaxHeaderBytes - 1024); // full, not cut back further
+    ASSERT_FALSE(overlays.empty());
+    ASSERT_LT(overlays.size(), description.overlays.size());
+    EXPECT_TRUE(std::equal(overlays.begin(), overlays.end(), description.overlays.begin()));
+}
+
+// With the longest name the header can carry, the overlays still get the rest of 64 KiB.
+TEST(OverlayWire, ALongNameLeavesTheRestForOverlays) {
+    const auto result = visual_debug::encode(cv::Mat(4, 4, CV_8UC1), std::string(1024, 'n'),
+                                             {.description = oversizedDescription()});
+
+    ASSERT_TRUE(std::holds_alternative<EncodedMessage>(result));
+    EXPECT_LE(std::get<EncodedMessage>(result).header.size(), visual_debug::kMaxHeaderBytes);
+}
+
+TEST(OverlayWire, TheSmallestSizeThatRoundsAboveZeroIsAccepted) {
+    const auto decoded =
+        decodeWithOverlays(Json::array({{{"shape", "circle"}, {"x", 1}, {"y", 1}, {"radius", 0.0005}}}));
+
+    EXPECT_TRUE(std::holds_alternative<ImageMessage>(decoded));
 }
 
 TEST(OverlayWire, ColourIsReadInEitherCase) {
@@ -325,6 +349,13 @@ std::vector<OverlayRejection> overlayRejections() {
         {"ZeroWidth",
          Json::array({{{"shape", "rectangle"}, {"x", 1}, {"y", 1}, {"width", 0}, {"height", 1}}}), kGeometry},
         {"NegativeRadius", Json::array({{{"shape", "circle"}, {"x", 1}, {"y", 1}, {"radius", -2}}}),
+         kGeometry},
+        // What rounds to 0 at a thousandth of a pixel, as the sender rounds, is no size either: a viewer that
+        // kept it would drop it when it writes the image again.
+        {"RadiusRoundingToZero", Json::array({{{"shape", "circle"}, {"x", 1}, {"y", 1}, {"radius", 0.0004}}}),
+         kGeometry},
+        {"WidthRoundingToZero",
+         Json::array({{{"shape", "rectangle"}, {"x", 1}, {"y", 1}, {"width", 0.0004}, {"height", 1}}}),
          kGeometry},
         {"TwoPoints", Json::array({polygonOf(2)}), kPolygon},
         {"PointsOver1024", Json::array({polygonOf(1025)}), kPolygon},

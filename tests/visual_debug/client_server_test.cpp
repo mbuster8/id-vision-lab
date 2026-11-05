@@ -144,8 +144,8 @@ TEST(ClientServer, OverlaysReachTheSink) {
     EXPECT_EQ(sink.messages().front().description, description);
 }
 
-// Then the header would be refused by the viewer, so nothing is sent at all.
-TEST(ClientServer, AHeaderOver64KiBIsInvalidImageAndNotSent) {
+// The overlays that fit go with the image; the rest are left out rather than the image refused.
+TEST(ClientServer, OverlaysPast64KiBAreLeftOutAndTheImageDelivered) {
     CollectingSink sink;
     Server server(sink, {.endpoint = kAnyLoopbackPort});
     ASSERT_TRUE(started(server));
@@ -156,12 +156,12 @@ TEST(ClientServer, AHeaderOver64KiBIsInvalidImageAndNotSent) {
             visual_debug::Polygon{std::vector<cv::Point2d>(1000, cv::Point2d(123456.789, 1.5))});
     }
 
-    EXPECT_EQ(client.send(smallImage(), "heavy", description), SendResult::InvalidImage);
-    EXPECT_EQ(client.send(smallImage(), "light"), SendResult::Delivered);
+    EXPECT_EQ(client.send(smallImage(), "heavy", description), SendResult::Delivered);
 
     ASSERT_TRUE(sink.waitForCount(1, 1s));
-    EXPECT_EQ(sink.messages().front().name, "light");
-    EXPECT_EQ(sink.count(), 1u);
+    const auto received = sink.messages().front().description.overlays;
+    EXPECT_FALSE(received.empty());
+    EXPECT_LT(received.size(), description.overlays.size());
 }
 
 TEST(ClientServer, StillsStayStills) {

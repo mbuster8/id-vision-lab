@@ -76,8 +76,8 @@ wholly outside the image. Each item is a JSON object:
 |---|---|
 | `shape` | exactly `"polygon"`, `"rectangle"`, `"circle"` or `"point"` |
 | polygon: `points` | an array of 3 to 1024 points, each an array of two numbers `[x, y]`; the last point joins the first |
-| rectangle: `x`, `y`, `width`, `height` | the top-left corner, and a width and height above 0 |
-| circle: `x`, `y`, `radius` | the centre, and a radius above 0 |
+| rectangle: `x`, `y`, `width`, `height` | the top-left corner, and a width and height of at least 0.0005 (above 0 when rounded to a thousandth) |
+| circle: `x`, `y`, `radius` | the centre, and a radius of at least 0.0005 |
 | point: `x`, `y` | a dot of a fixed size on screen |
 | `label` | optional: a string of at most 64 bytes of UTF-8, shown on the shape's tab |
 | `colour` | optional: `"#RRGGBB"`, either case; absent means exactly `#78E678`, a light green |
@@ -91,9 +91,8 @@ number to a thousandth of a pixel first, then leaves out any shape the viewer wo
 ±1 000 000, a size or radius not above 0 after rounding, a polygon of fewer than 3 or more than 1024 points: a raw
 contour is often longer, so simplify it with `cv::approxPolyDP` first) and every shape after the 256th it keeps;
 it makes each label valid UTF-8 and cuts it to 64 bytes at a character boundary, as it does names; it writes
-`colour` in upper case, and leaves it out for the default green. A header that would still be over 64 KiB is not
-sent at all: once a viewer is reachable, the send returns `SendResult::InvalidImage` (the header is made only
-then, so while no viewer answers the send returns `ViewerUnavailable` first, as any send does).
+`colour` in upper case, and leaves it out for the default green. It keeps the header within 64 KiB by leaving out
+the trailing shapes that would not fit, so the image and the shapes that fit are always sent.
 
 A viewer that predates `overlays` ignores it and shows the image without them.
 
