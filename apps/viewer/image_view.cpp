@@ -7,10 +7,12 @@
 #include <QPen>
 #include <QPixmap>
 #include <QResizeEvent>
+#include <QTransform>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 
@@ -38,15 +40,19 @@ ImageView::ImageView(QWidget* parent) : QWidget(parent) {
     setMinimumSize(200, 200);
 }
 
-void ImageView::setImage(const QImage& image, KeepView keep) { setImage(image, keep, image.size()); }
+void ImageView::setImage(const QImage& image, KeepView keep, viewer_core::ImageTags::Overlays overlays) {
+    setImage(image, keep, image.size(), std::move(overlays));
+}
 
-void ImageView::setImage(const QImage& picture, KeepView keep, QSize imageSize) {
+void ImageView::setImage(const QImage& picture, KeepView keep, QSize imageSize,
+                         viewer_core::ImageTags::Overlays overlays) {
     const bool sameSize = !m_image.isNull() && imageSize == m_imageSize;
     if (!sameSize) {
         clearRegion(); // its pixels are another image's
     }
     m_image = picture;
     m_imageSize = imageSize;
+    m_overlays = std::move(overlays);
     if (keep == KeepView::No || !sameSize) {
         m_viewport.setImageSize({imageSize.width(), imageSize.height()});
     }
@@ -61,11 +67,26 @@ void ImageView::clear() {
     clearRegion();
     m_image = QImage();
     m_imageSize = QSize();
+    m_overlays.reset();
     m_viewport.setImageSize({0, 0});
     update();
 }
 
 bool ImageView::hasImage() const { return !m_image.isNull(); }
+
+const std::vector<viewer_core::Overlay>& ImageView::overlays() const {
+    static const std::vector<viewer_core::Overlay> kNone;
+    return m_overlays ? *m_overlays : kNone;
+}
+
+void ImageView::setOverlaysShown(bool shown) {
+    if (shown != m_overlaysShown) {
+        m_overlaysShown = shown;
+        update();
+    }
+}
+
+bool ImageView::overlaysShown() const { return m_overlaysShown; }
 
 double ImageView::deviceScaleFor(QSize imageSize, KeepView keep) const {
     // The viewport learns the view's size from the first resize, which comes as the view is shown.
@@ -167,6 +188,12 @@ void ImageView::paintEvent(QPaintEvent*) {
     painter.drawImage(target, m_image,
                       QRectF(source.x * pictureScale, source.y * pictureScale, source.width * pictureScale,
                              source.height * pictureScale));
+    if (m_overlaysShown && m_overlays) {
+        // Image pixels, not the picture's, which may be smaller.
+        const QPointF origin = toQt(m_viewport.imageToView({0.0, 0.0}));
+        const double scale = m_viewport.scale();
+        m_overlayPainter.paint(painter, *m_overlays, QTransform(scale, 0, 0, scale, origin.x(), origin.y()));
+    }
     if (m_region) {
         const QRectF outline(
             toQt(m_viewport.imageToView(

@@ -30,6 +30,10 @@ public:
     DisplaySettingsControl* displayControl() const;
     // Freeze and Snapshot, as buttons at the right end while a live channel is shown.
     void setLiveActions(QAction* freeze, QAction* snapshot);
+    // Show Overlays, as a toggle button before the range control: shown only while the picture in view has
+    // overlays, with their count, and "hidden" while the action is off.
+    void setOverlayAction(QAction* showOverlays);
+    void setOverlayCount(int count); // 0 hides the button; clear() sets it
 
     // Swaps the name for a text field, bound to the image shown now. Enter or leaving the field saves; Esc
     // cancels. Nothing while no image is shown.
@@ -48,6 +52,7 @@ protected:
 private:
     void finishRename();
     void closeEditor();
+    void updateOverlayButton();
 
     QLabel* m_name;
     QLineEdit* m_editor;
@@ -56,6 +61,9 @@ private:
     DisplaySettingsControl* m_displayControl;
     QToolButton* m_freezeButton;
     QToolButton* m_snapshotButton;
+    QToolButton* m_overlaysButton;
+    QAction* m_overlayAction = nullptr;
+    int m_overlayCount = 0;
     std::optional<viewer_core::ImageId> m_shownId;
     QString m_shownName;
     std::optional<viewer_core::ImageId> m_renamingId;

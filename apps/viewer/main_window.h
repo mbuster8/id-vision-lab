@@ -117,6 +117,10 @@ private:
     // The picture the view, Copy Image and Save As show: the stored display picture, or one drawn with the
     // display settings of the entry's name. Only the view's shows clipping.
     QImage shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping = false) const;
+    // Every picture of a history image or a live frame reaches the view here, with its tags' overlays, so
+    // the view and the info strip's overlay count always describe the picture in view.
+    void showPicture(const QImage& picture, ImageView::KeepView keep, QSize imageSize,
+                     const viewer_core::ImageTags& tags);
     void setShowClipping(bool show);
     void showRegionStatistics(); // in the view's region label
     void changeDisplaySettings(const viewer_core::DisplaySettings& settings);

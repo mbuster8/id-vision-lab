@@ -93,6 +93,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/appearance_test.cpp
             qt_common/image_file_test.cpp
             qt_common/outline_icons_test.cpp
+            qt_common/overlay_painter_test.cpp
             qt_common/qimage_conversion_test.cpp
             qt_common/shades_test.cpp
         LIBRARIES

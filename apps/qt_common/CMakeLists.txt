@@ -11,6 +11,8 @@ add_library(qt_common STATIC
     image_file.h
     outline_icons.cpp
     outline_icons.h
+    overlay_painter.cpp
+    overlay_painter.h
     qimage_conversion.cpp
     qimage_conversion.h
     shades.cpp
@@ -21,9 +23,9 @@ target_link_libraries(qt_common
     PUBLIC
         Qt6::Widgets
         opencv_core
+        viewer_core::viewer_core
     PRIVATE
         opencv_imgcodecs
-        viewer_core::viewer_core
         visual_debug::visual_debug)
 
 id_vision_lab_set_warnings(qt_common)

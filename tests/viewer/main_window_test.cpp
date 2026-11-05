@@ -879,10 +879,10 @@ TEST(MainWindowTest, MenusAreInTheirOrder) {
               (QStringList{QStringLiteral("File"), QStringLiteral("Edit"), QStringLiteral("View"),
                            QStringLiteral("Image"), QStringLiteral("Server"), QStringLiteral("History"),
                            QStringLiteral("Help")}));
-    EXPECT_EQ(
-        entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
-        (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"), QStringLiteral("Show Clipping"),
-                     QStringLiteral("-"), QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
+    EXPECT_EQ(entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
+              (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"),
+                           QStringLiteral("Show Clipping"), QStringLiteral("Show Overlays"),
+                           QStringLiteral("-"), QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
     QStringList view{QStringLiteral("Show in Sidebar"), QStringLiteral("Sort By"), QStringLiteral("-"),
                      QStringLiteral("Show Log")};
     if (qt_common::canChooseAppearance()) {
@@ -2858,6 +2858,221 @@ TEST(MainWindowTest, MutedIdleChannelCanBeReplaced) {
 
     EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [cam9] replaced idle channel [cam1]")),
               nullptr);
+}
+
+// --- Overlays ---------------------------------------------------------------------------------------------
+
+viewer_core::ImageTags tagsWithOverlays(int count) {
+    std::vector<viewer_core::Overlay> overlays;
+    for (int i = 0; i < count; ++i) {
+        overlays.push_back(viewer_core::Rectangle{{1.0 + i, 1, 4, 4}, "box"});
+    }
+    return {.overlays = viewer_core::makeOverlays(std::move(overlays))};
+}
+
+visual_debug::ImageDescription descriptionWithOverlays(int count) {
+    visual_debug::ImageDescription description;
+    for (int i = 0; i < count; ++i) {
+        description.overlays.push_back(visual_debug::Rectangle{{1.0 + i, 1, 4, 4}, "box"});
+    }
+    return description;
+}
+
+ImageView* viewOf(MainWindow& window) { return window.findChild<ImageView*>(); }
+
+QToolButton* overlaysButtonOf(MainWindow& window) {
+    return infoBarOf(window)->findChild<QToolButton*>(QStringLiteral("overlaysButton"));
+}
+
+TEST(MainWindowTest, ShowOverlaysIsACheckedImageMenuAction) {
+    const auto window = makeTestWindow();
+    QAction* showOverlays = action(*window, "actionShowOverlays");
+    ASSERT_NE(showOverlays, nullptr);
+
+    EXPECT_TRUE(showOverlays->isCheckable());
+    EXPECT_TRUE(showOverlays->isChecked());
+    EXPECT_EQ(showOverlays->shortcuts(),
+              (QList<QKeySequence>{QKeySequence(QStringLiteral("Ctrl+Shift+O")), QKeySequence(Qt::Key_O)}));
+    EXPECT_FALSE(displayControlOf(*window)->rangeMenu()->actions().contains(showOverlays));
+}
+
+TEST(MainWindowTest, ImagesShowTheirOverlays) {
+    const auto window = makeTestWindow();
+
+    window->addImage("card", makeImage(), {.tags = tagsWithOverlays(3)});
+
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 3U);
+    ASSERT_NE(overlaysButtonOf(*window), nullptr);
+    EXPECT_FALSE(overlaysButtonOf(*window)->isHidden());
+    EXPECT_EQ(overlaysButtonOf(*window)->text(), QString::fromUtf8("◩ 3 overlays"));
+    EXPECT_TRUE(overlaysButtonOf(*window)->isChecked());
+
+    window->addImage("plain", makeImage());
+
+    EXPECT_TRUE(viewOf(*window)->overlays().empty());
+    EXPECT_TRUE(overlaysButtonOf(*window)->isHidden());
+}
+
+TEST(MainWindowTest, OneOverlayIsSingular) {
+    const auto window = makeTestWindow();
+
+    window->addImage("card", makeImage(), {.tags = tagsWithOverlays(1)});
+
+    EXPECT_EQ(overlaysButtonOf(*window)->text(), QString::fromUtf8("◩ 1 overlay"));
+}
+
+TEST(MainWindowTest, SwitchHidesOverlaysInTheViewOnly) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    window->addImage("white", cv::Mat(40, 40, CV_8UC1, cv::Scalar(255)),
+                     {.tags = {.overlays = viewer_core::makeOverlays(
+                                   {viewer_core::Rectangle{{0, 0, 40, 40}, "", {0, 0, 0xFF}}})}});
+    QApplication::processEvents();
+    const QColor withOverlays = viewedColour(*window);
+    ASSERT_NE(withOverlays, QColor(255, 255, 255));
+
+    overlaysButtonOf(*window)->click();
+    QApplication::processEvents();
+
+    EXPECT_FALSE(action(*window, "actionShowOverlays")->isChecked());
+    EXPECT_FALSE(viewOf(*window)->overlaysShown());
+    EXPECT_EQ(overlaysButtonOf(*window)->text(), QString::fromUtf8("◩ 1 overlay hidden"));
+    EXPECT_EQ(viewedColour(*window), QColor(255, 255, 255));
+    EXPECT_EQ(copiedPicture(*window, 1).pixelColor(20, 20), QColor(255, 255, 255));
+}
+
+TEST(MainWindowTest, CopyNeverHasOverlays) {
+    const auto window = makeTestWindow();
+    window->addImage("white", cv::Mat(40, 40, CV_8UC1, cv::Scalar(255)), {.tags = tagsWithOverlays(2)});
+
+    EXPECT_EQ(copiedPicture(*window, 1).pixelColor(2, 2), QColor(255, 255, 255));
+}
+
+TEST(MainWindowTest, SwitchStaysOffAcrossImages) {
+    const auto window = makeTestWindow();
+    window->addImage("first", makeImage(), {.tags = tagsWithOverlays(3)});
+    action(*window, "actionShowOverlays")->trigger();
+
+    window->addImage("second", makeImage(), {.tags = tagsWithOverlays(1)});
+
+    EXPECT_FALSE(viewOf(*window)->overlaysShown());
+    EXPECT_FALSE(overlaysButtonOf(*window)->isChecked());
+    EXPECT_EQ(overlaysButtonOf(*window)->text(), QString::fromUtf8("◩ 1 overlay hidden"));
+}
+
+TEST(MainWindowTest, OKeyTogglesWithTheThumbnailListFocused) {
+    const auto window = makeTestWindow();
+    showActive(*window);
+    window->addImage("card", makeImage(), {.tags = tagsWithOverlays(1)});
+    panelOf(*window)->setFocus();
+
+    QTest::keyClick(panelOf(*window), Qt::Key_O);
+
+    EXPECT_FALSE(action(*window, "actionShowOverlays")->isChecked());
+    EXPECT_FALSE(viewOf(*window)->overlaysShown());
+}
+
+TEST(MainWindowTest, DisplaySettingsAndClippingKeepOverlays) {
+    const auto window = makeTestWindow();
+    window->addImage("card", makeImage(), {.tags = tagsWithOverlays(3)});
+
+    action(*window, "actionShowClipping")->trigger();
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 3U);
+    rangeEntry(*window, QStringLiteral("Hold"))->trigger();
+
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 3U);
+    EXPECT_FALSE(overlaysButtonOf(*window)->isHidden());
+}
+
+TEST(MainWindowTest, LiveFramesBringTheirOwnOverlays) {
+    const auto window = makeTestWindow();
+
+    feedLive(*window, "camera", liveFrame(10), std::chrono::system_clock::now(), std::nullopt,
+             descriptionWithOverlays(2));
+    QApplication::processEvents();
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 2U);
+    EXPECT_EQ(overlaysButtonOf(*window)->text(), QString::fromUtf8("◩ 2 overlays"));
+
+    feedLive(*window, "camera", liveFrame(20));
+    QApplication::processEvents();
+    EXPECT_TRUE(viewOf(*window)->overlays().empty());
+    EXPECT_TRUE(overlaysButtonOf(*window)->isHidden());
+
+    feedLive(*window, "camera", liveFrame(30), std::chrono::system_clock::now(), std::nullopt,
+             descriptionWithOverlays(1));
+    QApplication::processEvents();
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 1U);
+    EXPECT_FALSE(overlaysButtonOf(*window)->isHidden());
+}
+
+TEST(MainWindowTest, FrozenChannelKeepsItsFramesOverlays) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "camera", liveFrame(10), std::chrono::system_clock::now(), std::nullopt,
+             descriptionWithOverlays(2));
+    QApplication::processEvents();
+
+    action(*window, "actionFreeze")->trigger();
+    feedLive(*window, "camera", liveFrame(20));
+    QApplication::processEvents();
+
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 2U);
+    action(*window, "actionFreeze")->trigger();
+    EXPECT_TRUE(viewOf(*window)->overlays().empty());
+}
+
+TEST(MainWindowTest, SnapshotKeepsOverlays) {
+    const auto window = makeTestWindow();
+    feedLive(*window, "camera", liveFrame(10), std::chrono::system_clock::now(), std::nullopt,
+             descriptionWithOverlays(2));
+    QApplication::processEvents();
+
+    action(*window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 2U);
+}
+
+TEST(MainWindowTest, KeptImagesKeepOverlaysAcrossARestart) {
+    const QTemporaryDir root;
+    setKeepImagesSetting(true);
+    {
+        const auto window = makeRestoredWindow(root.path());
+        ASSERT_NE(window, nullptr);
+        window->addImage("card", makeImage(), {.tags = tagsWithOverlays(4)});
+        ASSERT_TRUE(waitForStoredFiles(root.path(), 1));
+    }
+
+    const auto window = makeRestoredWindow(root.path());
+    ASSERT_NE(window, nullptr);
+    ASSERT_EQ(panelOf(*window)->listedIds().size(), 1U);
+    ASSERT_TRUE(panelOf(*window)->selectImage(panelOf(*window)->listedIds().front()));
+
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 4U);
+}
+
+TEST(MainWindowTest, RenameKeepsOverlays) {
+    const auto window = makeTestWindow();
+    window->addImage("card", makeImage(), {.tags = tagsWithOverlays(2)});
+
+    window->renameImage(1, QStringLiteral("passport"));
+
+    EXPECT_EQ(viewOf(*window)->overlays().size(), 2U);
+}
+
+TEST(MainWindowTest, ShowOverlaysIsOnAtEveryStart) {
+    const QTemporaryDir root;
+    {
+        const auto window = makeRestoredWindow(root.path());
+        ASSERT_NE(window, nullptr);
+        action(*window, "actionShowOverlays")->trigger();
+        ASSERT_FALSE(action(*window, "actionShowOverlays")->isChecked());
+    }
+
+    const auto window = makeRestoredWindow(root.path());
+    ASSERT_NE(window, nullptr);
+
+    EXPECT_TRUE(action(*window, "actionShowOverlays")->isChecked());
+    EXPECT_TRUE(viewOf(*window)->overlaysShown());
 }
 
 } // namespace

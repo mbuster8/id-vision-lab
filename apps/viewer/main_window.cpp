@@ -84,6 +84,8 @@ const QString kLogHeightKey = QStringLiteral("viewer/logHeight");
 
 QString picturesFolder() { return QStandardPaths::writableLocation(QStandardPaths::PicturesLocation); }
 
+QSize sizeOf(const cv::Mat& image) { return {image.cols, image.rows}; }
+
 bool isTextField(const QWidget* widget) {
     return qobject_cast<const QLineEdit*>(widget) != nullptr ||
            qobject_cast<const QTextEdit*>(widget) != nullptr ||
@@ -244,6 +246,13 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     displayControl->rangeMenu()->addSeparator();
     displayControl->rangeMenu()->addAction(m_ui->actionShowClipping);
     connect(m_ui->actionShowClipping, &QAction::toggled, this, &MainWindow::setShowClipping);
+    // Show Overlays, beside it and as a button in the info strip: one switch for the viewer, on at every
+    // start. O works like Space for Freeze, from anywhere but a text field.
+    m_ui->actionShowOverlays->setShortcuts(
+        {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O), QKeySequence(Qt::Key_O)});
+    m_ui->menuImage->addAction(m_ui->actionShowOverlays);
+    m_infoBar->setOverlayAction(m_ui->actionShowOverlays);
+    connect(m_ui->actionShowOverlays, &QAction::toggled, m_imageView, &ImageView::setOverlaysShown);
     // Freeze and Snapshot act on the live channel in view. Space freezes from anywhere but a text field,
     // which takes printable keys before shortcuts.
     m_ui->actionFreeze->setShortcuts(
@@ -740,12 +749,19 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     }
     m_currentId = id;
     m_lastHistoryId = id;
-    m_imageView->setImage(shownPicture(*entry, m_showClipping));
+    showPicture(shownPicture(*entry, m_showClipping), ImageView::KeepView::No, sizeOf(entry->original),
+                entry->origin.tags);
     m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
                                           entry->original.channels() == 1, entry->origin.tags.isHdr());
     showImageText(*entry);
     showRegionStatistics(); // a region kept for an image of the same size is now this one's
     updateEditActions();
+}
+
+void MainWindow::showPicture(const QImage& picture, ImageView::KeepView keep, QSize imageSize,
+                             const viewer_core::ImageTags& tags) {
+    m_imageView->setImage(picture, keep, imageSize, tags.overlays);
+    m_infoBar->setOverlayCount(static_cast<int>(tags.overlayList().size()));
 }
 
 QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping) const {
@@ -784,7 +800,8 @@ void MainWindow::setShowClipping(bool show) {
     if (m_liveChannel) {
         paintLiveFrame(ImageView::KeepView::IfSameSize);
     } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
-        m_imageView->setImage(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize);
+        showPicture(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize,
+                    sizeOf(entry->original), entry->origin.tags);
     }
 }
 
@@ -806,7 +823,8 @@ void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& setti
         return;
     }
     setDisplaySettings(entry->name, settings);
-    m_imageView->setImage(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize);
+    showPicture(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize,
+                sizeOf(entry->original), entry->origin.tags);
 }
 
 // Also forgets what was drawn with the name's old settings: its thumbnails, made again when next painted, and
@@ -961,12 +979,12 @@ bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
     const cv::Mat& frame = channel->shown;
     // Frames may change their channel count, or their tags.
     m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
-    m_imageView->setImage(qt_common::wrapAsQImage(viewer_core::toDisplayImage(
-                              frame, settingsFor(channel->name, channel->shownTags),
-                              {.size = liveDrawnSize(frame, keep),
-                               .tags = channel->shownTags,
-                               .showClipping = m_showClipping})),
-                          keep, QSize(frame.cols, frame.rows));
+    showPicture(qt_common::wrapAsQImage(
+                    viewer_core::toDisplayImage(frame, settingsFor(channel->name, channel->shownTags),
+                                                {.size = liveDrawnSize(frame, keep),
+                                                 .tags = channel->shownTags,
+                                                 .showClipping = m_showClipping})),
+                keep, sizeOf(frame), channel->shownTags);
     return true;
 }
 

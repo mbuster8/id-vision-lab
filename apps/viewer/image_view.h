@@ -1,5 +1,8 @@
 #pragma once
 
+#include "overlay_painter.h"
+
+#include "viewer_core/image_tags.h"
 #include "viewer_core/viewport.h"
 
 #include <QImage>
@@ -9,6 +12,7 @@
 #include <QWidget>
 
 #include <optional>
+#include <vector>
 
 class QPainter;
 
@@ -24,16 +28,24 @@ public:
 
     explicit ImageView(QWidget* parent = nullptr);
 
-    void setImage(const QImage& image, KeepView keep = KeepView::No);
+    // Each picture comes with the overlays drawn over it, in image pixels; a picture set without them shows
+    // none, so a caller that forgets them shows too little rather than another picture's.
+    void setImage(const QImage& image, KeepView keep = KeepView::No,
+                  viewer_core::ImageTags::Overlays overlays = {});
     // A picture standing for an image of imageSize pixels, made smaller to be drawn at the view's scale:
-    // zoom, pan and the pixel readout use imageSize, and the picture is stretched over it.
-    void setImage(const QImage& picture, KeepView keep, QSize imageSize);
+    // zoom, pan, the pixel readout and the overlays use imageSize, and the picture is stretched over it.
+    void setImage(const QImage& picture, KeepView keep, QSize imageSize,
+                  viewer_core::ImageTags::Overlays overlays = {});
     void clear();
     bool hasImage() const;
     // Device pixels per image pixel that a picture of an image this size, set with `keep`, will be drawn at;
     // 1 while the view has no size yet.
     double deviceScaleFor(QSize imageSize, KeepView keep) const;
-    const QImage& picture() const; // as set; null for none
+    const QImage& picture() const;                             // as set; null for none
+    const std::vector<viewer_core::Overlay>& overlays() const; // empty for none
+    // Shown at construction. Hiding them only repaints; the picture is not made again.
+    void setOverlaysShown(bool shown);
+    bool overlaysShown() const;
 
     // A region of the image drawn with Shift + drag, in image pixels, clipped to the image. A new picture of
     // the same image size keeps it; another size, or a left click without a drag, clears it.
@@ -74,4 +86,7 @@ private:
     std::optional<cv::Point2d> m_regionStart; // image point, while a Shift + drag draws a region
     std::optional<QRect> m_region;
     QStringList m_regionText;
+    viewer_core::ImageTags::Overlays m_overlays;
+    qt_common::OverlayPainter m_overlayPainter; // keeps the labels laid out between paints
+    bool m_overlaysShown = true;
 };
