@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <chrono>
 #include <functional>
@@ -449,6 +450,110 @@ TEST(LiveSender, DeliversThirtyFramesPerChannelToAServer) {
     }
     EXPECT_EQ(camera, 30);
     EXPECT_EQ(edges, 30);
+}
+
+// --- --outline
+// ----------------------------------------------------------------------------------------------
+
+TEST(LiveSender, ParsesOutline) {
+    const auto outlined = parse({"--outline"});
+    ASSERT_TRUE(outlined);
+    EXPECT_TRUE(outlined->outline);
+    EXPECT_FALSE(parse({})->outline);
+    EXPECT_TRUE(parse({"--pattern", "--outline"}));
+    EXPECT_FALSE(parse({"--outline", "--list-cameras"}));
+}
+
+const std::vector<cv::Point> kCorners{{100, 80}, {540, 100}, {520, 400}, {120, 380}};
+
+// A light card on a darker desk, `scale` times the 640×480 picture.
+cv::Mat cardFrame(int scale = 1) {
+    cv::Mat frame(480 * scale, 640 * scale, CV_8UC3, cv::Scalar::all(40));
+    std::vector<cv::Point> corners;
+    for (const cv::Point& corner : kCorners) {
+        corners.push_back(corner * scale);
+    }
+    cv::fillConvexPoly(frame, corners, cv::Scalar::all(220));
+    return frame;
+}
+
+// Each corner is within `tolerance` of a different found point.
+bool findsTheCorners(const std::vector<cv::Point2d>& found, int scale, double tolerance) {
+    if (found.size() != 4) {
+        return false;
+    }
+    std::vector<bool> used(found.size(), false);
+    for (const cv::Point& corner : kCorners) {
+        bool matched = false;
+        for (std::size_t i = 0; i < found.size() && !matched; ++i) {
+            if (!used[i] && cv::norm(found[i] - cv::Point2d(corner * scale)) <= tolerance) {
+                used[i] = true;
+                matched = true;
+            }
+        }
+        if (!matched) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TEST(LiveSender, FindsTheDocumentsFourCorners) {
+    const auto outline = live_sender::documentOutline(cardFrame());
+
+    ASSERT_TRUE(outline);
+    EXPECT_TRUE(findsTheCorners(*outline, 1, 4.0));
+}
+
+TEST(LiveSender, FindsItInALargeFrame) {
+    const auto outline = live_sender::documentOutline(cardFrame(3));
+
+    ASSERT_TRUE(outline);
+    EXPECT_TRUE(findsTheCorners(*outline, 3, 8.0));
+}
+
+TEST(LiveSender, NoOutlineInAPlainFrame) {
+    EXPECT_FALSE(live_sender::documentOutline(cv::Mat(480, 640, CV_8UC3, cv::Scalar::all(128))));
+}
+
+TEST(LiveSender, NoOutlineForASmallShape) {
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar::all(40));
+    cv::rectangle(frame, cv::Rect(300, 200, 20, 20), cv::Scalar::all(220), cv::FILLED);
+
+    EXPECT_FALSE(live_sender::documentOutline(frame));
+}
+
+TEST(LiveSender, SixteenBitFramesHaveOutlinesToo) {
+    cv::Mat frame16;
+    cardFrame().convertTo(frame16, CV_16U, 257.0);
+
+    const auto outline = live_sender::documentOutline(frame16);
+
+    ASSERT_TRUE(outline);
+    EXPECT_TRUE(findsTheCorners(*outline, 1, 4.0));
+}
+
+TEST(LiveSender, OutlineGoesWithTheCameraFrameOnly) {
+    const auto source = [] { return std::optional<cv::Mat>(cardFrame()); };
+
+    RecordingSender outlined;
+    live_sender::run(source, outlined, 2, [] { return true; }, {}, {}, true);
+    RecordingSender plain;
+    live_sender::run(source, plain, 2, [] { return true; }, {}, {}, false);
+
+    ASSERT_EQ(outlined.calls.size(), 4u);
+    for (std::size_t i = 0; i < 4; i += 2) {
+        const auto& overlays = outlined.calls[i].description.overlays;
+        ASSERT_EQ(overlays.size(), 1u);
+        const auto* polygon = std::get_if<visual_debug::Polygon>(&overlays.front());
+        ASSERT_NE(polygon, nullptr);
+        EXPECT_EQ(polygon->label, "Document");
+        EXPECT_TRUE(findsTheCorners(polygon->points, 1, 4.0));
+        EXPECT_TRUE(outlined.calls[i + 1].description.overlays.empty());
+    }
+    for (const auto& call : plain.calls) {
+        EXPECT_TRUE(call.description.overlays.empty());
+    }
 }
 
 } // namespace

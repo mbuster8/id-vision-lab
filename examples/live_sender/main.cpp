@@ -4,7 +4,7 @@
 // screen, with Freeze, Snapshot and the display range.
 //
 //     live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
-//                 [--name NAME] [--endpoint <uri>]
+//                 [--name NAME] [--outline] [--endpoint <uri>]
 //     live_sender --list-cameras
 //     live_sender --help
 //
@@ -13,7 +13,9 @@
 // own: a frame that is ready more than a frame late is skipped and counted, never counted as undelivered;
 // when the reading itself is too slow, the video plays slower instead. With --hdr the file is read with
 // FFmpeg's libraries instead of OpenCV's, as 16-bit frames tagged with the video's transfer, primaries and
-// nominal black and white (a live_sender built without them says so). The pattern is sent at --fps (30 by
+// nominal black and white (a live_sender built without them says so). With --outline each frame carries the
+// outline of the largest four-cornered shape in it, such as a card held to the camera, as an overlay the
+// viewer draws over the frame. The pattern is sent at --fps (30 by
 // default). Exit code: 0 when every frame sent was delivered, 1 when any was not, 2 for bad arguments or an
 // unreadable source.
 
@@ -57,7 +59,7 @@ constexpr std::size_t kFramesReadAhead = 3;
 
 constexpr const char* kUsage =
     "usage: live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]\n"
-    "                   [--name NAME] [--endpoint <uri>]\n"
+    "                   [--name NAME] [--outline] [--endpoint <uri>]\n"
     "       live_sender --list-cameras\n"
     "       live_sender --help\n";
 
@@ -76,6 +78,8 @@ constexpr const char* kExamples =
     "  live_sender --camera 1 --name phone    the same camera, as channels \"phone\" and \"phone edges\"\n"
     "  live_sender \"My video.mov\"             a video file in real time, in channels named after the file\n"
     "  live_sender --hdr \"iPhone HDR.MOV\"     an HDR video as 16-bit frames with its HLG or PQ tags\n"
+    "  live_sender --outline                  the first camera, with the outline of a card or passport\n"
+    "                                         held to it drawn over each frame\n"
     "  live_sender --pattern                  a moving test pattern, no camera needed\n"
     "  live_sender --pattern --size 3840x2160 --fps 30\n"
     "                                         a 4K load test\n"
@@ -319,8 +323,8 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, requestStop);
     visual_debug::Client client(visual_debug::ClientOptions{.endpoint = arguments->endpoint});
     const live_sender::ChannelNames names = live_sender::channelNames(*arguments);
-    const live_sender::Tally tally =
-        live_sender::run(next, client, arguments->frames, waitAndContinue, names, description);
+    const live_sender::Tally tally = live_sender::run(next, client, arguments->frames, waitAndContinue, names,
+                                                      description, arguments->outline);
 
     if (tally.camera.sent == 0 && !stopRequested) {
         std::cerr << "no frame could be read\n";

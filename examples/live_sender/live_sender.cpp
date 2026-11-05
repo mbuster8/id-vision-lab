@@ -4,6 +4,11 @@
 #include "visual_debug/wire_format.h"
 
 #include <opencv2/imgproc.hpp>
+// OpenCV 5 moved the contour shape functions (approxPolyDP, arcLength, contourArea, isContourConvex) from
+// imgproc into the geometry module; OpenCV 4 has no such header.
+#if __has_include(<opencv2/geometry.hpp>)
+#include <opencv2/geometry.hpp>
+#endif
 
 #include <algorithm>
 #include <charconv>
@@ -140,6 +145,8 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
             arguments.help = true;
         } else if (argument == "--hdr") {
             arguments.hdr = true;
+        } else if (argument == "--outline") {
+            arguments.outline = true;
         } else if (!argument.empty() && !argument.starts_with('-')) {
             if (!choose(FileSource{std::string(argument)})) {
                 return std::nullopt;
@@ -301,11 +308,52 @@ std::optional<cv::Mat> RealTimeFrames::next() {
 
 int RealTimeFrames::skipped() const { return m_skipped; }
 
+std::optional<std::vector<cv::Point2d>> documentOutline(const cv::Mat& frame) {
+    constexpr int kLongestSide = 640;
+    constexpr double kMinimumShare = 0.05;
+    if (frame.empty()) {
+        return std::nullopt;
+    }
+    const double scale = std::min(1.0, static_cast<double>(kLongestSide) / std::max(frame.cols, frame.rows));
+    cv::Mat small = frame;
+    if (scale < 1.0) {
+        cv::resize(frame, small, cv::Size(), scale, scale, cv::INTER_AREA);
+    }
+    cv::Mat edges = edgesOf(small);
+    cv::dilate(edges, edges, cv::Mat()); // closes the small gaps Canny leaves at corners
+    std::vector<std::vector<cv::Point>> contours;
+    // Every contour, inner ones included: a card on a cluttered desk is rarely the outermost.
+    cv::findContours(edges, contours, cv::RETR_LIST, cv::CHAIN_APPROX_SIMPLE);
+    const double minimumArea = kMinimumShare * small.cols * small.rows;
+    std::vector<cv::Point> best;
+    double bestArea = 0.0;
+    for (const std::vector<cv::Point>& contour : contours) {
+        std::vector<cv::Point> corners;
+        cv::approxPolyDP(contour, corners, 0.02 * cv::arcLength(contour, true), true);
+        if (corners.size() != 4 || !cv::isContourConvex(corners)) {
+            continue;
+        }
+        const double area = std::abs(cv::contourArea(corners));
+        if (area >= minimumArea && area > bestArea) {
+            best = std::move(corners);
+            bestArea = area;
+        }
+    }
+    if (best.empty()) {
+        return std::nullopt;
+    }
+    std::vector<cv::Point2d> points;
+    for (const cv::Point& corner : best) {
+        points.emplace_back(corner.x / scale, corner.y / scale);
+    }
+    return points;
+}
+
 // The edges are found on another thread while the frame goes out: a 4K frame's take about as long as sending
 // it.
 Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::ImageSender& sender,
           std::optional<int> frames, const std::function<bool()>& waitAndContinue, const ChannelNames& names,
-          const visual_debug::ImageDescription& description) {
+          const visual_debug::ImageDescription& description, bool outline) {
     Tally tally;
     while (!frames || tally.camera.sent < *frames) {
         if (!waitAndContinue()) {
@@ -316,7 +364,15 @@ Tally run(const std::function<std::optional<cv::Mat>()>& next, visual_debug::Ima
             break;
         }
         std::future<cv::Mat> edges = std::async(std::launch::async, [&frame] { return edgesOf(*frame); });
-        count(tally.camera, sender.sendLive(*frame, names.camera, description));
+        if (outline) {
+            visual_debug::ImageDescription described = description;
+            if (std::optional<std::vector<cv::Point2d>> corners = documentOutline(*frame)) {
+                described.overlays.push_back(visual_debug::Polygon{std::move(*corners), "Document"});
+            }
+            count(tally.camera, sender.sendLive(*frame, names.camera, described));
+        } else {
+            count(tally.camera, sender.sendLive(*frame, names.camera, description));
+        }
         count(tally.edges, sender.sendLive(edges.get(), names.edges));
     }
     return tally;

@@ -74,6 +74,7 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             live_sender_video
             ${live_sender_ffmpeg_libraries}
             opencv_videoio
+            opencv_imgproc
             visual_debug::visual_debug
             cppzmq
             nlohmann_json::nlohmann_json
