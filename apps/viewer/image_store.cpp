@@ -132,7 +132,17 @@ ImageStore::ImageStore(QString imagesFolder) : m_folder(std::move(imagesFolder))
 
 QString ImageStore::write(const std::string& name, const cv::Mat& original,
                           const viewer_core::ImageTags& tags) {
-    const auto encoded = visual_debug::encode(original, name, {.description = toDescription(tags)});
+    visual_debug::EncodeOptions options{.description = toDescription(tags)};
+    auto encoded = visual_debug::encode(original, name, options);
+    // A header that fitted when the image arrived may not any more: renamed to a longer name, or sent with
+    // numbers written more compactly than this encoder writes them. Keep the image, with the overlays that
+    // fit.
+    while (std::holds_alternative<visual_debug::EncodeError>(encoded) &&
+           !options.description.overlays.empty() &&
+           std::get<visual_debug::EncodeError>(encoded).reason == "header too large") {
+        options.description.overlays.pop_back();
+        encoded = visual_debug::encode(original, name, options);
+    }
     const auto* message = std::get_if<visual_debug::EncodedMessage>(&encoded);
     if (message == nullptr) {
         return {};

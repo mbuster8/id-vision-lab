@@ -1,4 +1,5 @@
 #include "image_store.h"
+#include "image_tags_conversion.h"
 
 #include "visual_debug/wire_format.h"
 
@@ -162,6 +163,65 @@ TEST(ImageStore, KeepsTheTags) {
 
     ASSERT_EQ(loaded.images.size(), 1U);
     EXPECT_EQ(loaded.images.front().origin.tags, tags);
+}
+
+TEST(ImageStore, KeepsOverlays) {
+    const QTemporaryDir folder;
+    ImageStore store(folder.path());
+    const viewer_core::ImageTags tags{.overlays = viewer_core::makeOverlays(
+                                          {viewer_core::Polygon{{{1, 1}, {3, 1}, {2, 2.5}}, "Document"},
+                                           viewer_core::Rectangle{{0, 0, 2, 1}, "MRZ", {0xE0, 0x50, 0x50}},
+                                           viewer_core::Circle{{2, 1}, 1}, viewer_core::Point{{0.5, 0.5}}})};
+
+    const QString key = store.write("card", smallImage(), tags);
+    ASSERT_TRUE(store.writeIndex({indexEntry(key, "card")}));
+    const Loaded loaded = loadEverything(store);
+
+    ASSERT_EQ(loaded.images.size(), 1U);
+    EXPECT_EQ(loaded.images.front().origin.tags, tags);
+}
+
+// An image arrives with a header near 64 KiB, then is renamed to a much longer name: the store writes the
+// header again under the new name, and keeps the image with as many overlays as still fit.
+TEST(ImageStore, KeepsAnImageWhoseOverlaysNoLongerFitTheHeader) {
+    // Each point is 24 bytes of header ("[123456.125,654321.375],"), so points are added until the header
+    // is about 63.5 KiB.
+    const cv::Point2d corner(123456.125, 654321.375);
+    std::vector<viewer_core::Overlay> overlays(
+        256, viewer_core::Polygon{std::vector<cv::Point2d>(4, corner), std::string(64, 'l')});
+    const auto headerBytes = [&overlays] {
+        const auto encoded = visual_debug::encode(
+            smallImage(), "card",
+            {.description = toDescription({.overlays = viewer_core::makeOverlays(overlays)})});
+        const auto* message = std::get_if<visual_debug::EncodedMessage>(&encoded);
+        return message != nullptr ? message->header.size() : std::size_t{0};
+    };
+    const std::size_t missing = (63 * 1024 + 512 - headerBytes()) / 24;
+    for (std::size_t i = 0; i < missing; ++i) {
+        std::get<viewer_core::Polygon>(overlays[i % overlays.size()]).points.push_back(corner);
+    }
+    const std::size_t arrivedBytes = headerBytes();
+    ASSERT_GT(arrivedBytes, 63U * 1024U);
+    ASSERT_LE(arrivedBytes, visual_debug::kMaxHeaderBytes);
+    const viewer_core::ImageTags tags{.overlays = viewer_core::makeOverlays(overlays)};
+    const QTemporaryDir folder;
+    ImageStore store(folder.path());
+    const std::string longName(1024, 'n');
+
+    const QString key = store.write(longName, smallImage(), tags);
+    ASSERT_FALSE(key.isEmpty());
+    ASSERT_TRUE(store.writeIndex({indexEntry(key, longName)}));
+    const Loaded loaded = loadEverything(store);
+
+    ASSERT_EQ(loaded.images.size(), 1U);
+    const auto& kept = loaded.images.front().origin.tags.overlayList();
+    ASSERT_FALSE(kept.empty());
+    EXPECT_LT(kept.size(), overlays.size());
+    EXPECT_TRUE(std::equal(kept.begin(), kept.end(), overlays.begin()));
+    QFile file(imagePath(folder, key));
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    const QByteArray bytes = file.readAll();
+    EXPECT_LE(qFromLittleEndian<quint32>(bytes.constData() + 7), visual_debug::kMaxHeaderBytes);
 }
 
 // A file a viewer wrote before images had tags has none in its header: it loads with empty tags.

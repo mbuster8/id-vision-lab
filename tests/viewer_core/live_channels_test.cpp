@@ -187,6 +187,20 @@ TEST(LiveChannels, ShownFrameKeepsItsTags) {
     EXPECT_EQ(channels.find("phone")->shownTags, hlg);
 }
 
+TEST(LiveChannels, FramesKeepTheirOwnOverlays) {
+    LiveChannels channels;
+    LiveFrameIn first = frameFor("camera", 1);
+    first.tags.overlays =
+        viewer_core::makeOverlays({viewer_core::Point{{1, 1}}, viewer_core::Rectangle{{0, 0, 1, 1}, "MRZ"}});
+    const LiveFrameIn second = frameFor("camera", 2);
+
+    channels.receive(first, kStart);
+    EXPECT_EQ(channels.find("camera")->shownTags.overlayList().size(), 2U);
+    channels.receive(second, kStart + 10ms);
+
+    EXPECT_TRUE(channels.find("camera")->shownTags.overlayList().empty());
+}
+
 TEST(LiveChannels, AgeComesFromSentAt) {
     LiveChannels channels;
     // The receive time's fraction of a millisecond is dropped, not rounded.

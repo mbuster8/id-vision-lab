@@ -57,6 +57,16 @@ TEST(ImageHistory, DuplicateKeepsTheTags) {
     EXPECT_EQ(history.find(copy->id)->origin.tags, kHlgTags);
 }
 
+TEST(ImageHistory, KeepsTheTagsOverlays) {
+    ImageHistory history;
+    const viewer_core::ImageTags tags{.overlays =
+                                          viewer_core::makeOverlays({viewer_core::Circle{{1, 1}, 2}})};
+
+    const auto id = history.add("card", greyImage(), {.tags = tags}).id;
+
+    EXPECT_EQ(history.find(id)->origin.tags, tags);
+}
+
 TEST(ImageHistory, AssignsIncreasingIdsNewestFirst) {
     ImageHistory history;
 
