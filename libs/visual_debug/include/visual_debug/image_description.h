@@ -1,6 +1,9 @@
 #pragma once
 
+#include "visual_debug/overlay.h"
+
 #include <optional>
+#include <vector>
 
 namespace visual_debug {
 
@@ -25,6 +28,8 @@ struct ImageDescription {
     ValueRange valueRange{}; // a plain struct, not std::optional, so `{.valueRange = {0, 1023}}` compiles
     std::optional<Transfer> transfer{};
     std::optional<Primaries> primaries{};
+    // Drawn over the image, in list order, later ones on top; see overlay.h.
+    std::vector<Overlay> overlays{};
 
     bool operator==(const ImageDescription&) const = default;
 };

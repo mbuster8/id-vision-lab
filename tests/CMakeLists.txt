@@ -17,6 +17,7 @@ endfunction()
 id_vision_lab_add_test_executable(visual_debug_tests
     SOURCES
         visual_debug/wire_format_test.cpp
+        visual_debug/overlay_wire_test.cpp
         visual_debug/endpoint_test.cpp
         visual_debug/client_server_test.cpp
         visual_debug/send_image_test.cpp

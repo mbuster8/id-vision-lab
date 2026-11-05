@@ -130,6 +130,40 @@ TEST(ClientServer, DescriptionReachesTheSink) {
     EXPECT_EQ(messages[1].description, description);
 }
 
+TEST(ClientServer, OverlaysReachTheSink) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+    const visual_debug::ImageDescription description{
+        .overlays = {visual_debug::Rectangle{{0.5, 1, 2, 1.5}, "MRZ", visual_debug::kOverlayRed}}};
+
+    EXPECT_EQ(client.sendLive(smallImage(), "camera", description), SendResult::Delivered);
+
+    ASSERT_TRUE(sink.waitForCount(1, 1s));
+    EXPECT_EQ(sink.messages().front().description, description);
+}
+
+// Then the header would be refused by the viewer, so nothing is sent at all.
+TEST(ClientServer, AHeaderOver64KiBIsInvalidImageAndNotSent) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+    visual_debug::ImageDescription description;
+    for (int i = 0; i < 256; ++i) {
+        description.overlays.push_back(
+            visual_debug::Polygon{std::vector<cv::Point2d>(1000, cv::Point2d(123456.789, 1.5))});
+    }
+
+    EXPECT_EQ(client.send(smallImage(), "heavy", description), SendResult::InvalidImage);
+    EXPECT_EQ(client.send(smallImage(), "light"), SendResult::Delivered);
+
+    ASSERT_TRUE(sink.waitForCount(1, 1s));
+    EXPECT_EQ(sink.messages().front().name, "light");
+    EXPECT_EQ(sink.count(), 1u);
+}
+
 TEST(ClientServer, StillsStayStills) {
     CollectingSink sink;
     Server server(sink, {.endpoint = kAnyLoopbackPort});

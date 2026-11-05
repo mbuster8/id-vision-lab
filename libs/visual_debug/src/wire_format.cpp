@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -218,6 +219,293 @@ std::optional<int> readInteger(const Json& header, const char* key, int min, int
     return value ? std::optional<int>(static_cast<int>(*value)) : std::nullopt;
 }
 
+// --- Overlays
+// -----------------------------------------------------------------------------------------------
+
+template <class... F> struct Overloaded : F... {
+    using F::operator()...;
+};
+template <class... F> Overloaded(F...) -> Overloaded<F...>;
+
+using OrderedJson = nlohmann::ordered_json;
+
+constexpr std::string_view kHexDigits = "0123456789ABCDEF";
+
+// A thousandth of a pixel is far below anything drawn, and keeps a float's noise out of the header.
+double rounded(double value) { return std::round(value * 1000.0) / 1000.0; }
+
+bool withinLimit(double value) { return std::isfinite(value) && std::abs(value) <= kMaxOverlayCoordinate; }
+
+// Within the limit every whole number is exact as an integer, so it goes out without a fraction.
+OrderedJson numberField(double value) {
+    if (value == std::trunc(value)) {
+        return static_cast<std::int64_t>(value);
+    }
+    return value;
+}
+
+// The rounded values, or nothing when any of them is one the viewer would refuse.
+template <std::size_t N>
+std::optional<std::array<double, N>> roundedWithinLimit(std::array<double, N> values) {
+    for (double& value : values) {
+        value = rounded(value);
+        if (!withinLimit(value)) {
+            return std::nullopt;
+        }
+    }
+    return values;
+}
+
+OrderedJson withLabelAndColour(OrderedJson item, const std::string& label, const Colour& colour) {
+    if (!label.empty()) {
+        item["label"] = truncateUtf8(toValidUtf8(label), kMaxLabelBytes);
+    }
+    if (colour != kOverlayGreen) {
+        std::string text = "#";
+        for (const std::uint8_t component : {colour.r, colour.g, colour.b}) {
+            text += kHexDigits[component >> 4];
+            text += kHexDigits[component & 0x0F];
+        }
+        item["colour"] = text;
+    }
+    return item;
+}
+
+// One overlay as the header carries it, or nothing for one the viewer would refuse (checked after rounding,
+// so a radius of 0.0004 is refused here as the 0 it would arrive as).
+std::optional<OrderedJson> overlayField(const Overlay& overlay) {
+    return std::visit(
+        Overloaded{
+            [](const Polygon& polygon) -> std::optional<OrderedJson> {
+                if (polygon.points.size() < 3 || polygon.points.size() > kMaxPolygonPoints) {
+                    return std::nullopt;
+                }
+                auto points = OrderedJson::array();
+                for (const cv::Point2d& point : polygon.points) {
+                    const auto xy = roundedWithinLimit(std::array{point.x, point.y});
+                    if (!xy) {
+                        return std::nullopt;
+                    }
+                    points.push_back(OrderedJson::array({numberField((*xy)[0]), numberField((*xy)[1])}));
+                }
+                OrderedJson item = OrderedJson::object();
+                item["shape"] = "polygon";
+                item["points"] = std::move(points);
+                return withLabelAndColour(std::move(item), polygon.label, polygon.colour);
+            },
+            [](const Rectangle& rectangle) -> std::optional<OrderedJson> {
+                const auto& r = rectangle.rect;
+                const auto values = roundedWithinLimit(std::array{r.x, r.y, r.width, r.height});
+                if (!values || (*values)[2] <= 0.0 || (*values)[3] <= 0.0) {
+                    return std::nullopt;
+                }
+                OrderedJson item = OrderedJson::object();
+                item["shape"] = "rectangle";
+                item["x"] = numberField((*values)[0]);
+                item["y"] = numberField((*values)[1]);
+                item["width"] = numberField((*values)[2]);
+                item["height"] = numberField((*values)[3]);
+                return withLabelAndColour(std::move(item), rectangle.label, rectangle.colour);
+            },
+            [](const Circle& circle) -> std::optional<OrderedJson> {
+                const auto values =
+                    roundedWithinLimit(std::array{circle.centre.x, circle.centre.y, circle.radius});
+                if (!values || (*values)[2] <= 0.0) {
+                    return std::nullopt;
+                }
+                OrderedJson item = OrderedJson::object();
+                item["shape"] = "circle";
+                item["x"] = numberField((*values)[0]);
+                item["y"] = numberField((*values)[1]);
+                item["radius"] = numberField((*values)[2]);
+                return withLabelAndColour(std::move(item), circle.label, circle.colour);
+            },
+            [](const Point& point) -> std::optional<OrderedJson> {
+                const auto values = roundedWithinLimit(std::array{point.at.x, point.at.y});
+                if (!values) {
+                    return std::nullopt;
+                }
+                OrderedJson item = OrderedJson::object();
+                item["shape"] = "point";
+                item["x"] = numberField((*values)[0]);
+                item["y"] = numberField((*values)[1]);
+                return withLabelAndColour(std::move(item), point.label, point.colour);
+            },
+        },
+        overlay);
+}
+
+// The overlays the viewer would accept, at most kMaxOverlays of them; an empty array when none is left.
+OrderedJson overlaysField(const std::vector<Overlay>& overlays) {
+    auto field = OrderedJson::array();
+    for (const Overlay& overlay : overlays) {
+        if (field.size() == kMaxOverlays) {
+            break;
+        }
+        if (auto item = overlayField(overlay)) {
+            field.push_back(std::move(*item));
+        }
+    }
+    return field;
+}
+
+constexpr const char* kOverlaysReason = "overlays is not a list of at most 256 shapes";
+constexpr const char* kShapeReason = "overlay is not an object with a known shape";
+constexpr const char* kGeometryReason = "overlay geometry is missing or out of range";
+constexpr const char* kPolygonReason = "polygon does not have 3 to 1024 points";
+constexpr const char* kLabelReason = "overlay label is not a string of at most 64 bytes";
+constexpr const char* kColourReason = "overlay colour is not #RRGGBB";
+
+// Every read below takes a reference into the parsed header and looks up only the keys it expects: a copy of
+// a deeply nested value, or a walk over an unknown key's, would recurse once per level on the receive thread.
+std::optional<double> readCoordinate(const Json& value) {
+    if (!value.is_number()) {
+        return std::nullopt;
+    }
+    const double number = value.get<double>();
+    return withinLimit(number) ? std::optional<double>(number) : std::nullopt;
+}
+
+std::optional<double> readCoordinate(const Json& item, const char* key) {
+    const auto it = item.find(key);
+    return it == item.end() ? std::nullopt : readCoordinate(*it);
+}
+
+std::optional<double> readSize(const Json& item, const char* key) {
+    const auto value = readCoordinate(item, key);
+    return value && *value > 0.0 ? value : std::nullopt;
+}
+
+int hexValue(char digit) {
+    const auto position = kHexDigits.find(static_cast<char>(std::toupper(static_cast<unsigned char>(digit))));
+    return position == std::string_view::npos ? -1 : static_cast<int>(position);
+}
+
+std::optional<Colour> readColour(const Json& value) {
+    if (!value.is_string()) {
+        return std::nullopt;
+    }
+    const auto& text = value.get_ref<const std::string&>();
+    if (text.size() != 7 || text[0] != '#') {
+        return std::nullopt;
+    }
+    std::array<std::uint8_t, 3> components{};
+    for (std::size_t i = 0; i < components.size(); ++i) {
+        const int high = hexValue(text[1 + 2 * i]);
+        const int low = hexValue(text[2 + 2 * i]);
+        if (high < 0 || low < 0) {
+            return std::nullopt;
+        }
+        components[i] = static_cast<std::uint8_t>(high * 16 + low);
+    }
+    return Colour{components[0], components[1], components[2]};
+}
+
+std::variant<std::vector<cv::Point2d>, DecodeError> readPolygonPoints(const Json& item) {
+    const auto field = item.find("points");
+    if (field == item.end() || !field->is_array() || field->size() < 3 || field->size() > kMaxPolygonPoints) {
+        return DecodeError{kPolygonReason};
+    }
+    std::vector<cv::Point2d> points;
+    points.reserve(field->size());
+    for (const Json& point : *field) {
+        if (!point.is_array() || point.size() != 2 || !point[0].is_number() || !point[1].is_number()) {
+            return DecodeError{kPolygonReason};
+        }
+        const auto x = readCoordinate(point[0]);
+        const auto y = readCoordinate(point[1]);
+        if (!x || !y) {
+            return DecodeError{kGeometryReason};
+        }
+        points.emplace_back(*x, *y);
+    }
+    return points;
+}
+
+std::variant<Overlay, DecodeError> readOverlay(const Json& item) {
+    const auto shape = item.is_object() ? item.find("shape") : item.end();
+    if (!item.is_object() || shape == item.end() || !shape->is_string()) {
+        return DecodeError{kShapeReason};
+    }
+    const auto& shapeName = shape->get_ref<const std::string&>();
+    Overlay overlay;
+    if (shapeName == "polygon") {
+        auto points = readPolygonPoints(item);
+        if (const auto* error = std::get_if<DecodeError>(&points)) {
+            return *error;
+        }
+        overlay = Polygon{.points = std::get<std::vector<cv::Point2d>>(std::move(points))};
+    } else if (shapeName == "rectangle") {
+        const auto x = readCoordinate(item, "x");
+        const auto y = readCoordinate(item, "y");
+        const auto width = readSize(item, "width");
+        const auto height = readSize(item, "height");
+        if (!x || !y || !width || !height) {
+            return DecodeError{kGeometryReason};
+        }
+        overlay = Rectangle{.rect = {*x, *y, *width, *height}};
+    } else if (shapeName == "circle") {
+        const auto x = readCoordinate(item, "x");
+        const auto y = readCoordinate(item, "y");
+        const auto radius = readSize(item, "radius");
+        if (!x || !y || !radius) {
+            return DecodeError{kGeometryReason};
+        }
+        overlay = Circle{.centre = {*x, *y}, .radius = *radius};
+    } else if (shapeName == "point") {
+        const auto x = readCoordinate(item, "x");
+        const auto y = readCoordinate(item, "y");
+        if (!x || !y) {
+            return DecodeError{kGeometryReason};
+        }
+        overlay = Point{.at = {*x, *y}};
+    } else {
+        return DecodeError{kShapeReason};
+    }
+
+    std::string label;
+    if (const auto field = item.find("label"); field != item.end()) {
+        if (!field->is_string() || field->get_ref<const std::string&>().size() > kMaxLabelBytes) {
+            return DecodeError{kLabelReason};
+        }
+        label = field->get_ref<const std::string&>();
+    }
+    Colour colour = kOverlayGreen;
+    if (const auto field = item.find("colour"); field != item.end()) {
+        const auto read = readColour(*field);
+        if (!read) {
+            return DecodeError{kColourReason};
+        }
+        colour = *read;
+    }
+    std::visit(
+        [&](auto& shapeValue) {
+            shapeValue.label = std::move(label);
+            shapeValue.colour = colour;
+        },
+        overlay);
+    return overlay;
+}
+
+std::variant<std::vector<Overlay>, DecodeError> readOverlays(const Json& field) {
+    if (!field.is_array() || field.size() > kMaxOverlays) {
+        return DecodeError{kOverlaysReason};
+    }
+    std::vector<Overlay> overlays;
+    overlays.reserve(field.size());
+    for (const Json& item : field) {
+        auto overlay = readOverlay(item);
+        if (const auto* error = std::get_if<DecodeError>(&overlay)) {
+            return *error;
+        }
+        overlays.push_back(std::get<Overlay>(std::move(overlay)));
+    }
+    return overlays;
+}
+
+// --- Decoding
+// -----------------------------------------------------------------------------------------------
+
 std::variant<ImageMessage, DecodeError> decodeChecked(std::string_view headerText,
                                                       std::span<const std::byte> pixels) {
     if (headerText.size() > kMaxHeaderBytes) {
@@ -287,7 +575,7 @@ std::variant<ImageMessage, DecodeError> decodeChecked(std::string_view headerTex
         sentAt = SentTime{std::chrono::milliseconds(*milliseconds)};
     }
 
-    // The image description: all three optional, on any image.
+    // The image description: every field optional, on any image.
     ImageDescription description;
     if (const auto field = header.find("valueRange"); field != header.end()) {
         const auto range = readRange(*field);
@@ -307,6 +595,13 @@ std::variant<ImageMessage, DecodeError> decodeChecked(std::string_view headerTex
         if (!description.primaries) {
             return DecodeError{"primaries is not bt709 or bt2020"};
         }
+    }
+    if (const auto field = header.find("overlays"); field != header.end()) {
+        auto overlays = readOverlays(*field);
+        if (const auto* error = std::get_if<DecodeError>(&overlays)) {
+            return *error;
+        }
+        description.overlays = std::get<std::vector<Overlay>>(std::move(overlays));
     }
 
     const auto expectedBytes = pixelByteCount(*rows, *cols, *channels, *depth);
@@ -380,9 +675,16 @@ std::variant<EncodedMessage, EncodeError> encode(const cv::Mat& image, std::stri
     if (description.primaries) {
         header["primaries"] = nameOf(kPrimaries, *description.primaries);
     }
+    if (auto overlays = overlaysField(description.overlays); !overlays.empty()) {
+        header["overlays"] = std::move(overlays);
+    }
 
     EncodedMessage message;
     message.header = header.dump();
+    // Only overlays can make it this large; the viewer would refuse it, so it is never sent.
+    if (message.header.size() > kMaxHeaderBytes) {
+        return EncodeError{"header too large"};
+    }
     // A region of interest keeps its parent's row stride; the wire carries tightly packed rows.
     message.pixels = image.isContinuous() ? image : image.clone();
     return message;

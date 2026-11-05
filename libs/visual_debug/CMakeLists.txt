@@ -2,6 +2,7 @@ add_library(visual_debug STATIC
     src/client.cpp
     src/endpoint.cpp
     src/image_sender.cpp
+    src/overlay.cpp
     src/send_image.cpp
     src/server.cpp
     src/wire_format.cpp)
