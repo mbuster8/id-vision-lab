@@ -13,7 +13,8 @@ build.
 | `visual_debug_example_sender` (the **Visual Debug Example Sender**) | A small Qt app: open an image file and send it to the viewer. Shows how a GUI application uses the library. |
 | `pipeline_demo` | A command-line OpenCV pipeline that sends the result of each of its ten stages. Exercises every image type the viewer handles. |
 | `minimal_sender` | The smallest real use of the library: one include, one call per image. |
-| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels, the frames and their Canny edges, named after the source (`camera 0`, the video file's name) or as you name them. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
+| `overlay_sender` | Sends a made-up ID card with overlays: the shapes a document detector would find in it, drawn by the viewer over the image (see [worked example 7](#7-show-what-your-code-found-overlays)). |
+| `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels, the frames and their Canny edges, named after the source (`camera 0`, the video file's name) or as you name them. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags; with `--outline`, each frame carries the outline of a card held to the camera as an overlay. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
 
 All senders reach the viewer through the `visual_debug` library, over ZeroMQ on `tcp://127.0.0.1:7139` by
 default. Start the viewer first.
@@ -184,6 +185,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | **View → Show Log** (⌘L) | Open or close the activity log, as **Log ▴** in the status bar does (see [Activity log](#activity-log)). |
 | **Image → Range**, **Image → Colours** | The same choices as the info strip's **Range** and **Colours** buttons (see [Display range and colours](#display-range-and-colours)). |
 | **Image → Show Clipping** (⇧⌘K) | Mark the pixels at or beyond the ends of the range in use, in the view (see [Display range and colours](#display-range-and-colours)). Also at the foot of the **Range** button's menu. |
+| **Image → Show Overlays** (⇧⌘O, or O) | Draw the shapes a sender attached to the image or frame over it, or hide them; on at every start (see [Overlays](#overlays)). O works from anywhere but a text field. Also the info strip's **◩ overlays** button. |
 | **Image → Freeze** (⇧⌘T, or Space) | Keep a live channel's frame in view while frames go on arriving; again to show the newest. Space freezes from anywhere but a text field or a button that has the keyboard focus, which Space presses instead. Only while a live channel is shown (see [Live channels](#live-channels)). |
 | **Image → Snapshot** (⌘T) | Copy the live frame in view into the history, as `camera 14:03:22.517`. Only while a live channel is shown. |
 | **View → Appearance** | **System** (the default) follows the system's light or dark appearance; **Light** and **Dark** keep one whatever the system does. The choice is kept, and the example sender shares it (see [Running the example sender](#running-the-example-sender)). Needs Qt 6.8 or newer: built with older Qt, the menu is absent and both programs follow the system. |
@@ -331,7 +333,9 @@ One line above the image shows its name, a pencil and its details, for example
 element) for a received image, and the file's size on disk, marked `file`, for an opened one. Sizes use decimal
 units, as Finder shows them. With no image, the strip is hidden. At its right end are the **Range** and
 **Colours** buttons (see [Display range and colours](#display-range-and-colours)) and, while a live channel is
-shown, **Freeze** and **Snapshot**; a live channel's name has no pencil.
+shown, **Freeze** and **Snapshot**; a live channel's name has no pencil. Before them, while the image or frame
+in view has overlays, a **◩ 3 overlays** button switches them off and on, and reads **◩ 3 overlays hidden**
+while they are off (see [Overlays](#overlays)).
 
 An image sent with a description (see [worked example 1](#1-one-line-debugging-with-sendimage)) names it
 after its type: its transfer, primaries and value range, for example
@@ -380,6 +384,26 @@ four significant digits. NaN and infinite values are left out of the figures and
 The region stays while the images or frames shown have the same size, so you can compare them; on a live
 channel its figures follow the frame in view, refreshed twice a second. A click in the view, Esc (unless a text
 field has the keyboard), or an image of another size clears it. A plain drag still pans.
+
+### Overlays
+
+A sender can attach shapes to an image or a live frame: what its code found in it, such as a document's
+outline, the holder's photo or an MRZ band (see [worked example 7](#7-show-what-your-code-found-overlays) and
+`live_sender --outline`). The viewer draws each one over the picture as a see-through fill with a solid edge in
+the shape's colour (light green unless the sender names another), with its label on a small tab at its
+top-left corner. The shapes follow the zoom and pan; the edges, the dots of points and the tabs keep their size
+on screen, so the shapes stay sharp at any zoom.
+
+One switch shows or hides them all: **Image → Show Overlays** (⇧⌘O, or O), or the **◩ overlays** button in the
+info strip, which shows only while the picture in view has overlays and counts them. The switch is for the
+viewer as a whole, so an image shown after it is off shows its overlays hidden too, and it is on again at every
+start.
+
+Overlays change only what the view draws. The pixel readout, region statistics and Show Clipping read the
+original values; Copy Image and Save Image give the image without them; thumbnails and live rows show none.
+Overlays stay with their image: a live frame shows its own, and a frozen frame keeps them, a snapshot and a
+renamed image keep them, and so do images kept between sessions. A kept image renamed to a much longer name may
+keep fewer of them if its header would otherwise pass the format's 64 KiB.
 
 ### How images are displayed
 
@@ -493,7 +517,7 @@ this is how a vision program uses the library, doing the processing while the vi
 
 ```text
 live_sender [--camera N | [--hdr] <video file> | --pattern [--size WxH] [--fps N]] [--frames N]
-            [--name NAME] [--endpoint <uri>]
+            [--name NAME] [--outline] [--endpoint <uri>]
 live_sender --list-cameras
 live_sender --help
 ```
@@ -512,6 +536,7 @@ waiting for the closing one.
 | `live_sender --camera 1 --name phone` | The same camera as channels `phone` and `phone edges`. |
 | `live_sender "path/to/My video.mp4"` | Plays a video file in real time, as channels `My video.mp4` and `My video.mp4 edges`, and stops at its end. |
 | `live_sender --hdr "path/to/iPhone HDR.MOV"` | Plays a phone's HDR video as 16-bit frames with its HLG or PQ tags; the viewer tone-maps it (see [HDR video](#hdr-video)). |
+| `live_sender --outline` | Streams the first camera with the outline of a card or passport held to it drawn over each frame (see [Overlays](#overlays)). |
 | `live_sender --pattern` | Streams a moving test pattern; no camera or file needed. |
 | `live_sender --pattern --size 3840x2160 --fps 30` | A 4K load test: compare `fps in` with `drawn` in the info strip. |
 | `live_sender --pattern --endpoint tcp://127.0.0.1:7140` | Streams to a second viewer, started with `--endpoint tcp://127.0.0.1:7140`. |
@@ -529,6 +554,7 @@ leave the folder out.
 | *(none of the three)* | The same as `--camera 0`. |
 | `--frames N` | Stop after `N` frames. Without it, a camera runs until Ctrl+C and a file until its end. |
 | `--name NAME` | Name the channels `NAME` and `NAME edges` instead of after the source (`camera N`, the file's name, or `camera` and `edges` for the pattern), for instance to tell two patterns apart on one viewer; the summary uses the same names. An empty name, one that is not valid UTF-8, or one longer than 1018 bytes (so that `NAME edges` fits the 1024 a channel name may have), is a usage error. |
+| `--outline` | Send each frame with the outline of the largest convex four-cornered shape in it (a card, a passport page), when it covers at least 5 % of the frame, as an overlay labelled `Document`. Found on a copy at most 640 pixels on its longest side, before the frame is sent, since the overlay travels with it. A demonstration of overlays, not a document detector. |
 | `--endpoint <uri>` | The viewer to send to: by default `$VISUAL_DEBUG_ENDPOINT` if set, else `tcp://127.0.0.1:7139`. |
 | `--list-cameras` | Print the camera numbers that open, with their frame size, and exit. On macOS, which numbers cameras without gaps, it stops at the first number that does not open; elsewhere it tries 0 to 9. OpenCV cannot read cameras' names, so this is how you find your USB camera's number. |
 | `--help`, `-h` | Print the usage and the examples above, and exit. |
@@ -621,7 +647,7 @@ viewer, the first send waits up to `replyTimeout` (500 ms by default) and later 
 | `Delivered` | The viewer accepted the image. | Nothing. |
 | `ViewerUnavailable` | No viewer is listening, or a retry back-off is running after a failure (1 s by default). | Start the viewer. The next send after the back-off connects; no restart of your program is needed. |
 | `Rejected` | The viewer answered with an error. Usually it is busy (eight images were waiting for its display for over 200 ms) or paused, or, for a live frame, it already shows as many live channels as it can, or the frame would take them past their memory budget (`too many live channels`). | Send less often, or ignore it; the viewer is still running. A paused viewer takes images again once resumed. |
-| `InvalidImage` | The image is empty, not 2-D, larger than 32768 pixels in a dimension or 512 MiB in total, or of a type the format does not carry (more than four channels, or the OpenCV 5 depths `16F`, `16BF`, `Bool`, `64U`, `64S`, `32U`). Nothing was sent. | Convert the image, for example with `convertTo(CV_32F)`. |
+| `InvalidImage` | The image is empty, not 2-D, larger than 32768 pixels in a dimension or 512 MiB in total, or of a type the format does not carry (more than four channels, or the OpenCV 5 depths `16F`, `16BF`, `Bool`, `64U`, `64S`, `32U`); or, once a viewer is reachable, its overlays would make the header larger than 64 KiB (with no viewer, such a send returns `ViewerUnavailable` like any other). Nothing was sent. | Convert the image, for example with `convertTo(CV_32F)`; send fewer or simpler overlays. |
 | `Timeout` | The image went out but no answer came back in time. The deadline grows by 10 ms per MiB, so large images are not cut short. | Check that the viewer is not frozen. The connection is rebuilt automatically. |
 | `InvalidEndpoint` | The endpoint string cannot be used, for example an empty string or `tcp://localhost` without a port. | Fix the endpoint. |
 
@@ -688,8 +714,9 @@ visual_debug::sendLive(frame, "phone", {.valueRange = {0, 65535},
                                         .primaries = visual_debug::Primaries::Bt2020});
 ```
 
-Every field is optional. The description travels in the `valueRange`, `transfer` and `primaries` header
-fields; a viewer that predates them ignores them. This viewer shows the image from the range's minimum to its
+Every field is optional, and the description can also carry overlays (see
+[worked example 7](#7-show-what-your-code-found-overlays)). The description travels in the `valueRange`,
+`transfer`, `primaries` and `overlays` header fields; a viewer that predates them ignores them. This viewer shows the image from the range's minimum to its
 maximum in Auto and Hold, offers the HDR range for HLG and PQ (see
 [Display range and colours](#display-range-and-colours)), and names the description in the info strip.
 
@@ -874,3 +901,37 @@ target_link_libraries(my_app PRIVATE visual_debug::visual_debug opencv_imgcodecs
 Linking `visual_debug::visual_debug` brings its include folder, C++20 and OpenCV core with it. Your own
 project still finds the OpenCV modules it uses itself (here `imgcodecs` for `cv::imread`). The `main.cpp`
 of example 2 builds with exactly this file.
+
+### 7. Show what your code found: overlays
+
+`examples/overlay_sender/main.cpp` sends a made-up ID card with the shapes a document detector would find in
+it. They travel with the image as its description's `overlays`, and the viewer draws them over it (see
+[Overlays](#overlays)); the image's own pixels are never drawn on, so the readout still shows its values:
+
+```cpp
+const visual_debug::ImageDescription found{
+    .overlays = {
+        visual_debug::Polygon{visual_debug::toPoints(corners), "Document"},
+        visual_debug::Rectangle{{300, 280, 300, 380}, "Photo"},
+        visual_debug::Polygon{
+            {{250, 755}, {1350, 745}, {1352, 862}, {252, 872}}, "MRZ", visual_debug::kOverlayRed},
+        visual_debug::Circle{{450, 430}, 110}, // the face, without a label
+        visual_debug::Point{{210, 170}, "corner"},
+    }};
+
+const visual_debug::SendResult result = visual_debug::sendImage(card, "card with overlays", found);
+```
+
+```text
+$ build/debug/examples/overlay_sender/overlay_sender
+card with overlays: Delivered
+```
+
+A shape is a `Polygon` (3 to 1024 points; `visual_debug::toPoints` takes an OpenCV contour or a
+`cv::RotatedRect`), a `Rectangle`, a `Circle` or a `Point`, in image pixels, each with an optional label of up to
+64 bytes and a colour (`kOverlayGreen` by default; `kOverlayRed`, `kOverlayAmber`, or any `{r, g, b}`), up to 256
+per image. Choosing the colour is how a program shows a result, for example red while a quality check fails and
+green once it passes; the viewer never interprets it. Write the names qualified, as here: Windows' `<windows.h>`
+declares `Polygon` and `Rectangle` functions of its own. `sendLive` takes the same description, so a live
+frame carries its own overlays, and they never lag behind it. Shapes the viewer would refuse are left out
+(see [the wire format](wire-format.md#overlays)).

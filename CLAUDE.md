@@ -49,7 +49,8 @@ and data folders: renaming an app moves them.
 ## Layout
 
 `libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `apps/viewer` ·
-`apps/example_sender` · `apps/qt_common` · `examples/{pipeline_demo,minimal_sender,live_sender}` ·
+`apps/example_sender` · `apps/qt_common` ·
+`examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
 the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, macOS bundle icons) · `scripts/`
 (`check.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·

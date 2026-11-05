@@ -47,10 +47,14 @@ visual_debug::sendLive(frame, "phone", {.valueRange = {4100, 60219},
 - **Display range and colours**: Auto, Hold and Fixed ranges, Grey, Turbo and Viridis maps, per image name.
 - **HDR video**: HLG and PQ frames tone-mapped for an SDR screen (ITU-R BT.2100, BT.2408), every value still
   readable, and a value-range hint that Auto and Hold use.
+- **Overlays**: a sender attaches shapes to an image or a live frame (a document's outline, a photo, an MRZ
+  band), each with a label and a colour; the viewer draws them as see-through highlights over the picture,
+  sharp at any zoom, behind one switch, and never changes the values you read.
 - **Show Clipping** marks the pixels at the ends of the range, so glare and crushed shadows stand out at
   any zoom; **region statistics** (Shift-drag) give a rectangle's minimum, maximum, mean and σ per channel.
 - **`live_sender`**, a ready-made streamer: a camera, a video file (`.mov`, `.mp4`, `.mkv`, …), a phone's
-  HDR video (HLG or PQ) as 16-bit frames with `--hdr`, or a test pattern, in real time.
+  HDR video (HLG or PQ) as 16-bit frames with `--hdr`, or a test pattern, in real time; with `--outline`, a
+  card held to the camera gets its outline drawn over each frame.
 
 This started as my bachelor's thesis in 2013, written for Qt 4 and OpenCV 2.4 on Ubuntu. In 2026 I
 brought it back: ported to Qt 6 and OpenCV 5, restructured, tested and documented. What changed, and why,
@@ -154,6 +158,9 @@ open build/debug/apps/example_sender/visual_debug_example_sender.app
 # The smallest sender: three thresholded images
 build/debug/examples/minimal_sender/minimal_sender
 
+# Overlays: an ID card with its outline, photo, MRZ band and face marked
+build/debug/examples/overlay_sender/overlay_sender
+
 # Live channels: every example, with what it does
 build/debug/examples/live_sender/live_sender --help
 ```
@@ -233,7 +240,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | Document | Contents |
 |---|---|
 | [Tour of live channels](docs/live-channels-tour.md) | Nine stops through live channels, cameras, video files, several senders and HDR video, with what to expect at each |
-| [User guide](docs/user-guide.md) | Running each program, `live_sender`'s examples, viewer controls, HDR, clipping and region statistics, configuration, send results, six worked examples |
+| [User guide](docs/user-guide.md) | Running each program, `live_sender`'s examples, viewer controls, HDR, clipping and region statistics, overlays, configuration, send results, seven worked examples |
 | [Build guide](docs/build-guide.md) | Installing the tools, presets, targets, running the tests, Qt Creator, troubleshooting |
 | [Wire format](docs/wire-format.md) | The message format, validation rules and replies, for writing a sender in any language |
 | [Architecture](docs/architecture.md) | Components, dependency rule, threads, transport behaviour, extension points |
@@ -301,6 +308,7 @@ id-vision-lab/
 ├── examples/
 │   ├── pipeline_demo/     an OpenCV pipeline that sends every stage
 │   ├── minimal_sender/    the smallest use of sendImage()
+│   ├── overlay_sender/    an image sent with overlays
 │   └── live_sender/       streams a camera, a video file, an HDR video or a test pattern as live channels
 ├── tests/                 GoogleTest tests for all of the above
 ├── resources/icons/       the apps' icons
