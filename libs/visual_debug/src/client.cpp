@@ -96,6 +96,10 @@ private:
         socket.set(zmq::sockopt::immediate, true); // no connection means "unavailable", not "queued"
         socket.set(zmq::sockopt::maxmsgsize, kMaxReplyBytes);
         socket.set(zmq::sockopt::ipv6, true); // dual-stack: tcp://[::1] works as well as 127.0.0.1
+        // Windows takes about 2 s to report a refused connection (it retries the SYN), where Linux and
+        // macOS report it at once. Abandoning an attempt after replyTimeout lets ZeroMQ retry, so a viewer
+        // that starts after the host application is found as quickly on every platform.
+        socket.set(zmq::sockopt::connect_timeout, static_cast<int>(m_options.replyTimeout.count()));
         try {
             socket.connect(m_options.endpoint);
         } catch (const zmq::error_t&) {
