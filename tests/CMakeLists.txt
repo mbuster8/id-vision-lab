@@ -118,6 +118,8 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_view_test.cpp
             viewer/live_channel_panel_test.cpp
             viewer/main_window_test.cpp
+            viewer/owner_only.cpp
+            viewer/owner_only_test.cpp
             viewer/qt_image_sink_test.cpp
             viewer/server_controls_test.cpp
             viewer/storage_worker_test.cpp
