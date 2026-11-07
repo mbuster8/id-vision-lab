@@ -1,0 +1,30 @@
+ID Vision Lab: third-party software in the Windows packages
+===========================================================
+
+The Visual Debug Viewer and the Visual Debug Example Sender are licensed under the Apache License 2.0
+(LICENSE.txt and NOTICE.txt in this folder). The packages also contain the libraries below, each under its
+own licence. Their licence texts are in this folder: the vcpkg ports' own copyright files are under
+vcpkg\<port>\copyright, and the GNU licences Qt is used under are LGPL-3.0.txt and GPL-3.0.txt.
+
+Qt 6 (Qt Core, Qt Gui, Qt Widgets, and the plug-ins windeployqt adds)
+    Licence: GNU Lesser General Public License version 3 (LGPL-3.0.txt, which builds on GPL-3.0.txt).
+    Qt is linked dynamically: its DLLs (Qt6*.dll and the plug-in folders) may be replaced with other builds
+    of the same Qt version.
+    Source: https://download.qt.io/official_releases/qt/ (the version is in Qt6Core.dll's properties)
+
+OpenCV (core, imgproc, imgcodecs)          Apache License 2.0           vcpkg\opencv4\copyright
+ZeroMQ (libzmq)                            Mozilla Public License 2.0   vcpkg\zeromq\copyright
+cppzmq (compiled in)                       MIT                          vcpkg\cppzmq\copyright
+nlohmann/json (compiled in)                MIT                          vcpkg\nlohmann-json\copyright
+libjpeg-turbo                              IJG, BSD-3-Clause, zlib      vcpkg\libjpeg-turbo\copyright
+libpng                                     libpng                       vcpkg\libpng\copyright
+libwebp                                    BSD-3-Clause                 vcpkg\libwebp\copyright
+libtiff                                    libtiff                      vcpkg\tiff\copyright
+zlib                                       zlib                         vcpkg\zlib\copyright
+liblzma (XZ Utils)                         0BSD                         vcpkg\liblzma\copyright
+
+The libraries come from vcpkg (https://github.com/microsoft/vcpkg); the exact versions are pinned by the
+builtin-baseline in vcpkg.json of this project's source, https://github.com/mbuster8/id-vision-lab.
+
+The Microsoft Visual C++ runtime DLLs (vcruntime140*.dll, msvcp140*.dll) are redistributed under the
+Visual Studio licence terms for redistributable code.

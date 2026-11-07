@@ -10,3 +10,5 @@ include(${PROJECT_SOURCE_DIR}/cmake/bundle_icon.cmake)
 add_subdirectory(qt_common)
 add_subdirectory(viewer)
 add_subdirectory(example_sender)
+
+include(${PROJECT_SOURCE_DIR}/cmake/windows_packaging.cmake)
