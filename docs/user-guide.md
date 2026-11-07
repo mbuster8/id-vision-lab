@@ -3,7 +3,8 @@
 How to run the viewer and the senders, what the viewer shows, and how to use `visual_debug` from your own
 OpenCV program. To build everything first, see the [build guide](build-guide.md). Paths below are relative
 to the repository root and assume the `debug` preset; replace `debug` with `release` for an optimised
-build.
+build. The commands are macOS's; on Windows, see [Running on Windows](build-guide.md#running-on-windows): the
+programs are `.exe` files under `build\windows-debug`, and take the same options.
 
 ## The programs
 
@@ -23,6 +24,12 @@ default. Start the viewer first.
 
 ```sh
 open build/debug/apps/viewer/visual_debug_viewer.app
+```
+
+On Windows, with Qt's `bin` folder on `PATH`:
+
+```powershell
+build\windows-debug\apps\visual_debug_viewer.exe
 ```
 
 The window opens maximised, with the keyboard on the sidebar's thumbnails. The sidebar, the status bar and
@@ -94,9 +101,17 @@ new entries at the top while it is scrolled to the top, and keeps the entries yo
 you read further down. **Copy** puts the selected entries on the clipboard as lines of text, newest first, or
 every entry when none is selected. **Clear** empties the panel and the stored log, without asking.
 
-**Kept between sessions.** The newest 1000 entries are stored in `activity.log`, in a folder per endpoint under
-`~/Library/Application Support/Visual Debug Viewer/` (such as `tcp_127.0.0.1_7139`), readable by you only, and
-loaded at the next start. Three cases keep the log in memory only, and the log says so at start:
+**Kept between sessions.** The newest 1000 entries are stored in `activity.log`, in a folder per endpoint
+(such as `tcp_127.0.0.1_7139`) under the viewer's data folder, readable by you only, and loaded at the next
+start. The data folder is:
+
+| Platform | Data folder |
+|---|---|
+| macOS | `~/Library/Application Support/Visual Debug Viewer/` |
+| Windows | `%APPDATA%\Visual Debug Viewer\` (`C:\Users\<you>\AppData\Roaming\Visual Debug Viewer\`) |
+| Linux | `~/.local/share/Visual Debug Viewer/` |
+
+Three cases keep the log in memory only, and the log says so at start:
 
 - a port of `*`, which changes on every start, so the folder could never be found again (an endpoint
   without `://` has no folder either, and cannot be listened on);
@@ -110,8 +125,8 @@ on the same endpoint shows the same images, newest first, with their names (rena
 received and modified times and their original pixels at every depth. It is off by default.
 
 - **What is stored, and where.** Each image is written as it arrives, as its original pixels, in the
-  endpoint's folder under `~/Library/Application Support/Visual Debug Viewer/` (such as
-  `tcp_127.0.0.1_7139/images`), with a small index of the order, names and times. An image's file is deleted
+  endpoint's folder under the viewer's data folder (such as `tcp_127.0.0.1_7139/images`; see the table
+  above), with a small index of the order, names and times. An image's file is deleted
   when it leaves the history: deleted, or dropped because the history is full. **Undo Delete** writes it
   again. The undo buffer itself is not stored.
 - **Starting again.** The viewer starts listening at once, then loads the stored images in the background
@@ -125,7 +140,10 @@ received and modified times and their original pixels at every depth. It is off 
   is still running.
 - **Privacy.** The folders and files are readable by your user account only, but they are **not
   encrypted**: anyone with access to your account, or to a backup of it, can read the stored images.
-  Leave the setting off for images that must not reach the disk.
+  Leave the setting off for images that must not reach the disk. On Windows they take the access list of
+  your `AppData` folder, which lets in only your account, SYSTEM and the Administrators group (an
+  administrator can read any file on the machine anyway). `%APPDATA%` is the roaming profile: on a domain
+  with roaming profiles, stored images travel to the profile server when you sign out.
 - **Clear History…** deletes every image of this viewer, in memory and on disk, after asking. It cannot be
   undone.
 - **Port `*`.** A viewer whose port is `*` gets a different port, and so a different folder, on every
@@ -147,6 +165,12 @@ Or start the binary inside the bundle, which also inherits the terminal's enviro
 
 ```sh
 build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_viewer --help
+```
+
+On Windows, pass options directly; each start is a new instance:
+
+```powershell
+build\windows-debug\apps\visual_debug_viewer.exe --endpoint tcp://127.0.0.1:7140
 ```
 
 | Option | Effect |

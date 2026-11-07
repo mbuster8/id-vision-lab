@@ -4,7 +4,8 @@ How to install the tools, build every part of the project, run the tests and wor
 For running the programs, see the [user guide](user-guide.md).
 
 Verified on macOS 27.0.1 on Apple silicon (Mac mini), Apple clang 21, October 2026. Continuous integration
-also builds and tests every push on Ubuntu 24.04; Windows is planned for a separate session.
+also builds and tests every push on Ubuntu 24.04. Windows 11 with Visual Studio 2022 has its own presets
+and setup: see [Windows](#windows).
 
 ## Prerequisites (macOS)
 
@@ -122,7 +123,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the 328 tests that need no Qt (325 on Linux)
+ctest --test-dir build/no-qt               # the tests that need no Qt (390 on Linux and Windows)
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -130,7 +131,7 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (689 tests, about 97 seconds; 686 on Linux)
+ctest --preset debug                       # everything (792 tests on Linux and Windows)
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
 ctest --preset asan                        # the same tests under the sanitizers (about 127 seconds)
@@ -283,6 +284,200 @@ no desktop launcher for them yet.
 
 ## Windows
 
-Planned for a separate session on a Windows machine: a `vcpkg.json` manifest, Windows presets and a setup
-script. The code already follows the portability rules in [`CLAUDE.md`](../CLAUDE.md), so that session
-should need packaging, not code changes.
+Verified on Windows 11 Pro (x64, Lenovo Legion 5), Visual Studio Community 2022 17.14 (MSVC 19.44), November
+2026. The C++ libraries come from [vcpkg](https://vcpkg.io) in manifest mode (`vcpkg.json` in the repository
+root pins every version); Qt comes from Qt's own installer. [ADR-002](ADR/ADR-002-windows-dependencies.md)
+explains these choices.
+
+### Prerequisites (Windows)
+
+1. **Visual Studio 2022** (Community is enough) with the **Desktop development with C++** workload. It brings
+   MSVC, the Windows SDK, CMake and Ninja. Check that the workload's optional **C++ CMake tools for Windows**
+   is ticked; it is by default.
+2. **Git for Windows**, which also gives Git Bash, used for `scripts/check.sh`.
+3. **Qt 6** from the [Qt Online Installer](https://www.qt.io/download-qt-installer) (a free Qt account is
+   needed). Under **Qt → Qt 6.12.0** (or newer) tick **MSVC 2022 64-bit**; under **Developer and Designer
+   Tools**, Qt Creator is ticked by default. Nothing else is needed.
+4. **vcpkg**, cloned to a short path with no spaces, then bootstrapped:
+
+   ```powershell
+   git clone https://github.com/microsoft/vcpkg C:\dev\vcpkg
+   C:\dev\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+   ```
+
+   Visual Studio ships its own copy of vcpkg, which the presets do not use: a clone of your own is updated
+   when you choose, not with Visual Studio, and is the same kind of vcpkg that CI uses.
+5. **Long paths.** vcpkg's build trees nest deeply. Turn on Windows' long path support once, from an
+   administrator PowerShell, then restart:
+
+   ```powershell
+   New-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+   ```
+
+   Keep the repository on a short path too, such as `C:\dev\id-vision-lab`.
+6. **Two user environment variables**, which the Windows presets read. Set them once, then open a new
+   terminal so it sees them:
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable('VCPKG_INSTALLATION_ROOT', 'C:\dev\vcpkg', 'User')
+   [Environment]::SetEnvironmentVariable('QT_ROOT_DIR', 'C:\Qt\6.12.0\msvc2022_64', 'User')
+   ```
+
+   Why not `VCPKG_ROOT`, which vcpkg's own documentation uses: the Visual Studio developer environment sets
+   `VCPKG_ROOT` to Visual Studio's bundled copy, overwriting yours, every time it starts.
+   `VCPKG_INSTALLATION_ROOT` is left alone, and GitHub's Windows runners already set it.
+7. **Line endings.** Git for Windows turns on `core.autocrlf` system-wide, which would check files out with
+   CRLF line endings; clang-format and the diffs would then disagree with CI. The repository's
+   `.gitattributes` asks for LF everywhere, so a fresh clone is right. A clone made before `.gitattributes`
+   existed keeps its CRLF files: commit or stash your work first, then check every file out again from the
+   repository root:
+
+   ```powershell
+   git config core.autocrlf false
+   git rm --cached -r -q .
+   git reset --hard HEAD
+   ```
+
+   `git reset --hard` throws away uncommitted changes, which is why your work must be committed first.
+
+Versions this was verified with (vcpkg's, from the baseline in `vcpkg.json`):
+
+| Package | Version |
+|---|---|
+| Visual Studio 2022 | 17.14 (MSVC 19.44; its CMake 3.31.6 and Ninja 1.12.1) |
+| Qt | 6.12.0, MSVC 2022 64-bit |
+| Qt Creator | 20.0.2 |
+| Git for Windows | 2.45.1 |
+| `opencv4` | 4.14.0 (vcpkg has no OpenCV 5 yet), with its FFmpeg and Media Foundation video backends |
+| `ffmpeg` | 9.0.2 (LGPL build: `avcodec`, `avformat`, `swscale`) |
+| `zeromq` / `cppzmq` | 4.3.5 / 4.11.0 |
+| `nlohmann-json` | 3.12.0 |
+| `gtest` | 1.18.0 |
+| `pkgconf` | 3.0.3 (how CMake finds FFmpeg) |
+
+### The developer environment
+
+MSVC works only inside the Visual Studio developer environment, which puts `cl`, the Windows SDK, CMake and
+Ninja on `PATH`. In PowerShell, enter it for 64-bit builds with:
+
+```powershell
+$vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+```
+
+Without `-arch=x64` it sets up the 32-bit compiler, which does not match vcpkg's 64-bit libraries. It may print `vswhere.exe is not recognized`, which
+is harmless.
+
+### Building on Windows
+
+Windows has presets of its own; `cmake --list-presets` shows only these there, and only the others on macOS
+and Linux:
+
+| Preset | Build type | Folder |
+|---|---|---|
+| `windows-debug` | Debug | `build\windows-debug` |
+| `windows-release` | Release | `build\windows-release` |
+
+From the repository root, inside the developer environment:
+
+```powershell
+cmake --preset windows-debug
+cmake --build --preset windows-debug
+ctest --preset windows-debug
+```
+
+**The first configure takes a long time**: vcpkg builds OpenCV, FFmpeg and the other libraries from source
+(21 minutes on the Legion 5, most of it FFmpeg and OpenCV). It keeps what it built in its binary cache, under
+`%LOCALAPPDATA%\vcpkg\archives`, so the next configure, of either preset or of a fresh clone, takes about 20
+seconds. vcpkg builds the debug and release libraries together.
+
+There is no sanitizer preset on Windows: MSVC's AddressSanitizer has no UndefinedBehaviorSanitizer, and the
+macOS and Linux runs cover what it would find.
+
+The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 792 tests pass, in 202 seconds (debug)
+and 171 seconds (release); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
+build without Qt, as on the other platforms:
+
+```powershell
+cmake --preset windows-debug -B build\no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
+cmake --build build\no-qt
+ctest --test-dir build\no-qt               # the 390 tests that need no Qt
+```
+
+### Running on Windows
+
+vcpkg copies the DLLs each program needs next to it, but not Qt's: put Qt's `bin` folder on `PATH` first
+(in a new terminal; the developer environment is not needed to run):
+
+```powershell
+$env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+build\windows-debug\apps\visual_debug_viewer.exe
+build\windows-debug\examples\pipeline_demo\pipeline_demo.exe
+build\windows-debug\examples\live_sender\live_sender.exe --pattern
+build\windows-debug\apps\visual_debug_example_sender.exe
+```
+
+The apps land in `build\<preset>\apps\`, not in `apps\viewer\` and `apps\example_sender\` as on macOS and
+Linux: Qt's CMake setup sends every executable of the `apps` folder there on Windows. The examples and tests
+land where they do on the other platforms, as `.exe` files. Every option in the
+[user guide](user-guide.md) works the same, for example `visual_debug_viewer.exe --endpoint
+tcp://127.0.0.1:7140`, and `--help` prints to the terminal.
+
+The debug build of OpenCV logs `[ INFO:0@…] … libraryLoad load … opencv_core_parallel_… => FAILED` lines on
+start: it looks for optional parallel back-ends that vcpkg does not build. Harmless; the release build is
+quiet, and `OPENCV_LOG_LEVEL=WARNING` hides them.
+
+### Checking changes on Windows
+
+`scripts/check.sh` runs the macOS and Linux presets, so on Windows check formatting and the Ubuntu job
+separately. clang-format must be 22.1.8, which Qt Creator bundles (Visual Studio's copy is older and formats
+a few constructs differently). From the repository root, in PowerShell:
+
+```powershell
+& "C:\Qt\Tools\QtCreator\bin\clang\bin\clang-format.exe" --dry-run --Werror (git ls-files '*.cpp' '*.h')
+```
+
+The Ubuntu job, with Docker Desktop running, from Git Bash:
+
+```sh
+scripts/check.sh --linux
+```
+
+Do not build in the same clone while it runs: it copies the working tree into the container, and a file
+that changes during the copy fails it with `tar: .: file changed as we read it`.
+
+### Qt Creator on Windows
+
+Not yet checked by hand on Windows. Qt Creator reads `CMakePresets.json`, so opening the top-level
+`CMakeLists.txt` and ticking **Windows Debug (MSVC, vcpkg)** should configure the same `build\windows-debug`
+folder, provided Qt Creator was started from a terminal that has the two environment variables above.
+
+### Troubleshooting on Windows
+
+**vcpkg builds with Visual Studio's bundled copy, or reports a baseline it cannot find.** The configure used
+`VCPKG_ROOT`. Check that `VCPKG_INSTALLATION_ROOT` is set in this terminal (`$env:VCPKG_INSTALLATION_ROOT`);
+if you set it after opening the terminal, open a new one. Delete `build\<preset>` and configure again.
+
+**The first configure stops for many minutes at `Downloading nasm`.** nasm.us sometimes serves nothing at
+all. vcpkg keeps a mirror: download the file vcpkg names (for example `nasm-3.01-win64.zip`) from
+`https://vcpkg.github.io/assets/nasm/`, check its SHA-512 against the one in vcpkg's message, put it in
+`<vcpkg>\downloads\`, and configure again.
+
+**`Could not find a package configuration file provided by "Qt6"`.** `QT_ROOT_DIR` is not set in this
+terminal, or does not point at the `msvc2022_64` folder.
+
+**A program exits at once with no window and no message** (exit code 53 in PowerShell). It cannot find Qt's
+DLLs: put `$env:QT_ROOT_DIR\bin` on `PATH` as shown above.
+
+**`CMake Warning (dev) at …/share/ffmpeg/FindFFMPEG.cmake:45` (`The NAMES keyword was followed by an empty
+string`), twice.** From vcpkg's FFmpeg package, which OpenCV loads. Harmless: the next lines say
+`Found FFMPEG` and `Found OpenCV`, and the configure says nothing about `live_sender --hdr`, which it does
+only when it cannot find FFmpeg.
+
+**`Could NOT find WrapVulkanHeaders`.** As on macOS: harmless.
+
+**A UI test fails because a widget is narrower or wider than expected.** Qt's offscreen platform, which the
+tests use, finds fonts only in `QT_QPA_FONTDIR`, and Qt's Windows install has none of its own. The tests'
+`main()` points it at `%WINDIR%\Fonts` and uses Segoe UI 9 pt, the Windows default, so the layout matches a
+real window. If you set `QT_QPA_FONTDIR` yourself, it must hold Segoe UI.
