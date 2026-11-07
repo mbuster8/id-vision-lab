@@ -17,6 +17,7 @@ endfunction()
 id_vision_lab_add_test_executable(visual_debug_tests
     SOURCES
         visual_debug/wire_format_test.cpp
+        visual_debug/overlay_wire_test.cpp
         visual_debug/endpoint_test.cpp
         visual_debug/client_server_test.cpp
         visual_debug/send_image_test.cpp
@@ -34,6 +35,7 @@ id_vision_lab_add_test_executable(viewer_core_tests
         viewer_core/hdr_tone_map_test.cpp
         viewer_core/region_statistics_test.cpp
         viewer_core/image_history_test.cpp
+        viewer_core/image_tags_test.cpp
         viewer_core/live_channels_test.cpp
         viewer_core/pixel_inspector_test.cpp
         viewer_core/save_name_test.cpp
@@ -72,6 +74,8 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             live_sender_video
             ${live_sender_ffmpeg_libraries}
             opencv_videoio
+            opencv_imgproc
+            opencv_imgcodecs
             visual_debug::visual_debug
             cppzmq
             nlohmann_json::nlohmann_json
@@ -91,6 +95,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/appearance_test.cpp
             qt_common/image_file_test.cpp
             qt_common/outline_icons_test.cpp
+            qt_common/overlay_painter_test.cpp
             qt_common/qimage_conversion_test.cpp
             qt_common/shades_test.cpp
         LIBRARIES
@@ -109,6 +114,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_info_bar_test.cpp
             viewer/image_sidebar_test.cpp
             viewer/image_store_test.cpp
+            viewer/image_tags_conversion_test.cpp
             viewer/image_view_test.cpp
             viewer/live_channel_panel_test.cpp
             viewer/main_window_test.cpp

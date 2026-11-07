@@ -132,6 +132,8 @@ ImageStore::ImageStore(QString imagesFolder) : m_folder(std::move(imagesFolder))
 
 QString ImageStore::write(const std::string& name, const cv::Mat& original,
                           const viewer_core::ImageTags& tags) {
+    // A header that fitted when the image arrived may not any more (renamed to a longer name, or sent with
+    // numbers written more compactly): encode keeps the overlays that fit, so the image is kept either way.
     const auto encoded = visual_debug::encode(original, name, {.description = toDescription(tags)});
     const auto* message = std::get_if<visual_debug::EncodedMessage>(&encoded);
     if (message == nullptr) {

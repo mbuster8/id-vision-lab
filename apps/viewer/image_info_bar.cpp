@@ -6,6 +6,7 @@
 #include "outline_icons.h"
 #include "thumbnail_action.h"
 
+#include <QAction>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -25,7 +26,7 @@ ImageInfoBar::ImageInfoBar(QWidget* parent)
     : QWidget(parent), m_name(new ElidingLabel(Qt::ElideMiddle)), m_editor(new QLineEdit),
       m_renameButton(new QToolButton), m_details(new ElidingLabel(Qt::ElideRight)),
       m_displayControl(new DisplaySettingsControl), m_freezeButton(new QToolButton),
-      m_snapshotButton(new QToolButton) {
+      m_snapshotButton(new QToolButton), m_overlaysButton(new QToolButton) {
     m_name->setObjectName(QStringLiteral("imageName"));
     m_editor->setObjectName(QStringLiteral("renameEditor"));
     m_renameButton->setObjectName(QStringLiteral("renameButton"));
@@ -48,6 +49,11 @@ ImageInfoBar::ImageInfoBar(QWidget* parent)
     layout->addWidget(m_details);
     layout->addStretch();
     // After the stretch, so they stay put while the text changes.
+    m_overlaysButton->setObjectName(QStringLiteral("overlaysButton"));
+    m_overlaysButton->setCheckable(true);
+    m_overlaysButton->setAutoRaise(true);
+    m_overlaysButton->hide();
+    layout->addWidget(m_overlaysButton);
     layout->addWidget(m_displayControl);
     m_freezeButton->setObjectName(QStringLiteral("freezeButton"));
     m_snapshotButton->setObjectName(QStringLiteral("snapshotButton"));
@@ -98,6 +104,7 @@ void ImageInfoBar::clear() {
     cancelRename();
     m_shownId.reset();
     m_shownName.clear();
+    setOverlayCount(0);
     hide();
 }
 
@@ -106,6 +113,42 @@ DisplaySettingsControl* ImageInfoBar::displayControl() const { return m_displayC
 void ImageInfoBar::setLiveActions(QAction* freeze, QAction* snapshot) {
     m_freezeButton->setDefaultAction(freeze);
     m_snapshotButton->setDefaultAction(snapshot);
+}
+
+// Kept in step with the action by hand rather than with setDefaultAction, which would put the action's own
+// text back on the button whenever the action changes.
+void ImageInfoBar::setOverlayAction(QAction* showOverlays) {
+    m_overlayAction = showOverlays;
+    m_overlaysButton->setChecked(showOverlays->isChecked());
+    m_overlaysButton->setToolTip(
+        tr("%1 (%2)").arg(showOverlays->text().remove(QLatin1Char('&')),
+                          showOverlays->shortcut().toString(QKeySequence::NativeText)));
+    connect(showOverlays, &QAction::toggled, this, [this](bool checked) {
+        m_overlaysButton->setChecked(checked);
+        updateOverlayButton();
+    });
+    connect(m_overlaysButton, &QToolButton::toggled, showOverlays, &QAction::setChecked);
+    updateOverlayButton();
+}
+
+void ImageInfoBar::setOverlayCount(int count) {
+    m_overlayCount = count;
+    updateOverlayButton();
+}
+
+void ImageInfoBar::updateOverlayButton() {
+    if (m_overlayAction == nullptr || m_overlayCount <= 0) {
+        m_overlaysButton->hide();
+        return;
+    }
+    const bool shown = m_overlayAction->isChecked();
+    if (m_overlayCount == 1) {
+        m_overlaysButton->setText(shown ? tr("◩ 1 overlay") : tr("◩ 1 overlay hidden"));
+    } else {
+        m_overlaysButton->setText(shown ? tr("◩ %1 overlays").arg(m_overlayCount)
+                                        : tr("◩ %1 overlays hidden").arg(m_overlayCount));
+    }
+    m_overlaysButton->show();
 }
 
 void ImageInfoBar::startRename() {

@@ -91,6 +91,7 @@ or library cannot break the build, but a new warning from project code should be
 | `pipeline` | The demo's OpenCV stages | `examples/pipeline_demo/libpipeline.a` |
 | `pipeline_demo` | Command-line demo: an OpenCV pipeline that sends every stage | `examples/pipeline_demo/pipeline_demo` |
 | `minimal_sender` | The smallest use of `sendImage` | `examples/minimal_sender/minimal_sender` |
+| `overlay_sender` | An image sent with overlays | `examples/overlay_sender/overlay_sender` |
 | `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel, read-ahead, real-time playback and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
 | `live_sender_video` | Opens a video file for `live_sender`: AVFoundation first on macOS, then OpenCV's default backend | `examples/live_sender/liblive_sender_video.a` |
 | `live_sender_ffmpeg` | Reads a video with FFmpeg's libraries for `live_sender --hdr`, as 16-bit frames with their HDR tags. Built only when CMake finds FFmpeg's development files (`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not | `examples/live_sender/liblive_sender_ffmpeg.a` |
@@ -109,7 +110,7 @@ macOS.
 | Option | Default | Effect |
 |---|---|---|
 | `ID_VISION_LAB_BUILD_QT_APPS` | `ON` | The viewer, the example sender, `qt_common` and the Qt tests |
-| `ID_VISION_LAB_BUILD_EXAMPLES` | `ON` | `pipeline_demo`, `minimal_sender`, `live_sender` and their tests |
+| `ID_VISION_LAB_BUILD_EXAMPLES` | `ON` | `pipeline_demo`, `minimal_sender`, `overlay_sender`, `live_sender` and their tests |
 | `ID_VISION_LAB_BUILD_TESTS` | `ON` | All GoogleTest executables |
 | `ID_VISION_LAB_SANITIZERS` | `OFF` | AddressSanitizer and UndefinedBehaviorSanitizer (the `asan` preset turns it on) |
 

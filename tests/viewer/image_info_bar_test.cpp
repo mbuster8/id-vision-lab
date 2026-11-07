@@ -4,6 +4,7 @@
 #include "viewer_core/image_history.h"
 #include "viewer_core/live_channels.h"
 
+#include <QAction>
 #include <QDate>
 #include <QDateTime>
 #include <QLabel>
@@ -160,6 +161,42 @@ TEST_F(ImageInfoBarTest, HiddenWithoutImage) {
     m_bar.clear();
 
     EXPECT_FALSE(m_bar.isVisible());
+}
+
+// The button stands for the Show Overlays action: it shows only for a picture with overlays, counts them,
+// says when they are hidden, and keeps its own text whatever the action does.
+TEST_F(ImageInfoBarTest, OverlayButtonShowsTheCountAndFollowsTheAction) {
+    QAction showOverlays(QStringLiteral("Show Overlays"));
+    showOverlays.setCheckable(true);
+    showOverlays.setChecked(true);
+    m_bar.setOverlayAction(&showOverlays);
+    auto* button = m_bar.findChild<QToolButton*>(QStringLiteral("overlaysButton"));
+    ASSERT_NE(button, nullptr);
+    EXPECT_TRUE(button->isHidden());
+
+    m_bar.setOverlayCount(3);
+    EXPECT_FALSE(button->isHidden());
+    EXPECT_TRUE(button->isChecked());
+    EXPECT_EQ(button->text(), QString::fromUtf8("◩ 3 overlays"));
+
+    showOverlays.setChecked(false);
+    EXPECT_FALSE(button->isChecked());
+    EXPECT_EQ(button->text(), QString::fromUtf8("◩ 3 overlays hidden"));
+
+    button->click();
+    EXPECT_TRUE(showOverlays.isChecked());
+    EXPECT_EQ(button->text(), QString::fromUtf8("◩ 3 overlays"));
+
+    showOverlays.setEnabled(false);
+    showOverlays.setEnabled(true);
+    EXPECT_EQ(button->text(), QString::fromUtf8("◩ 3 overlays"));
+
+    m_bar.setOverlayCount(0);
+    EXPECT_TRUE(button->isHidden());
+    m_bar.setOverlayCount(2);
+    m_bar.clear();
+    m_bar.showImage(8, QStringLiteral("next"), QStringLiteral("details"));
+    EXPECT_TRUE(button->isHidden());
 }
 
 } // namespace

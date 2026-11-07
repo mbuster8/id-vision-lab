@@ -208,6 +208,20 @@
     <string>Ctrl+Shift+K</string>
    </property>
   </action>
+  <action name="actionShowOverlays">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Show &amp;Overlays</string>
+   </property>
+   <property name="toolTip">
+    <string>Draw the shapes the sender attached to the image over it; the image's values are never changed</string>
+   </property>
+  </action>
   <action name="actionFind">
    <property name="text">
     <string>&amp;Find…</string>

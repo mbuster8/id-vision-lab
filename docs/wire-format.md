@@ -54,6 +54,7 @@ existing viewers. Jupyter kernels use the same split (JSON frames plus binary bu
 | `valueRange` | optional: an array of two JSON numbers `[min, max]`, integers or not, with min < max: the values the image's black and white nominally sit at. Values may lie beyond it (a video's super-whites lie above its white). The viewer takes it as a hint for the range it displays |
 | `transfer` | optional: `"sdr"`, `"hlg"` (hybrid log-gamma, ARIB STD-B67) or `"pq"` (the perceptual quantiser, SMPTE ST 2084): how the values map to light |
 | `primaries` | optional: `"bt709"` or `"bt2020"`: the colour primaries of a colour image |
+| `overlays` | optional: an array of at most 256 shapes the viewer draws over the image without changing its values; see [Overlays](#overlays) |
 
 A version 2 viewer that predates `live` ignores both optional fields and shows a live frame as an ordinary
 image; a sender that predates them sends neither. The C++ sender writes them for `sendLive` only, and leaves
@@ -63,6 +64,37 @@ The last three describe an image, still or live; a viewer that predates them ign
 writes each only when the sender sets it (through the `ImageDescription` overloads of `sendImage`, `sendLive`
 and `Client`), after `sentAt`. It writes a whole-number range without a fraction (`[0,1023]`), and leaves out a
 range whose ends are equal, decreasing or not finite rather than send one the viewer would refuse.
+
+### Overlays
+
+Shapes a sender found in the image (a document's outline, a photo, an MRZ band), drawn by the viewer as a
+see-through fill with a solid edge and a labelled tab. Coordinates are image pixels, JSON numbers (integers or
+not), x to the right and y down, with (0, 0) the top-left corner of the top-left pixel; a shape may lie partly or
+wholly outside the image. Each item is a JSON object:
+
+| Key | Rule |
+|---|---|
+| `shape` | exactly `"polygon"`, `"rectangle"`, `"circle"` or `"point"` |
+| polygon: `points` | an array of 3 to 1024 points, each an array of two numbers `[x, y]`; the last point joins the first |
+| rectangle: `x`, `y`, `width`, `height` | the top-left corner, and a width and height of at least 0.0005 (above 0 when rounded to a thousandth) |
+| circle: `x`, `y`, `radius` | the centre, and a radius of at least 0.0005 |
+| point: `x`, `y` | a dot of a fixed size on screen |
+| `label` | optional: a string of at most 64 bytes of UTF-8, shown on the shape's tab |
+| `colour` | optional: `"#RRGGBB"`, either case; absent means exactly `#78E678`, a light green |
+
+Every coordinate, size and radius is finite and within ±1 000 000. Other keys in an item are ignored, so a later
+optional key needs no new version. The whole header, overlays included, still fits 64 KiB.
+
+The C++ sender (`ImageDescription::overlays`, with `visual_debug::Polygon`, `Rectangle`, `Circle` and `Point`)
+writes `overlays` after `primaries`, and only when at least one shape is left after these rules: it rounds every
+number to a thousandth of a pixel first, then leaves out any shape the viewer would refuse (not finite, beyond
+±1 000 000, a size or radius not above 0 after rounding, a polygon of fewer than 3 or more than 1024 points: a raw
+contour is often longer, so simplify it with `cv::approxPolyDP` first) and every shape after the 256th it keeps;
+it makes each label valid UTF-8 and cuts it to 64 bytes at a character boundary, as it does names; it writes
+`colour` in upper case, and leaves it out for the default green. It keeps the header within 64 KiB by leaving out
+the trailing shapes that would not fit, so the image and the shapes that fit are always sent.
+
+A viewer that predates `overlays` ignores it and shows the image without them.
 
 Element sizes: 1 byte for `8U` and `8S`, 2 for `16U` and `16S`, 4 for `32S` and `32F`, 8 for `64F`. The
 pixel frame may hold at most 512 MiB; the C++ sender refuses larger images before touching the network.
@@ -98,6 +130,17 @@ A live frame of a 640×480 colour channel named `camera`, as `visual_debug::send
 
 ```text
 {"protocol":"visual_debug","version":2,"type":"image","name":"camera","rows":480,"cols":640,"depth":"8U","channels":3,"live":true,"sentAt":1793366602517}
+```
+
+An ID card image with a document outline and an MRZ band, as `examples/overlay_sender` sends two of its
+shapes (`visual_debug::Polygon{corners, "Document"}` and a red `visual_debug::Polygon{…, "MRZ",
+visual_debug::kOverlayRed}`; the header is shown wrapped):
+
+```text
+{"protocol":"visual_debug","version":2,"type":"image","name":"card with overlays","rows":1000,"cols":1600,
+"depth":"8U","channels":3,"overlays":[{"shape":"polygon","points":[[210,170],[1390,140],[1410,880],
+[190,900]],"label":"Document"},{"shape":"polygon","points":[[250,755],[1350,745],[1352,862],[252,872]],
+"label":"MRZ","colour":"#E05050"}]}
 ```
 
 A 16-bit 3840×2160 frame of HLG video in a channel named `phone`, sent at the same moment as
@@ -166,6 +209,12 @@ hostile header cannot make the reply itself fail to encode.
 | `valueRange is not two increasing numbers` | `valueRange` is present but not an array of exactly two JSON numbers with the first below the second. |
 | `transfer is not sdr, hlg or pq` | `transfer` is present but not one of those three strings, in lower case. |
 | `primaries is not bt709 or bt2020` | `primaries` is present but not one of those two strings, in lower case. |
+| `overlays is not a list of at most 256 shapes` | `overlays` is present but not an array, or has more than 256 items. |
+| `overlay is not an object with a known shape` | An item is not an object, or its `shape` is missing or not one of the four. |
+| `overlay geometry is missing or out of range` | A shape's coordinate, size or radius is missing, not a number, beyond ±1 000 000, or (size, radius) not above 0. |
+| `polygon does not have 3 to 1024 points` | `points` is missing, not an array of 3 to 1024 items, or an item is not two numbers. |
+| `overlay label is not a string of at most 64 bytes` | `label` is present but not a string, or longer than 64 bytes. |
+| `overlay colour is not #RRGGBB` | `colour` is present but not `#` and six hexadecimal digits. |
 | `image too large` | The pixel data would exceed 512 MiB. |
 | `pixel frame has the wrong size` | The pixel frame's length does not match the header. |
 | `could not decode message` | Any other failure while decoding. |
@@ -189,8 +238,8 @@ cannot push a large message into the host application.
 
 Optional fields the format is ready for, left as learning exercises: `source` (file and line of the
 `sendImage` call); `stream` (to group the images of one pipeline; a live channel already groups a stream's
-frames); `overlays` (rectangles, points or contours drawn over the image). `sentAt` took the place of the
-`timestamp` this list once proposed.
+frames). `sentAt` took the place of the `timestamp` this list once proposed, and `overlays` the shapes it once
+proposed.
 
 ## Security
 

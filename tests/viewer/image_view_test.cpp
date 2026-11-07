@@ -1,7 +1,11 @@
+#include "image_tags_conversion.h"
 #include "image_view.h"
+
+#include "visual_debug/wire_format.h"
 
 #include <QColor>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMouseEvent>
 #include <QPalette>
@@ -12,7 +16,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <iostream>
+#include <memory>
 #include <optional>
+#include <vector>
 
 namespace {
 
@@ -249,6 +257,208 @@ TEST_F(ImageViewTest, BackgroundFollowsPaletteChange) {
     m_view.update();
 
     EXPECT_EQ(pixelOf(m_view, 100, 10).rgb(), QColor(Qt::green).rgb());
+}
+
+// --- Overlays (a 100×100 black image fills the 200×200 view at scale 2) ----------------------------------
+
+QImage blackImage(int width, int height) {
+    QImage image(width, height, QImage::Format_RGBA8888);
+    image.fill(Qt::black);
+    return image;
+}
+
+viewer_core::ImageTags::Overlays leftHalf() {
+    return viewer_core::makeOverlays({viewer_core::Rectangle{{0, 0, 50, 100}}});
+}
+
+bool isBlack(const QColor& colour) { return colour.red() + colour.green() + colour.blue() < 10; }
+
+TEST_F(ImageViewTest, DrawsOverlaysAboveTheImage) {
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::No, leftHalf());
+
+    EXPECT_EQ(m_view.overlays().size(), 1U);
+    EXPECT_FALSE(isBlack(pixelOf(m_view, 50, 100)));
+    EXPECT_TRUE(isBlack(pixelOf(m_view, 150, 100)));
+}
+
+// Green dominates an overlay's edge, which no black image pixel has.
+bool isEdge(const QColor& colour) { return colour.green() > 200 && colour.red() < 150; }
+
+TEST_F(ImageViewTest, OverlaysFollowZoomAndPan) {
+    // Image pixels 40 to 60 are view pixels 80 to 120 at the fitted scale of 2.
+    const auto box = viewer_core::makeOverlays({viewer_core::Rectangle{{40, 40, 20, 20}}});
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::No, box);
+    ASSERT_TRUE(isEdge(pixelOf(m_view, 80, 100)));
+
+    sendWheelEvent(m_view, {100, 100}, 120); // keeps view point (100, 100), image point (50, 50), in place
+    const double scale =
+        m_view.deviceScaleFor(QSize(100, 100), ImageView::KeepView::IfSameSize) / m_view.devicePixelRatioF();
+    const int left = static_cast<int>(std::lround(100 - 10 * scale)); // image x 40 is 10 left of the centre
+
+    ASSERT_GT(scale, 2.0);
+    bool found = false;
+    for (int x = left - 2; x <= left + 2; ++x) {
+        found = found || isEdge(pixelOf(m_view, x, 100));
+    }
+    EXPECT_TRUE(found) << "expected the edge near x = " << left;
+}
+
+TEST_F(ImageViewTest, OverlaysOnASmallerPicture) {
+    m_view.setImage(blackImage(50, 50), ImageView::KeepView::No, QSize(100, 100), leftHalf());
+
+    EXPECT_FALSE(isBlack(pixelOf(m_view, 50, 100)));
+    EXPECT_TRUE(isBlack(pixelOf(m_view, 150, 100)));
+}
+
+TEST_F(ImageViewTest, ANewPictureWithoutOverlaysShowsNone) {
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::No, leftHalf());
+
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::IfSameSize);
+
+    EXPECT_TRUE(m_view.overlays().empty());
+    EXPECT_TRUE(isBlack(pixelOf(m_view, 50, 100)));
+}
+
+TEST_F(ImageViewTest, HiddenOverlaysDrawNothing) {
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::No, leftHalf());
+    EXPECT_TRUE(m_view.overlaysShown());
+
+    m_view.setOverlaysShown(false);
+
+    EXPECT_FALSE(m_view.overlaysShown());
+    EXPECT_EQ(m_view.overlays().size(), 1U); // kept, only not drawn
+    EXPECT_TRUE(isBlack(pixelOf(m_view, 50, 100)));
+    m_view.setOverlaysShown(true);
+    EXPECT_FALSE(isBlack(pixelOf(m_view, 50, 100)));
+}
+
+TEST_F(ImageViewTest, ClearForgetsOverlays) {
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::No, leftHalf());
+
+    m_view.clear();
+
+    EXPECT_TRUE(m_view.overlays().empty());
+}
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define OVERLAY_TEST_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#define OVERLAY_TEST_SANITIZED 1
+#endif
+
+// Zoomed in as far as the view goes, with shapes reaching a million pixels away: a polygon and a rectangle
+// that cover the view, and 254 small rectangles out of it. Painting must stay bounded and show the fill.
+TEST_F(ImageViewTest, FarAwayAndHugeOverlaysPaint) {
+    std::vector<viewer_core::Overlay> overlays;
+    std::vector<cv::Point2d> ring;
+    for (int i = 0; i < 1024; ++i) {
+        const double angle = 2 * 3.14159265358979 * i / 1024;
+        ring.emplace_back(50 + 999000 * std::cos(angle), 50 + 999000 * std::sin(angle));
+    }
+    overlays.push_back(viewer_core::Polygon{ring, "ring"});
+    overlays.push_back(viewer_core::Rectangle{{-1e6, -1e6, 2e6, 2e6}, "huge"});
+    for (int i = 0; i < 254; ++i) {
+        overlays.push_back(viewer_core::Rectangle{{900000.0 + i, -900000.0, 5, 5}, "far"});
+    }
+    m_view.setImage(blackImage(100, 100), ImageView::KeepView::No, viewer_core::makeOverlays(overlays));
+    for (int notch = 0; notch < 40; ++notch) {
+        sendWheelEvent(m_view, {100, 100}, 120);
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    const QColor centre = pixelOf(m_view, 100, 100);
+    const qint64 elapsed = timer.elapsed();
+
+    std::cout << "[ overlays ] zoomed-in paint with far and huge overlays: " << elapsed << " ms\n";
+    EXPECT_FALSE(isBlack(centre));
+#if !defined(OVERLAY_TEST_SANITIZED)
+    EXPECT_LT(elapsed, 1000);
+#endif
+}
+
+// The time a paint takes, as a 4K live frame drawn at 1600×900 is: with no overlays, then with the heaviest
+// list the wire takes in practice (256 overlays, one a 1024-point polygon, the rest labelled rectangles).
+// Run by hand in a release build: --gtest_also_run_disabled_tests --gtest_filter=*OverlayPaintCost*
+TEST(ImageViewMeasurement, DISABLED_OverlayPaintCost) {
+    ImageView view;
+    view.resize(1600, 900);
+    view.show();
+    std::vector<viewer_core::Overlay> overlays;
+    std::vector<cv::Point2d> ring;
+    for (int i = 0; i < 1024; ++i) {
+        const double angle = 2 * 3.14159265358979 * i / 1024;
+        ring.emplace_back(1920 + 900 * std::cos(angle), 1080 + 900 * std::sin(angle));
+    }
+    overlays.push_back(viewer_core::Polygon{ring, "Document"});
+    for (int i = 0; i < 255; ++i) {
+        overlays.push_back(viewer_core::Rectangle{{100.0 + (i % 17) * 210, 100.0 + (i / 17) * 130, 180, 100},
+                                                  std::string(64, 'l')});
+    }
+    const viewer_core::ImageTags tags{.overlays = viewer_core::makeOverlays(overlays)};
+    const auto encoded =
+        visual_debug::encode(cv::Mat(2160, 3840, CV_8UC3), "frame", {.description = toDescription(tags)});
+    ASSERT_TRUE(std::holds_alternative<visual_debug::EncodedMessage>(encoded)) << "the list must fit 64 KiB";
+    std::cout << "[ overlays ] header bytes: "
+              << std::get<visual_debug::EncodedMessage>(encoded).header.size() << '\n';
+    QImage picture(1600, 900, QImage::Format_RGBA8888);
+    picture.fill(Qt::darkGray);
+
+    // render() calls paintEvent into an image made once, so only the paint is timed (an offscreen window
+    // is never exposed, so repaint() would paint nothing).
+    QImage target(view.size(), QImage::Format_ARGB32_Premultiplied);
+    // A Retina screen's backing store: twice the pixels, with the painter scaled by 2. Labels laid out once
+    // must stay laid out there too.
+    QImage retina(view.size() * 2, QImage::Format_ARGB32_Premultiplied);
+    retina.setDevicePixelRatio(2.0);
+    const auto meanPaintOn = [&](QImage& onto, viewer_core::ImageTags::Overlays list) {
+        view.setImage(picture, ImageView::KeepView::No, QSize(3840, 2160), list);
+        view.render(&onto); // the first paint loads fonts
+        constexpr int kPaints = 100;
+        QElapsedTimer timer;
+        timer.start();
+        for (int i = 0; i < kPaints; ++i) {
+            view.render(&onto);
+        }
+        return static_cast<double>(timer.nsecsElapsed()) / kPaints / 1e6;
+    };
+    const auto meanPaint = [&](viewer_core::ImageTags::Overlays list) { return meanPaintOn(target, list); };
+    const double without = meanPaint(nullptr);
+    const double with = meanPaint(tags.overlays);
+    // The parts of the cost: the polygon alone, the rectangles without and with their labels.
+    std::vector<viewer_core::Overlay> unlabelled(overlays.begin() + 1, overlays.end());
+    for (auto& overlay : unlabelled) {
+        std::get<viewer_core::Rectangle>(overlay).label.clear();
+    }
+    const double polygonOnly = meanPaint(viewer_core::makeOverlays({overlays.front()}));
+    const double rectangles = meanPaint(viewer_core::makeOverlays(unlabelled));
+    const double labelled = meanPaint(viewer_core::makeOverlays({overlays.begin() + 1, overlays.end()}));
+    // What a document check sends: the outline, the photo, the MRZ band, the face and four corner points.
+    const double typical = meanPaint(viewer_core::makeOverlays(
+        {viewer_core::Polygon{{{900, 500}, {2900, 450}, {2950, 1700}, {870, 1750}}, "Document"},
+         viewer_core::Rectangle{{1050, 700, 500, 640}, "Photo"},
+         viewer_core::Polygon{
+             {{950, 1450}, {2850, 1420}, {2855, 1620}, {955, 1650}}, "MRZ", {0xE0, 0x50, 0x50}},
+         viewer_core::Circle{{1300, 1000}, 200}, viewer_core::Point{{900, 500}},
+         viewer_core::Point{{2900, 450}}, viewer_core::Point{{2950, 1700}},
+         viewer_core::Point{{870, 1750}}}));
+
+    std::cout << "[ overlays ] mean paint without: " << without << " ms, with 256 overlays: " << with
+              << " ms, added: " << with - without << " ms (bar 1.67 ms)\n"
+              << "[ overlays ] the 1024-point polygon alone: " << polygonOnly
+              << " ms; 255 rectangles: " << rectangles << " ms; with their labels: " << labelled << " ms\n"
+              << "[ overlays ] a document check's 8 overlays: " << typical << " ms\n";
+    // At a device pixel ratio of 2: the rectangles without and with their labels. Labels laid out again on
+    // every paint would make the second far more than the first, as they did before the label cache (about 10
+    // ms).
+    const double retinaRectangles = meanPaintOn(retina, viewer_core::makeOverlays(unlabelled));
+    const double retinaLabelled =
+        meanPaintOn(retina, viewer_core::makeOverlays({overlays.begin() + 1, overlays.end()}));
+    std::cout << "[ overlays ] at DPR 2: 255 rectangles: " << retinaRectangles
+              << " ms; with their labels: " << retinaLabelled << " ms\n";
 }
 
 } // namespace

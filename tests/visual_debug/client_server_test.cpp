@@ -130,6 +130,40 @@ TEST(ClientServer, DescriptionReachesTheSink) {
     EXPECT_EQ(messages[1].description, description);
 }
 
+TEST(ClientServer, OverlaysReachTheSink) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+    const visual_debug::ImageDescription description{
+        .overlays = {visual_debug::Rectangle{{0.5, 1, 2, 1.5}, "MRZ", visual_debug::kOverlayRed}}};
+
+    EXPECT_EQ(client.sendLive(smallImage(), "camera", description), SendResult::Delivered);
+
+    ASSERT_TRUE(sink.waitForCount(1, 1s));
+    EXPECT_EQ(sink.messages().front().description, description);
+}
+
+// The overlays that fit go with the image; the rest are left out rather than the image refused.
+TEST(ClientServer, OverlaysPast64KiBAreLeftOutAndTheImageDelivered) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+    visual_debug::ImageDescription description;
+    for (int i = 0; i < 256; ++i) {
+        description.overlays.push_back(
+            visual_debug::Polygon{std::vector<cv::Point2d>(1000, cv::Point2d(123456.789, 1.5))});
+    }
+
+    EXPECT_EQ(client.send(smallImage(), "heavy", description), SendResult::Delivered);
+
+    ASSERT_TRUE(sink.waitForCount(1, 1s));
+    const auto received = sink.messages().front().description.overlays;
+    EXPECT_FALSE(received.empty());
+    EXPECT_LT(received.size(), description.overlays.size());
+}
+
 TEST(ClientServer, StillsStayStills) {
     CollectingSink sink;
     Server server(sink, {.endpoint = kAnyLoopbackPort});
