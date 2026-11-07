@@ -87,6 +87,15 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "windows-asan",
+      "displayName": "Windows Debug with AddressSanitizer (MSVC, vcpkg)",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ID_VISION_LAB_SANITIZERS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -132,6 +141,11 @@
       "name": "windows-release",
       "inherits": "windows-base",
       "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-asan",
+      "inherits": "windows-base",
+      "configurePreset": "windows-asan"
     }
   ],
   "testPresets": [
@@ -183,6 +197,11 @@
       "name": "windows-release",
       "inherits": "windows-base",
       "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-asan",
+      "inherits": "windows-base",
+      "configurePreset": "windows-asan"
     }
   ]
 }
