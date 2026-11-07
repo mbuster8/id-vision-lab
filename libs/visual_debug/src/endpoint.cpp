@@ -7,11 +7,21 @@
 namespace visual_debug {
 
 std::string defaultEndpoint() {
-#if defined(_MSC_VER)
-#pragma warning(suppress : 4996) // getenv is fine here: nothing in this library modifies the environment
+    std::string value;
+#ifdef _WIN32
+    // MSVC deprecates getenv (warning C4996) for _dupenv_s, which copies the value while it reads it.
+    char* copy = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&copy, &length, kEndpointEnvironmentVariable) == 0 && copy != nullptr) {
+        value = copy;
+    }
+    std::free(copy);
+#else
+    if (const char* raw = std::getenv(kEndpointEnvironmentVariable)) {
+        value = raw;
+    }
 #endif
-    const char* value = std::getenv(kEndpointEnvironmentVariable);
-    if (value == nullptr || *value == '\0') {
+    if (value.empty()) {
         return std::string(kDefaultEndpoint);
     }
     return value;

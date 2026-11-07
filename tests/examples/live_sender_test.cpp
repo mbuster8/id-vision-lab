@@ -678,9 +678,11 @@ TEST(LiveSender, OutlineGoesWithTheCameraFrameOnly) {
 // outline into one contact sheet, sheet.png, for a look. The clip may show a real document: keep it and the
 // PNGs out of git.
 TEST(LiveSenderMeasurement, DISABLED_OutlineOnAClip) {
-    const char* clip = std::getenv("LIVE_SENDER_OUTLINE_CLIP");
-    const char* debug = std::getenv("LIVE_SENDER_OUTLINE_DEBUG");
-    ASSERT_NE(clip, nullptr) << "set LIVE_SENDER_OUTLINE_CLIP";
+    const auto clipVariable = test_support::environmentValue("LIVE_SENDER_OUTLINE_CLIP");
+    const auto debugVariable = test_support::environmentValue("LIVE_SENDER_OUTLINE_DEBUG");
+    ASSERT_TRUE(clipVariable.has_value()) << "set LIVE_SENDER_OUTLINE_CLIP";
+    const std::string& clip = *clipVariable;
+    const char* debug = debugVariable ? debugVariable->c_str() : nullptr;
     cv::VideoCapture capture;
     ASSERT_TRUE(live_sender::openVideoFile(capture, clip)) << clip;
 
