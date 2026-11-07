@@ -536,7 +536,7 @@ waiting for the closing one.
 | `live_sender --camera 1 --name phone` | The same camera as channels `phone` and `phone edges`. |
 | `live_sender "path/to/My video.mp4"` | Plays a video file in real time, as channels `My video.mp4` and `My video.mp4 edges`, and stops at its end. |
 | `live_sender --hdr "path/to/iPhone HDR.MOV"` | Plays a phone's HDR video as 16-bit frames with its HLG or PQ tags; the viewer tone-maps it (see [HDR video](#hdr-video)). |
-| `live_sender --outline` | Streams the first camera with the outline of a card or passport held to it drawn over each frame (see [Overlays](#overlays)). |
+| `live_sender --outline` | Streams the first camera with the outline of a card or passport held to it drawn over each frame (see [Overlays](#overlays)). Keep the whole document in view on a darker surface: a light page on a light desk is rarely found. |
 | `live_sender --pattern` | Streams a moving test pattern; no camera or file needed. |
 | `live_sender --pattern --size 3840x2160 --fps 30` | A 4K load test: compare `fps in` with `drawn` in the info strip. |
 | `live_sender --pattern --endpoint tcp://127.0.0.1:7140` | Streams to a second viewer, started with `--endpoint tcp://127.0.0.1:7140`. |
@@ -554,7 +554,7 @@ leave the folder out.
 | *(none of the three)* | The same as `--camera 0`. |
 | `--frames N` | Stop after `N` frames. Without it, a camera runs until Ctrl+C and a file until its end. |
 | `--name NAME` | Name the channels `NAME` and `NAME edges` instead of after the source (`camera N`, the file's name, or `camera` and `edges` for the pattern), for instance to tell two patterns apart on one viewer; the summary uses the same names. An empty name, one that is not valid UTF-8, or one longer than 1018 bytes (so that `NAME edges` fits the 1024 a channel name may have), is a usage error. |
-| `--outline` | Send each frame with the outline of the largest convex four-cornered shape in it (a card, a passport page), when it covers at least 5 % of the frame, as an overlay labelled `Document`. Found on a copy at most 640 pixels on its longest side, before the frame is sent, since the overlay travels with it. A demonstration of overlays, not a document detector. |
+| `--outline` | Send each frame with the outline of the largest document-like shape in it (a card, a passport page) as an overlay labelled `Document`: four corners, covering at least 10 % of the frame, wholly in view and lighter than its surroundings. An outline is kept for 10 frames (a third of a second at 30 fps) after it is lost, so it does not flicker. Found on a copy at most 640 pixels on its longest side, before the frame is sent, since the overlay travels with it. Only the outline: the photo and the MRZ are not looked for. A demonstration of overlays, not a document detector: it works best with the whole document in view on a darker surface; a light page on a light desk, or one the frame cuts off, is rarely found. |
 | `--endpoint <uri>` | The viewer to send to: by default `$VISUAL_DEBUG_ENDPOINT` if set, else `tcp://127.0.0.1:7139`. |
 | `--list-cameras` | Print the camera numbers that open, with their frame size, and exit. On macOS, which numbers cameras without gaps, it stops at the first number that does not open; elsewhere it tries 0 to 9. OpenCV cannot read cameras' names, so this is how you find your USB camera's number. |
 | `--help`, `-h` | Print the usage and the examples above, and exit. |
