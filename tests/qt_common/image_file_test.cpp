@@ -13,11 +13,19 @@
 #include <cstdint>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace {
 
+// Encoded by OpenCV and written by Qt, as readImageFile reads: cv::imwrite takes a narrow path, which on
+// Windows is the ANSI code page and cannot name every file.
 void writeImage(const QString& path, const cv::Mat& image) {
-    ASSERT_TRUE(cv::imwrite(QFile::encodeName(path).toStdString(), image));
+    std::vector<uchar> bytes;
+    ASSERT_TRUE(cv::imencode(".png", image, bytes));
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size())),
+              static_cast<qint64>(bytes.size()));
 }
 
 TEST(ImageFile, KeepsSixteenBitDepth) {
