@@ -65,6 +65,88 @@ jobs:
           cmake --build build/no-qt
           ctest --test-dir build/no-qt --output-on-failure
 
+  windows:
+    name: Windows (MSVC, vcpkg, Qt 6.12.0)
+    runs-on: windows-2025
+    # The first run, with empty caches, builds OpenCV and FFmpeg from source.
+    timeout-minutes: 120
+    env:
+      QT_VERSION: 6.12.0
+      QT_ARCH: win64_msvc2022_64
+      AQTINSTALL_VERSION: 3.3.0
+      VCPKG_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # vcpkg at the manifest's builtin-baseline: the runner's own copy is older than the baseline, which must
+      # be in vcpkg's history. Full history, since vcpkg reads port versions from git objects.
+      - name: Read the vcpkg baseline
+        id: baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          "commit=$baseline" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ steps.baseline.outputs.commit }}
+          path: vcpkg
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          "VCPKG_INSTALLATION_ROOT=${{ github.workspace }}\vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$env:VCPKG_BINARY_CACHE,readwrite" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force $env:VCPKG_BINARY_CACHE | Out-Null
+
+      # The libraries vcpkg built before. Its file cache is keyed by each package's own inputs, so an older
+      # cache still serves every package a changed vcpkg.json did not touch.
+      - name: Restore vcpkg's binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      # Qt's prebuilt MSVC binaries, as the Qt Online Installer gives them locally (ADR-002).
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\Qt\${{ env.QT_VERSION }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_VERSION }}
+
+      - name: Install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          pipx install "aqtinstall==$env:AQTINSTALL_VERSION"
+          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
+
+      - name: Point the presets at Qt
+        shell: pwsh
+        run: '"QT_ROOT_DIR=C:\Qt\$env:QT_VERSION\msvc2022_64" >> $env:GITHUB_ENV'
+
+      # One step: the Visual Studio developer environment does not survive between steps.
+      - name: Configure, build and test (debug)
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+          cmake --preset windows-debug
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-debug
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --preset windows-debug
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   format:
     name: clang-format
     runs-on: ubuntu-24.04
