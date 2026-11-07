@@ -125,7 +125,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the tests that need no Qt (394 on Linux and Windows)
+ctest --test-dir build/no-qt               # the tests that need no Qt (397 on macOS, 394 on Linux and Windows)
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -133,10 +133,10 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (796 tests on Linux and Windows)
+ctest --preset debug                       # everything (799 tests on macOS, about 110 seconds; 796 on Linux and Windows)
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
-ctest --preset asan                        # the same tests under the sanitizers (about 127 seconds)
+ctest --preset asan                        # the same tests under the sanitizers (about 151 seconds on macOS)
 ctest --preset debug -L whole              # only the whole-program runs
 ctest --preset debug -LE whole             # everything except them
 ```
