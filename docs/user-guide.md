@@ -612,6 +612,12 @@ read, such as a Matroska `.mkv`, falls back to FFmpeg; OpenCV's AVFoundation cod
 its own, which no setting silences. Cameras are read as before. On other systems, files go straight to
 OpenCV's default reader.
 
+**Video files on Windows.** OpenCV's default reader there is also FFmpeg (vcpkg's build), tried before
+Windows' Media Foundation, and it decodes in software. It read every test video: iPhone HEVC 10-bit HLG
+`.MOV` files, `.mp4` files and 8-bit `.mov` clips. FFmpeg decodes HEVC itself, so Microsoft's HEVC Video
+Extensions are not needed. It hands HDR video over as 8-bit pictures like every OpenCV reader: use `--hdr`
+for HDR video.
+
 OpenCV also prints a line or two of its own for a camera number that does not open, outside its logger, so
 `live_sender` cannot silence them; its own message follows them.
 
@@ -640,7 +646,10 @@ Horses close to Tegernsee.MOV edges: 600 sent, 600 delivered
 
 That 4K video runs at 60 frames a second, and each 16-bit 4K frame is about 50 MB: on an M4 Pro, with the
 viewer on the same Mac, `live_sender` kept the video's timing by skipping frames, 145 of its first 745 in
-this run and 80 of 680 in another; how many depends on what else the Mac is doing.
+this run and 80 of 680 in another; how many depends on what else the Mac is doing. On a Windows laptop (Intel
+Core i9, Lenovo Legion 5), decoding with D3D11VA, the same command skipped 1517 frames to send 600: there, sending
+4K frames to the viewer is what takes the time, not decoding (the 4K test pattern reaches 28 frames a second
+with no viewer listening and 21 with one).
 
 - A video that is not HDR works too, on the same scale, tagged SDR and BT.709.
 - Dolby Vision profiles 8.1 and 8.4 (iPhones record 8.4) play through their HDR10 or HLG base layer. Profile 5

@@ -455,9 +455,22 @@ preset on GitHub's `windows-2025` runner. It checks vcpkg out at the manifest's 
 
 ### Qt Creator on Windows
 
-Not yet checked by hand on Windows. Qt Creator reads `CMakePresets.json`, so opening the top-level
-`CMakeLists.txt` and ticking **Windows Debug (MSVC, vcpkg)** should configure the same `build\windows-debug`
-folder, provided Qt Creator was started from a terminal that has the two environment variables above.
+Checked with Qt Creator 20.0.2 on Windows 11, November 2026. Qt Creator reads `CMakePresets.json`, sets up
+MSVC's environment itself, and reads `VCPKG_INSTALLATION_ROOT` and `QT_ROOT_DIR` from your user environment
+(start it after setting them).
+
+1. **File → Open File or Project…**, then the top-level `CMakeLists.txt`.
+2. On the **Configure Project** page, tick **Windows Debug (MSVC, vcpkg)** and **Windows Release (MSVC,
+   vcpkg)**, and click **Configure Project**. They build into the same `build\windows-debug` and
+   `build\windows-release` folders as the command line.
+3. Build, run `visual_debug_viewer` and run the tests as on macOS (steps 3 to 5 of
+   [Working in Qt Creator](#working-in-qt-creator), with Ctrl in place of ⌘). The **Test Results** pane
+   reports 785 passes, 1 skipped (`ClientServer.RefusesNonLoopbackBindByDefault`) and 2 disabled: Qt Creator
+   lists GoogleTest's cases, not CTest's seven whole-program runs, so its total is CTest's 793 less those 7.
+
+**`LNK1104: cannot open file 'apps\visual_debug_viewer.exe'`.** The viewer (or the example sender) from that
+build is still running, and Windows does not let a running program's file be replaced. Quit it and build
+again.
 
 ### Troubleshooting on Windows
 
