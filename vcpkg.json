@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "id-vision-lab",
+  "version": "2.0.0",
+  "builtin-baseline": "6fdd23fa0a9479a9f9a1c48178696f60cf39255d",
+  "dependencies": [
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["ffmpeg", "fs", "intrinsics", "jpeg", "msmf", "png", "thread", "tiff", "webp"]
+    },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["avcodec", "avformat", "swscale"]
+    },
+    "zeromq",
+    "cppzmq",
+    "nlohmann-json",
+    "gtest",
+    {
+      "name": "pkgconf",
+      "host": true
+    }
+  ]
+}
