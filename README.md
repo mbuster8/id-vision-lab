@@ -131,7 +131,7 @@ Run these from the repository root. The [build guide](docs/build-guide.md) and t
 ```sh
 cmake --preset debug                    # configure; once, or after changing a CMakeLists.txt
 cmake --build --preset debug            # build everything into build/debug
-ctest --preset debug                    # all tests (793 on Linux and Windows)
+ctest --preset debug                    # all tests (796 on Linux and Windows)
 ctest --preset debug -R ClientServer    # only the tests whose name matches
 
 cmake --preset release                  # an optimised build, into build/release
@@ -276,7 +276,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | Build | three qmake `.pro` files with hard-coded build paths | one CMake project with presets, warning-free under `-Wall -Wextra -Wpedantic` |
 | Message | a hand-packed binary header | a JSON header plus a pixel frame, validated field by field |
 | Streams | none: one still image at a time | live channels from cameras, video files and HDR video (FFmpeg's libraries), in real time |
-| Tests | none | 793 GoogleTest tests on Linux and Windows, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
+| Tests | none | 796 GoogleTest tests on Linux and Windows, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | Documentation | one paragraph in `readme.txt` | this README, five guides and two decision records |
 
 ### Defects found in the 2013 code, and what fixed them
@@ -330,13 +330,14 @@ id-vision-lab/
 ├── tests/                 GoogleTest tests for all of the above
 ├── resources/icons/       the apps' icons
 ├── docs/                  guides, wire format, architecture, decision records
-├── cmake/                 warning, sanitizer and macOS icon settings
+├── cmake/                 warning, sanitizer, icon and Windows packaging settings
+├── packaging/licenses/    the third-party notices the Windows packages ship
 ├── scripts/               check.sh (the CI pipeline, locally), the Ubuntu package list, the pre-push hook
 ├── docker/                the CI's Ubuntu job as a container
 ├── .github/               continuous integration, CodeQL and Dependabot
 ├── .claude/skills/        Claude Code skills: local-ci and pr-ready
 ├── CMakeLists.txt
-├── CMakePresets.json      debug, release and asan builds; windows-debug and windows-release
+├── CMakePresets.json      debug, release and asan builds; windows-debug, windows-release and windows-asan
 ├── vcpkg.json             the Windows libraries, at pinned versions
 ├── LICENSE                Apache License 2.0
 └── NOTICE
@@ -346,8 +347,10 @@ id-vision-lab/
 
 Builds and passes all tests on macOS with Apple silicon. Continuous integration builds and tests every push
 on macOS and on Ubuntu 24.04 (with the distribution's OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest
-versions supported). On Windows 11 it builds with MSVC and vcpkg, warning-free, and passes all tests;
-continuous integration has a Windows job too, which has not run on GitHub yet.
+versions supported). On Windows 11 it builds with MSVC and vcpkg, warning-free, and passes all tests, also
+under AddressSanitizer; `cpack` makes a portable `.zip` and an `.msi` installer of the two apps
+([build guide](docs/build-guide.md#packages-for-windows)). Continuous integration has a Windows job too,
+which has not run on GitHub yet.
 
 ## Licence
 

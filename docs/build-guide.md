@@ -125,7 +125,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the tests that need no Qt (391 on Linux and Windows)
+ctest --test-dir build/no-qt               # the tests that need no Qt (394 on Linux and Windows)
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -133,7 +133,7 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (793 tests on Linux and Windows)
+ctest --preset debug                       # everything (796 tests on Linux and Windows)
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
 ctest --preset asan                        # the same tests under the sanitizers (about 127 seconds)
@@ -380,6 +380,7 @@ and Linux:
 |---|---|---|
 | `windows-debug` | Debug | `build\windows-debug` |
 | `windows-release` | Release | `build\windows-release` |
+| `windows-asan` | Debug, with AddressSanitizer | `build\windows-asan` |
 
 From the repository root, inside the developer environment:
 
@@ -394,17 +395,14 @@ ctest --preset windows-debug
 `%LOCALAPPDATA%\vcpkg\archives`, so the next configure, of either preset or of a fresh clone, takes about 20
 seconds. vcpkg builds the debug and release libraries together.
 
-There is no sanitizer preset on Windows: MSVC's AddressSanitizer has no UndefinedBehaviorSanitizer, and the
-macOS and Linux runs cover what it would find.
-
-The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 793 tests pass, in 202 seconds (debug)
-and 170 seconds (release); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
+The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 796 tests pass, in 210 seconds (debug),
+151 seconds (release) and 352 seconds (`windows-asan`); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
 build without Qt, as on the other platforms:
 
 ```powershell
 cmake --preset windows-debug -B build\no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build\no-qt
-ctest --test-dir build\no-qt               # the 391 tests that need no Qt
+ctest --test-dir build\no-qt               # the 394 tests that need no Qt
 ```
 
 ### Running on Windows
@@ -429,6 +427,52 @@ tcp://127.0.0.1:7140`, and `--help` prints to the terminal.
 The debug build of OpenCV logs `[ INFO:0@…] … libraryLoad load … opencv_core_parallel_… => FAILED` lines on
 start: it looks for optional parallel back-ends that vcpkg does not build. Harmless; the release build is
 quiet, and `OPENCV_LOG_LEVEL=WARNING` hides them.
+
+**File names with letters outside English.** The apps open files through Qt, which uses Windows' UTF-16
+calls. The examples hand paths to OpenCV, which opens files by their narrow (`char`) name, so each example
+(and the tests that read files through them) carries a manifest, `cmake/utf8_code_page.manifest`, that makes
+UTF-8 its code page: its `argv` then arrives as UTF-8 and a path such as `obrázok č.1.png` opens. This needs
+Windows 10 version 1903 or newer; on older Windows such a path is not found.
+
+### AddressSanitizer on Windows
+
+The `windows-asan` preset builds with MSVC's AddressSanitizer (`/fsanitize=address`). MSVC has no
+UndefinedBehaviorSanitizer, so this preset finds memory errors only; the macOS and Linux `asan` presets cover
+undefined behaviour. Inside the developer environment, which puts the sanitizer's runtime DLL on `PATH`:
+
+```powershell
+cmake --preset windows-asan
+cmake --build --preset windows-asan
+ctest --preset windows-asan
+```
+
+The programs it builds run only from that environment, or with Visual Studio's
+`VC\Tools\MSVC\<version>\bin\Hostx64\x64` folder on `PATH`. `cmake/sanitizers.cmake` explains the flags it
+changes: Visual Studio's `/RTC1` checks are off (they cannot be combined with the sanitizer), incremental
+linking is off, and the container annotations are off, because vcpkg's libraries are built without the
+sanitizer and an annotated `std::vector` passed between the two would be reported falsely.
+
+### Packages for Windows
+
+`cpack` makes two packages of the two apps from a `windows-release` build: a portable `.zip` and an `.msi`
+installer. The `.msi` needs the [WiX Toolset](https://wixtoolset.org/) **version 3**, which CPack's `WIX`
+generator uses by default (checked with WiX 3.10.4); its installer sets the `WIX` environment variable CPack
+looks for. Inside the developer environment:
+
+```powershell
+cmake --build --preset windows-release
+cpack --config build\windows-release\CPackConfig.cmake -B build\windows-release\packages
+```
+
+Both packages hold the same `ID Vision Lab` folder: `bin\` with the two apps, the Qt and vcpkg DLLs they load
+and the Visual C++ runtime; `plugins\` with Qt's platform, style and image-format plug-ins; and `licenses\`
+with the project's licence, `THIRD-PARTY-NOTICES.txt` naming every library inside and its licence, the GNU
+licences Qt is used under, and each vcpkg library's own copyright file. Neither needs Qt, vcpkg or Visual
+Studio on the computer it runs on. The `.zip` runs from wherever it is unpacked. The `.msi` installs into
+`C:\Program Files\ID Vision Lab` for everyone on the computer (so it asks for administrator rights), adds
+**Visual Debug Viewer**, **Visual Debug Example Sender** and an uninstaller to the Start menu under
+**ID Vision Lab**, and is removed from **Settings → Apps** like any other program. The viewer's settings and
+saved images belong to each user, not to the install, so uninstalling keeps them. `cmake/windows_packaging.cmake` lists what is left out and why.
 
 ### Checking changes on Windows
 
@@ -465,8 +509,9 @@ MSVC's environment itself, and reads `VCPKG_INSTALLATION_ROOT` and `QT_ROOT_DIR`
    `build\windows-release` folders as the command line.
 3. Build, run `visual_debug_viewer` and run the tests as on macOS (steps 3 to 5 of
    [Working in Qt Creator](#working-in-qt-creator), with Ctrl in place of ⌘). The **Test Results** pane
-   reports 785 passes, 1 skipped (`ClientServer.RefusesNonLoopbackBindByDefault`) and 2 disabled: Qt Creator
-   lists GoogleTest's cases, not CTest's seven whole-program runs, so its total is CTest's 793 less those 7.
+   reports every test passing except 1 skipped (`ClientServer.RefusesNonLoopbackBindByDefault`) and 2
+   disabled: Qt Creator lists GoogleTest's cases, not CTest's seven whole-program runs, so its total is
+   CTest's less those 7.
 
 **`LNK1104: cannot open file 'apps\visual_debug_viewer.exe'`.** The viewer (or the example sender) from that
 build is still running, and Windows does not let a running program's file be replaced. Quit it and build
