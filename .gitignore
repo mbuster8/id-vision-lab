@@ -1,5 +1,8 @@
 docs/superpowers/
 
+# Test videos kept beside the docs: large, and some show real documents such as a passport.
+docs/videos/
+
 # Build trees and IDE state
 build/
 CMakeUserPresets.json
