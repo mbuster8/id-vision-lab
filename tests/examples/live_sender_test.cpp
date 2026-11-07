@@ -245,6 +245,19 @@ TEST(LiveSender, FileNamesGiveTheirFirst32Characters) {
     EXPECT_EQ(namesFor({"bad\xff.mov"}).camera, "bad\xEF\xBF\xBD.mov");
 }
 
+// The file's name is what follows the last separator; on Windows that is either slash, or a drive's colon.
+TEST(LiveSender, FileNameFollowsTheLastSeparator) {
+    EXPECT_EQ(live_sender::fileNameOf("clips/a b/clip.mov"), "clip.mov");
+    EXPECT_EQ(live_sender::fileNameOf("clip.mov"), "clip.mov");
+    EXPECT_EQ(live_sender::fileNameOf("clips/"), "");
+#ifdef _WIN32
+    EXPECT_EQ(live_sender::fileNameOf("C:\\videos\\clip.mov"), "clip.mov");
+    EXPECT_EQ(live_sender::fileNameOf("C:clip.mov"), "clip.mov");
+#else
+    EXPECT_EQ(live_sender::fileNameOf("odd\\name.mov"), "odd\\name.mov");
+#endif
+}
+
 TEST(LiveSender, RunSendsUnderTheGivenNames) {
     RecordingSender sender;
     int read = 0;

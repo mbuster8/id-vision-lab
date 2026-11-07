@@ -53,6 +53,8 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             pipeline
             visual_debug::visual_debug
             GTest::gtest_main)
+    # The examples' file reading, tested as the examples run: with the UTF-8 code page on Windows.
+    id_vision_lab_use_utf8_code_page(pipeline_tests)
     # video_file_test.cpp writes and reads clips, so these tests need OpenCV's videoio, as live_sender does.
     find_package(OpenCV REQUIRED COMPONENTS videoio)
     # FFmpeg's libraries are optional; the tests write their clips with them too. Listed before
@@ -82,6 +84,7 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             GTest::gtest_main)
     # test_support.h: the collecting sink the delivery test uses.
     target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+    id_vision_lab_use_utf8_code_page(live_sender_tests)
 endif()
 
 # The Qt code, with an offscreen QApplication. Every Qt test program uses qt_common/test_main.cpp, which keeps

@@ -1,5 +1,6 @@
 #include "pipeline.h"
 
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 // OpenCV 5 moved the distance types (cv::DIST_L2) from imgproc into the geometry module; OpenCV 4 has no
 // such header.
@@ -8,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <exception>
 #include <vector>
 
 namespace pipeline_demo {
@@ -128,6 +130,18 @@ cv::Mat makeTestPattern(cv::Size size) {
                 cv::FONT_HERSHEY_SIMPLEX, 1.5 * size.width / 640.0, cv::Scalar(255, 255, 255), 3,
                 cv::LINE_AA);
     return pattern;
+}
+
+std::optional<cv::Mat> readImage(const std::string& path) {
+    try {
+        cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
+        if (!image.empty()) {
+            return image;
+        }
+    } catch (const std::exception&) {
+        // an unreadable file, like any other
+    }
+    return std::nullopt;
 }
 
 } // namespace pipeline_demo

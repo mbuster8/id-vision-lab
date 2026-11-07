@@ -25,6 +25,7 @@ add_executable(live_sender main.cpp)
 target_link_libraries(live_sender PRIVATE live_sender_lib live_sender_video opencv_videoio)
 id_vision_lab_set_warnings(live_sender)
 id_vision_lab_add_sanitizer_defaults(live_sender)
+id_vision_lab_use_utf8_code_page(live_sender)
 
 # --hdr reads a video with FFmpeg's own libraries: OpenCV's videoio gives 8-bit pictures without the 10-bit
 # data and the HDR tags. Optional: without them live_sender still builds, and --hdr says what is missing.

@@ -15,7 +15,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
 #include <future>
 #include <limits>
 #include <string_view>
@@ -178,6 +177,16 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
     return arguments;
 }
 
+std::string fileNameOf(const std::string& path) {
+#ifdef _WIN32
+    constexpr const char* kSeparators = "/\\:";
+#else
+    constexpr const char* kSeparators = "/";
+#endif
+    const std::size_t last = path.find_last_of(kSeparators);
+    return last == std::string::npos ? path : path.substr(last + 1);
+}
+
 ChannelNames channelNames(const std::string& name) {
     if (name.empty()) {
         return {};
@@ -193,8 +202,7 @@ ChannelNames channelNames(const Arguments& arguments) {
         return channelNames("camera " + std::to_string(camera->index));
     }
     if (const auto* file = std::get_if<FileSource>(&arguments.source)) {
-        const std::string fileName =
-            visual_debug::sanitiseName(std::filesystem::path(file->path).filename().string());
+        const std::string fileName = visual_debug::sanitiseName(fileNameOf(file->path));
         if (!fileName.empty()) {
             return channelNames(firstCharacters(fileName, kFileNameCharacters));
         }
