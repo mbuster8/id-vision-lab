@@ -104,7 +104,9 @@ To build one target: `cmake --build --preset debug --target pipeline_demo`.
 The apps' file names are the same on every platform. On macOS, Finder lists the file name, while the menu
 bar, ⌘-Tab and the Dock show the bundle's name, such as **Visual Debug Viewer**. Each bundle's icon is
 made at build time from the PNG in `resources/icons/`, with the `sips` and `iconutil` tools that come with
-macOS.
+macOS. On Windows the same PNG becomes each `.exe`'s icon, for Explorer, the taskbar and Alt-Tab: a small
+build tool, `id_vision_lab_make_ico` (from `cmake/make_ico.cpp`, with OpenCV), writes an `.ico` with 256, 48,
+32 and 16 pixel images, and a generated `.rc` file compiles it in.
 
 ### Options
 
@@ -123,7 +125,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the tests that need no Qt (390 on Linux and Windows)
+ctest --test-dir build/no-qt               # the tests that need no Qt (391 on Linux and Windows)
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -131,7 +133,7 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (792 tests on Linux and Windows)
+ctest --preset debug                       # everything (793 tests on Linux and Windows)
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
 ctest --preset asan                        # the same tests under the sanitizers (about 127 seconds)
@@ -395,14 +397,14 @@ seconds. vcpkg builds the debug and release libraries together.
 There is no sanitizer preset on Windows: MSVC's AddressSanitizer has no UndefinedBehaviorSanitizer, and the
 macOS and Linux runs cover what it would find.
 
-The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 792 tests pass, in 202 seconds (debug)
-and 171 seconds (release); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
+The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 793 tests pass, in 202 seconds (debug)
+and 170 seconds (release); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
 build without Qt, as on the other platforms:
 
 ```powershell
 cmake --preset windows-debug -B build\no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build\no-qt
-ctest --test-dir build\no-qt               # the 390 tests that need no Qt
+ctest --test-dir build\no-qt               # the 391 tests that need no Qt
 ```
 
 ### Running on Windows
@@ -446,6 +448,10 @@ scripts/check.sh --linux
 
 Do not build in the same clone while it runs: it copies the working tree into the container, and a file
 that changes during the copy fails it with `tar: .: file changed as we read it`.
+
+Continuous integration's `windows` job (in `.github/workflows/ci.yml`) builds and tests the `windows-debug`
+preset on GitHub's `windows-2025` runner. It checks vcpkg out at the manifest's baseline, installs Qt with
+`aqtinstall`, and caches both Qt and vcpkg's built libraries, so only its first run builds OpenCV and FFmpeg.
 
 ### Qt Creator on Windows
 

@@ -58,7 +58,7 @@ and data folders: renaming an app moves them.
 `apps/example_sender` · `apps/qt_common` ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
-the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, macOS bundle icons) · `scripts/`
+the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`) · `scripts/`
 (`check.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
 `.claude/skills/` (`local-ci`, `pr-ready`). Older commits use former names (`Image_processing`, Slovak
 identifiers): [`docs/former-names.md`](docs/former-names.md).
