@@ -100,10 +100,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Retried: the download of vcpkg.exe from GitHub's releases sometimes times out.
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          for ($attempt = 1; ; $attempt++) {
+            .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 4) { exit $LASTEXITCODE }
+            Write-Host "Bootstrap attempt $attempt failed; trying again in $(30 * $attempt) seconds."
+            Start-Sleep -Seconds (30 * $attempt)
+          }
           "VCPKG_INSTALLATION_ROOT=${{ github.workspace }}\vcpkg" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$env:VCPKG_BINARY_CACHE,readwrite" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force $env:VCPKG_BINARY_CACHE | Out-Null
@@ -129,7 +136,13 @@ jobs:
         if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          pipx install "git+https://github.com/miurahr/aqtinstall.git@$env:AQTINSTALL_COMMIT"
+          for ($attempt = 1; ; $attempt++) {
+            pipx install --force "git+https://github.com/miurahr/aqtinstall.git@$env:AQTINSTALL_COMMIT"
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 4) { exit $LASTEXITCODE }
+            Write-Host "pipx attempt $attempt failed; trying again in $(30 * $attempt) seconds."
+            Start-Sleep -Seconds (30 * $attempt)
+          }
           aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
 
       - name: Point the presets at Qt
