@@ -33,6 +33,7 @@ id_vision_lab_add_test_executable(viewer_core_tests
         viewer_core/display_converter_test.cpp
         viewer_core/display_settings_test.cpp
         viewer_core/hdr_tone_map_test.cpp
+        viewer_core/histogram_test.cpp
         viewer_core/region_statistics_test.cpp
         viewer_core/image_history_test.cpp
         viewer_core/image_tags_test.cpp
