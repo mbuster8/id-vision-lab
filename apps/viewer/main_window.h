@@ -30,6 +30,7 @@
 #include <vector>
 
 class ActivityLogPanel;
+class HistogramStrip;
 class ImageInfoBar;
 class ImageSidebar;
 class QLabel;
@@ -122,6 +123,11 @@ private:
     void showPicture(const QImage& picture, ImageView::KeepView keep, QSize imageSize,
                      const viewer_core::ImageTags& tags);
     void setShowClipping(bool show);
+    // The histogram strip: of the original in view, only while Show Histogram is on.
+    void updateHistogram();
+    void setHistogramShown(bool shown);
+    void applyDraggedRange(viewer_core::DisplayRange range, bool hdr);
+    void resetRangeFromHistogram();
     void showRegionStatistics(); // in the view's region label
     void changeDisplaySettings(const viewer_core::DisplaySettings& settings);
     // The settings chosen for the name, or else the default for an image with these tags.
@@ -177,6 +183,7 @@ private:
     ImageSidebar* m_sidebar = nullptr;
     ThumbnailPanel* m_thumbnails = nullptr; // the sidebar's
     ImageInfoBar* m_infoBar = nullptr;
+    HistogramStrip* m_histogramStrip = nullptr; // owns a drag's state: the markers it began on included
     ImageView* m_imageView = nullptr;
     QLabel* m_pixelLabel = nullptr;
     ServerControls* m_serverControls = nullptr;

@@ -263,4 +263,44 @@ TEST_F(DisplaySettingsControlTest, FixedFieldsSurviveNewFrames) {
     EXPECT_TRUE(popup()->isVisible());
 }
 
+// --- Settings applied from elsewhere: the histogram's drags ----------------------------------------------
+
+TEST_F(DisplaySettingsControlTest, ApplySettingsShowsThemAndEmitsOnce) {
+    m_control.applySettings({.mode = RangeMode::Fixed, .range = {1, 2}, .colours = ColourMap::Turbo});
+
+    ASSERT_EQ(m_emitted.size(), 1u);
+    EXPECT_EQ(m_emitted.back(),
+              (DisplaySettings{.mode = RangeMode::Fixed, .range = {1, 2}, .colours = ColourMap::Turbo}));
+    EXPECT_EQ(m_control.settings(), m_emitted.back());
+    EXPECT_EQ(button("rangeButton")->text(), QStringLiteral("Range: Fixed ▾"));
+    EXPECT_EQ(button("rangeButton")->toolTip(), QStringLiteral("1 to 2"));
+    EXPECT_EQ(checkedTitle(m_control.rangeMenu()), QStringLiteral("Fixed…"));
+    EXPECT_EQ(checkedTitle(m_control.coloursMenu()), QStringLiteral("Turbo"));
+}
+
+TEST_F(DisplaySettingsControlTest, HdrBlackAndWhiteAreNamedAndChoosingHdrClearsThem) {
+    m_control.setState({.mode = RangeMode::Hdr}, false, true);
+    m_control.applySettings({.mode = RangeMode::Hdr, .range = {100, 900}});
+
+    EXPECT_EQ(button("rangeButton")->text(), QStringLiteral("Range: HDR ▾"));
+    EXPECT_EQ(button("rangeButton")->toolTip(),
+              QStringLiteral("HLG or PQ tone-mapped for this screen, black at 100 and white at 900"));
+
+    actionTitled(m_control.rangeMenu(), QStringLiteral("HDR"))->trigger();
+    EXPECT_EQ(m_emitted.back(), (DisplaySettings{.mode = RangeMode::Hdr}));
+    EXPECT_EQ(button("rangeButton")->toolTip(), QStringLiteral("HLG or PQ tone-mapped for this screen"));
+}
+
+TEST_F(DisplaySettingsControlTest, FixedStartsFromHdrsBlackAndWhiteAndMakesFixed) {
+    m_control.setState({.mode = RangeMode::Hdr}, false, true);
+    m_control.applySettings({.mode = RangeMode::Hdr, .range = {100, 900}});
+    openFixed();
+    EXPECT_EQ(field("fixedMinimum")->text(), QStringLiteral("100"));
+    EXPECT_EQ(field("fixedMaximum")->text(), QStringLiteral("900"));
+
+    applyButton()->click();
+
+    EXPECT_EQ(m_emitted.back(), (DisplaySettings{.mode = RangeMode::Fixed, .range = {100, 900}}));
+}
+
 } // namespace

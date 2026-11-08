@@ -7,6 +7,7 @@
 #include "display_settings_control.h"
 #include "display_text.h"
 #include "epoch_time.h"
+#include "histogram_strip.h"
 #include "image_info_bar.h"
 #include "image_sidebar.h"
 #include "image_store.h"
@@ -24,6 +25,7 @@
 #include <QClipboard>
 #include <QColor>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -58,9 +60,11 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <thread>
@@ -879,10 +883,11 @@ TEST(MainWindowTest, MenusAreInTheirOrder) {
               (QStringList{QStringLiteral("File"), QStringLiteral("Edit"), QStringLiteral("View"),
                            QStringLiteral("Image"), QStringLiteral("Server"), QStringLiteral("History"),
                            QStringLiteral("Help")}));
-    EXPECT_EQ(entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
-              (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"),
-                           QStringLiteral("Show Clipping"), QStringLiteral("Show Overlays"),
-                           QStringLiteral("-"), QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
+    EXPECT_EQ(
+        entryTitles(window->findChild<QMenu*>(QStringLiteral("menuImage"))->actions()),
+        (QStringList{QStringLiteral("Range"), QStringLiteral("Colours"), QStringLiteral("Show Clipping"),
+                     QStringLiteral("Show Overlays"), QStringLiteral("Show Histogram"), QStringLiteral("-"),
+                     QStringLiteral("Freeze"), QStringLiteral("Snapshot")}));
     QStringList view{QStringLiteral("Show in Sidebar"), QStringLiteral("Sort By"), QStringLiteral("-"),
                      QStringLiteral("Show Log")};
     if (qt_common::canChooseAppearance()) {
@@ -3073,6 +3078,308 @@ TEST(MainWindowTest, ShowOverlaysIsOnAtEveryStart) {
 
     EXPECT_TRUE(action(*window, "actionShowOverlays")->isChecked());
     EXPECT_TRUE(viewOf(*window)->overlaysShown());
+}
+
+// --- The histogram strip
+// ------------------------------------------------------------------------------------
+
+HistogramStrip* stripOf(MainWindow& window) { return window.findChild<HistogramStrip*>(); }
+
+void showHistogram(MainWindow& window) { action(window, "actionShowHistogram")->trigger(); }
+
+void stripEvent(HistogramStrip& strip, QEvent::Type type, double x, Qt::MouseButton button,
+                Qt::MouseButtons buttons) {
+    const QPointF position(x, strip.height() / 2.0);
+    QMouseEvent event(type, position, strip.mapToGlobal(position), button, buttons, Qt::NoModifier);
+    QCoreApplication::sendEvent(&strip, &event);
+}
+
+void pressOnStrip(HistogramStrip& strip, double value) {
+    stripEvent(strip, QEvent::MouseButtonPress, strip.xOf(value), Qt::LeftButton, Qt::LeftButton);
+}
+
+void moveOnStrip(HistogramStrip& strip, double value) {
+    stripEvent(strip, QEvent::MouseMove, strip.xOf(value), Qt::NoButton, Qt::LeftButton);
+}
+
+void releaseOnStrip(HistogramStrip& strip, double value) {
+    stripEvent(strip, QEvent::MouseButtonRelease, strip.xOf(value), Qt::LeftButton, Qt::NoButton);
+}
+
+// From one value to another on the strip's axis, as a hand would: press, move, a turn of the event loop,
+// release.
+void dragOnStrip(HistogramStrip& strip, double fromValue, double toValue) {
+    pressOnStrip(strip, fromValue);
+    moveOnStrip(strip, toValue);
+    QApplication::processEvents();
+    releaseOnStrip(strip, toValue);
+    QApplication::processEvents();
+}
+
+void doubleClickStrip(HistogramStrip& strip, double value) {
+    pressOnStrip(strip, value);
+    releaseOnStrip(strip, value);
+    pressOnStrip(strip, value);
+    stripEvent(strip, QEvent::MouseButtonDblClick, strip.xOf(value), Qt::LeftButton, Qt::LeftButton);
+    releaseOnStrip(strip, value);
+    QApplication::processEvents();
+}
+
+cv::Mat greyStill(int value) { return cv::Mat(40, 40, CV_8UC1, cv::Scalar(value)); }
+
+TEST(MainWindowTest, HistogramStripHiddenInAFreshWindow) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+
+    EXPECT_FALSE(stripOf(*window)->isVisible());
+    showHistogram(*window);
+    EXPECT_FALSE(stripOf(*window)->isVisible()); // nothing in view
+}
+
+TEST(MainWindowTest, HistogramIsOffAtFirstStartAndRemembered) {
+    {
+        const auto window = makeTestWindow();
+        window->addImage("a", greyStill(10));
+        showSized(*window);
+        EXPECT_FALSE(stripOf(*window)->isVisible());
+
+        showHistogram(*window);
+
+        EXPECT_TRUE(stripOf(*window)->isVisible());
+        EXPECT_TRUE(QSettings().value(QStringLiteral("viewer/histogramShown")).toBool());
+    }
+    const auto window = makeTestWindow();
+    window->addImage("a", greyStill(10));
+    showSized(*window);
+
+    EXPECT_TRUE(action(*window, "actionShowHistogram")->isChecked());
+    EXPECT_TRUE(stripOf(*window)->isVisible());
+}
+
+TEST(MainWindowTest, HistogramHidesWithNothingInView) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+
+    window->addImage("a", greyStill(10));
+    EXPECT_TRUE(stripOf(*window)->isVisible());
+    window->deleteImage(1);
+    EXPECT_FALSE(stripOf(*window)->isVisible());
+}
+
+TEST(MainWindowTest, HistogramFollowsTheShownStill) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    window->addImage("a", greyStill(10));
+    window->addImage("b", greyStill(200));
+
+    ASSERT_EQ(stripOf(*window)->histogram().counts.size(), 1u);
+    EXPECT_GT(stripOf(*window)->histogram().counts[0][200], 0u);
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+    ASSERT_EQ(stripOf(*window)->histogram().counts.size(), 1u);
+    EXPECT_GT(stripOf(*window)->histogram().counts[0][10], 0u);
+    EXPECT_EQ(stripOf(*window)->histogram().counts[0][200], 0u);
+}
+
+TEST(MainWindowTest, HistogramFollowsASettingsChange) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    window->addImage("a", greyStill(10));
+
+    applyFixedRange(*window, QStringLiteral("10"), QStringLiteral("20"));
+
+    ASSERT_TRUE(stripOf(*window)->markers());
+    EXPECT_EQ(stripOf(*window)->markers()->range, (viewer_core::DisplayRange{10, 20}));
+}
+
+TEST(MainWindowTest, HistogramCountsOnlyTheLiveFrameInView) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+
+    feedLive(*window, "a", liveFrame(50));
+    QApplication::processEvents(); // the first channel takes the view
+    feedLive(*window, "a", liveFrame(60));
+    feedLive(*window, "b", liveFrame(200));
+    QApplication::processEvents();
+
+    const viewer_core::Histogram& histogram = stripOf(*window)->histogram();
+    ASSERT_EQ(histogram.counts.size(), 1u);
+    EXPECT_GT(histogram.counts[0][60], 0u);
+    EXPECT_EQ(histogram.counts[0][50], 0u);
+    EXPECT_EQ(histogram.counts[0][200], 0u);
+}
+
+TEST(MainWindowTest, HistogramIsNotComputedWhileHidden) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+
+    feedLive(*window, "a", liveFrame(50));
+    QApplication::processEvents();
+    feedLive(*window, "a", liveFrame(60));
+    QApplication::processEvents();
+
+    EXPECT_TRUE(stripOf(*window)->histogram().counts.empty());
+}
+
+TEST(MainWindowTest, DraggingOnTheHistogramSetsFixed) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    window->addImage("a", greyStill(128));
+    QApplication::processEvents();
+    ASSERT_EQ(viewedGrey(*window), 128);
+
+    dragOnStrip(*stripOf(*window), 255, 200);
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: Fixed ▾"));
+    const viewer_core::DisplaySettings settings = displayControlOf(*window)->settings();
+    EXPECT_EQ(settings.mode, viewer_core::RangeMode::Fixed);
+    EXPECT_EQ(settings.range.min, 0.0);
+    EXPECT_NEAR(settings.range.max, 200.0, 1.0);
+    EXPECT_GT(viewedGrey(*window), 128);
+}
+
+TEST(MainWindowTest, DraggingUnderHdrKeepsHdr) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    feedStill(*window, "phone", cv::Mat(40, 40, CV_16UC3, cv::Scalar::all(20000)), kHlgDescription);
+    const int before = viewedGrey(*window);
+
+    dragOnStrip(*stripOf(*window), 65535, 40000);
+
+    EXPECT_EQ(buttonText(*window, "rangeButton"), QStringLiteral("Range: HDR ▾"));
+    const viewer_core::DisplaySettings settings = displayControlOf(*window)->settings();
+    EXPECT_EQ(settings.mode, viewer_core::RangeMode::Hdr);
+    EXPECT_EQ(settings.range.min, 0.0);
+    EXPECT_NEAR(settings.range.max, 40000.0, 0.01 * 65536);
+    EXPECT_GT(viewedGrey(*window), before);
+}
+
+TEST(MainWindowTest, DoubleClickReturnsToTheDefaultRange) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    window->addImage("grey", greyStill(128));
+    entryTitled(displayControlOf(*window)->coloursMenu(), QStringLiteral("Turbo"))->trigger();
+    dragOnStrip(*stripOf(*window), 255, 200);
+    ASSERT_EQ(displayControlOf(*window)->settings().mode, viewer_core::RangeMode::Fixed);
+
+    doubleClickStrip(*stripOf(*window), 100);
+
+    EXPECT_EQ(displayControlOf(*window)->settings(),
+              (viewer_core::DisplaySettings{.colours = viewer_core::ColourMap::Turbo}));
+
+    feedStill(*window, "phone", cv::Mat(40, 40, CV_16UC3, cv::Scalar::all(20000)), kHlgDescription);
+    dragOnStrip(*stripOf(*window), 65535, 40000);
+    ASSERT_NE(displayControlOf(*window)->settings().range, viewer_core::DisplayRange{});
+
+    doubleClickStrip(*stripOf(*window), 20000);
+
+    EXPECT_EQ(displayControlOf(*window)->settings(),
+              (viewer_core::DisplaySettings{.mode = viewer_core::RangeMode::Hdr}));
+}
+
+TEST(MainWindowTest, HistogramDragSurvivesAFrameKindChange) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    feedLive(*window, "camera", liveFrame(100));
+    QApplication::processEvents();
+    HistogramStrip& strip = *stripOf(*window);
+
+    pressOnStrip(strip, 255);
+    feedLive(*window, "camera", cv::Mat(30, 40, CV_16UC3, cv::Scalar::all(30000)),
+             std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    QApplication::processEvents();
+    moveOnStrip(strip, 200);
+    QApplication::processEvents();
+    releaseOnStrip(strip, 200);
+    QApplication::processEvents();
+
+    const viewer_core::DisplaySettings settings = displayControlOf(*window)->settings();
+    EXPECT_EQ(settings.mode, viewer_core::RangeMode::Fixed); // the drag began on the 8-bit frame's markers
+    EXPECT_LE(settings.range.max, 255.0);
+    EXPECT_EQ(strip.histogram().counts.size(), 3u);
+}
+
+TEST(MainWindowTest, HistogramDragSurvivesAnAllNanFrame) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    cv::Mat depth(30, 40, CV_32FC1);
+    cv::randu(depth, 0.0, 1.0);
+    feedLive(*window, "depth", depth);
+    QApplication::processEvents();
+    HistogramStrip& strip = *stripOf(*window);
+    ASSERT_TRUE(strip.markers());
+    const viewer_core::DisplayRange range = strip.markers()->range;
+
+    pressOnStrip(strip, range.max);
+    feedLive(*window, "depth",
+             cv::Mat(30, 40, CV_32FC1, cv::Scalar(std::numeric_limits<double>::quiet_NaN())));
+    QApplication::processEvents();
+    moveOnStrip(strip, (range.min + range.max) / 2);
+    QApplication::processEvents();
+    releaseOnStrip(strip, (range.min + range.max) / 2);
+    QApplication::processEvents();
+
+    const viewer_core::DisplaySettings settings = displayControlOf(*window)->settings();
+    EXPECT_EQ(settings.mode, viewer_core::RangeMode::Fixed);
+    EXPECT_TRUE(std::isfinite(settings.range.min));
+    EXPECT_TRUE(std::isfinite(settings.range.max));
+}
+
+TEST(MainWindowTest, SwitchingImagesCancelsAHistogramDrag) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    window->addImage("a", greyStill(128));
+    window->addImage("b", greyStill(128));
+    HistogramStrip& strip = *stripOf(*window);
+
+    pressOnStrip(strip, 255);
+    moveOnStrip(strip, 200); // pending until the event loop turns
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+    QApplication::processEvents();
+
+    EXPECT_FALSE(strip.isDragging());
+    EXPECT_EQ(displayControlOf(*window)->settings(), viewer_core::DisplaySettings{});
+    ASSERT_TRUE(panelOf(*window)->selectImage(2));
+    EXPECT_EQ(displayControlOf(*window)->settings(), viewer_core::DisplaySettings{});
+}
+
+// What the histogram adds to each live frame the window takes and draws, on the UI thread: 4K 16UC3 HLG
+// frames, the strip off and then on, median of 60 frames each. Run by hand in a release build:
+// --gtest_also_run_disabled_tests --gtest_filter=*MainWindowMeasurement*
+TEST(MainWindowMeasurement, DISABLED_HistogramFrameCost) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    cv::Mat frame(2160, 3840, CV_16UC3);
+    cv::randu(frame, cv::Scalar::all(0), cv::Scalar::all(65536));
+    const auto medianPerFrame = [&window, &frame] {
+        std::vector<double> times;
+        for (int i = 0; i < 61; ++i) {
+            QElapsedTimer timer;
+            timer.start();
+            feedLive(*window, "camera", frame, std::chrono::system_clock::now(), std::nullopt,
+                     kHlgDescription);
+            QApplication::processEvents();
+            times.push_back(static_cast<double>(timer.nsecsElapsed()) / 1e6);
+        }
+        std::sort(times.begin() + 1, times.end()); // the first starts the channel
+        return times[times.size() / 2];
+    };
+
+    const double off = medianPerFrame();
+    showHistogram(*window);
+    const double on = medianPerFrame();
+
+    std::cout << "[ histogram ] 4K 16UC3 HLG frame taken and drawn: strip off " << off << " ms, on " << on
+              << " ms, difference " << on - off << " ms\n";
 }
 
 } // namespace

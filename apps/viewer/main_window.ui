@@ -222,6 +222,20 @@
     <string>Draw the shapes the sender attached to the image over it; the image's values are never changed</string>
    </property>
   </action>
+  <action name="actionShowHistogram">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Show &amp;Histogram</string>
+   </property>
+   <property name="toolTip">
+    <string>Show the values of the image in view with its display range; drag the range's ends to change it</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+H</string>
+   </property>
+  </action>
   <action name="actionFind">
    <property name="text">
     <string>&amp;Find…</string>
