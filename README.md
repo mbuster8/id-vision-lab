@@ -34,6 +34,15 @@ visual_debug::sendLive(frame, "phone", {.valueRange = {4100, 60219},
                                         .primaries = visual_debug::Primaries::Bt2020});
 ```
 
+From Python, a numpy array goes the same way, overlays and all, with `python/visual_debug.py` (numpy and pyzmq
+only; see [Sending from Python](docs/user-guide.md#sending-from-python)):
+
+```python
+import visual_debug as vd
+
+vd.send_image(edges, "Canny edges", overlays=[vd.Rectangle(40, 30, 200, 120, label="box")])
+```
+
 ![The Visual Debug Viewer with six live channels in its Live group (a 4K video and two cameras, each with its Canny edges), a frozen frame of the video in view, snapshots in the history below, and the pixel under the cursor read out in the status bar](docs/images/viewer.jpg)
 
 ### What it does
@@ -141,6 +150,9 @@ ctest --preset release
 cmake --preset asan                     # Debug with AddressSanitizer and UndefinedBehaviorSanitizer
 cmake --build --preset asan             # into build/asan
 ctest --preset asan                     # the same tests under the sanitizers
+
+python/.venv/bin/python -m pytest python/tests   # the Python sender's tests (setup: build guide)
+python/.venv/bin/black --check python            # and its formatting
 ```
 
 ### Check before a push
@@ -257,8 +269,8 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | Document | Contents |
 |---|---|
 | [Tour of live channels](docs/live-channels-tour.md) | Nine stops through live channels, cameras, video files, several senders and HDR video, with what to expect at each |
-| [User guide](docs/user-guide.md) | Running each program, `live_sender`'s examples, viewer controls, HDR, clipping and region statistics, overlays, configuration, send results, seven worked examples |
-| [Build guide](docs/build-guide.md) | Installing the tools, presets, targets, running the tests, Qt Creator, troubleshooting |
+| [User guide](docs/user-guide.md) | Running each program, `live_sender`'s examples, viewer controls, HDR, clipping and region statistics, overlays, sending from Python, configuration, send results, seven worked examples |
+| [Build guide](docs/build-guide.md) | Installing the tools, presets, targets, running the tests, the Python sender's tests, Qt Creator, troubleshooting |
 | [Wire format](docs/wire-format.md) | The message format, validation rules and replies, for writing a sender in any language |
 | [Architecture](docs/architecture.md) | Components, dependency rule, threads, transport behaviour, extension points |
 | [ADR-001](docs/ADR/ADR-001-technology-stack.md) | Why C++20, Qt 6, ZeroMQ, JSON and GoogleTest |
@@ -328,7 +340,8 @@ id-vision-lab/
 │   ├── minimal_sender/    the smallest use of sendImage()
 │   ├── overlay_sender/    an image sent with overlays
 │   └── live_sender/       streams a camera, a video file, an HDR video or a test pattern as live channels
-├── tests/                 GoogleTest tests for all of the above
+├── python/                the Python sender (visual_debug.py), its pytest tests and a demo
+├── tests/                 GoogleTest tests for all of the above; wire/ holds the golden headers both senders write
 ├── resources/icons/       the apps' icons
 ├── docs/                  guides, wire format, architecture, decision records
 ├── cmake/                 warning, sanitizer, icon and Windows packaging settings
@@ -336,7 +349,7 @@ id-vision-lab/
 ├── scripts/               check.sh (the CI pipeline, locally), coverage.sh, the Ubuntu package list, the pre-push hook
 ├── docker/                the CI's Ubuntu job as a container
 ├── .github/               continuous integration, CodeQL and Dependabot
-├── .claude/skills/        Claude Code skills: local-ci and pr-ready
+├── .claude/skills/        Claude Code skills: local-ci, pr-ready and authorised-delivery
 ├── CMakeLists.txt
 ├── CMakePresets.json      debug, release and asan builds; windows-debug, windows-release and windows-asan
 ├── vcpkg.json             the Windows libraries, at pinned versions

@@ -18,7 +18,8 @@ programs are `.exe` files under `build\windows-debug`, and take the same options
 | `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels, the frames and their Canny edges, named after the source (`camera 0`, the video file's name) or as you name them. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags; with `--outline`, each frame carries the outline of a card held to the camera as an overlay. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
 
 All senders reach the viewer through the `visual_debug` library, over ZeroMQ on `tcp://127.0.0.1:7139` by
-default. Start the viewer first.
+default; from Python, `python/visual_debug.py` does the same (see [Sending from Python](#sending-from-python)).
+Start the viewer first.
 
 ## Running the viewer
 
@@ -687,10 +688,71 @@ with no viewer listening and 21 with one).
 
 To try every live feature in turn, follow the [tour of live channels](live-channels-tour.md).
 
+## Sending from Python
+
+`python/visual_debug.py` is the same sender in pure Python, for notebooks and scripts: one module that sends
+numpy arrays in the same wire format, with the same optional fields and overlays and the same results as the
+C++ library. It needs Python 3.10 or newer, numpy and pyzmq. Install it into an environment of your own, or copy
+the file next to your notebook:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e python          # from the repository root; brings numpy and pyzmq
+```
+
+```python
+import numpy as np
+import visual_debug as vd
+
+ramp = (np.arange(480 * 640) % 1024).reshape(480, 640).astype(np.uint16)  # 10-bit values in 16 bits
+found = [
+    vd.Rectangle(40, 30, 200, 120, label="box"),
+    vd.Polygon([(300, 50), (420, 80), (360, 200)], label="region", colour=vd.OVERLAY_RED),
+]
+print(vd.send_image(ramp, "ramp", value_range=(0, 1023), overlays=found))
+print(vd.send_image(ramp > 512, "mask"))  # bool: sent as 0 and 255
+print(vd.send_live(np.zeros((240, 320, 3), np.uint8), "camera"))
+print(vd.send_image(np.arange(12, dtype=np.int64).reshape(3, 4), "int64"))
+```
+
+```text
+Delivered
+Delivered
+Delivered
+Invalid image
+```
+
+- **Arrays**: `(rows, cols)` or `(rows, cols, channels)` with 1 to 4 channels, any strides or byte order.
+  `uint8`, `int8`, `uint16`, `int16`, `int32`, `float32` and `float64` go as 8U to 64F; `bool` as 8U with
+  `True` as 255; `float16` as 32F. `int64`, which `np.arange` gives by default on most platforms, and the
+  other types return `Invalid image` rather than being narrowed silently: convert with `astype(np.int32)` or
+  `astype(np.float32)` when the values fit.
+- **Colour order**: BGR(A), as OpenCV holds images. An array in RGB(A) order, as Pillow, imageio and
+  matplotlib give, needs `rgb=True`, which swaps red and blue for three and four channels.
+- **Keywords**, as in C++: `value_range=(0, 1023)`, `transfer="sdr"`, `"hlg"` or `"pq"`,
+  `primaries="bt709"` or `"bt2020"`, and `overlays`: `vd.Polygon(points)` (pairs, an (N, 2) array, or an
+  OpenCV contour from `cv2.findContours`), `vd.Rectangle(x, y, width, height)`, `vd.Circle(x, y, radius)` and
+  `vd.Point(x, y)`, each with an optional `label` and a `colour` of `"#RRGGBB"` (`vd.OVERLAY_GREEN` by default,
+  `vd.OVERLAY_RED`, `vd.OVERLAY_AMBER`). Overlays the viewer would refuse are left out, as in C++.
+- **Results**: every send returns a `vd.SendResult` (`DELIVERED`, `VIEWER_UNAVAILABLE`, `REJECTED`,
+  `INVALID_IMAGE`, `TIMEOUT`, `INVALID_ENDPOINT`), meaning what [Send results](#send-results) says; `str()`
+  gives the text shown above. The image and the viewer never raise; an argument of the wrong kind (a
+  `transfer` of `"hdr"`, a colour of `"red"`) raises `ValueError` or `TypeError` at once, as a programming
+  error.
+- **Clients**: `send_image` and `send_live` share one client, made on first use with the endpoint of
+  `VISUAL_DEBUG_ENDPOINT`, and are safe from any thread. For other options,
+  `vd.Client(endpoint, reply_timeout=0.5, retry_interval=1.0)` (in seconds) has `send` and `send_live` and
+  closes as a context manager; use one per thread. Pressing Ctrl+C during a send interrupts it, and the next
+  send starts afresh.
+
+`python/examples/demo.py` sends a gradient, the ramp above, a card with overlays and a short live sequence:
+`python3 python/examples/demo.py`, with `--endpoint` for a viewer on another port.
+
 ## Configuration
 
 `VISUAL_DEBUG_ENDPOINT` sets the endpoint for `sendImage()`, `sendLive()`, the example sender,
-`pipeline_demo`, `live_sender` and the viewer alike, so they find each other without configuration. An empty
+`pipeline_demo`, `live_sender`, the Python sender's `send_image()` and `send_live()`, and the viewer alike, so
+they find each other without configuration. An empty
 value counts as unset. An app started with
 `open` does not see your shell's variables: use `open --env VISUAL_DEBUG_ENDPOINT=… <app>`, or the
 viewer's `--endpoint` option.

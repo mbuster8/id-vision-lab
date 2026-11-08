@@ -191,6 +191,27 @@ CI's Ubuntu job runs it after the tests and puts the table on the run's summary 
 Ubuntu job does the same in Docker. It is a report: no coverage threshold fails a run, though a test that fails
 under it does.
 
+## The Python sender
+
+`python/` holds the Python sender (`visual_debug.py`), its tests and `pyproject.toml`, which also configures
+pytest and black. It needs Python 3.10 or newer; on macOS, Homebrew's `python3` (the one Xcode installs is
+3.9). A virtual environment in `python/.venv` (git-ignored) holds its tools:
+
+```sh
+python3 -m venv python/.venv
+python/.venv/bin/pip install -e python pytest black==24.2.0
+python/.venv/bin/python -m pytest python/tests     # its tests, against a fake viewer on loopback ports
+python/.venv/bin/black --check python              # formatting: 110 columns, as clang-format's C++
+python/.venv/bin/black python                      # reformat
+```
+
+black is pinned to 24.2.0, Ubuntu 24.04's, which continuous integration uses; other versions format a few
+constructs differently. The tests never reach a viewer on port 7139: each sends to an unused port of its own.
+`tests/wire/header_cases.json` holds golden headers that both encoders must write exactly; its C++ side is
+`HeaderCases.EncodeWritesEveryGoldenHeader` in `visual_debug_tests`. On CI and in `scripts/check.sh`, the
+Ubuntu job runs the Python tests with Ubuntu's own numpy, pyzmq and pytest; macOS and Windows run the C++
+side only.
+
 ## Checking changes before a push
 
 `scripts/check.sh` runs what continuous integration runs, on this machine:
@@ -206,9 +227,9 @@ output of every step is in `build/check-logs/`. clang-format must be version 22.
 Creator's bundled copy, a `clang-format` on `PATH`, or the one `CLANG_FORMAT` names.
 
 The Ubuntu job needs Docker Desktop running. It builds an image from `docker/ubuntu-24.04.Dockerfile` with the
-CI's packages (the first time takes longest), then builds and tests a copy of the working tree in a
-throwaway container, with the C locale and Qt offscreen as on GitHub's runners. Your own `build/` folders are
-never touched. To look around inside the container, for example to run one failing test:
+CI's packages (the first time takes longest), then checks the Python sender's formatting and runs its tests,
+and builds and tests a copy of the working tree in a throwaway container, with the C locale and Qt offscreen
+as on GitHub's runners. Your own `build/` folders are never touched. To look around inside the container, for example to run one failing test:
 
 ```sh
 docker run --rm -it --volume "$PWD":/src:ro --entrypoint bash id-vision-lab-ubuntu
