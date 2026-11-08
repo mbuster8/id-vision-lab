@@ -166,10 +166,11 @@ cv::Mat shrunk(const cv::Mat& image, cv::Size size) {
 // The HDR range tone-maps an integer signal at the drawn size, so it is shrunk first: tone mapping is not
 // linear, but a 4K frame then costs no more than the window's pixels. Floating point has its non-finite
 // values set to 0 first, and `finite` marks the others at the drawn size (for a colour map; one channel
-// only). A fourth channel is alpha, mapped linearly from the signal range. HLG and PQ imply BT.2020 primaries
-// when none are given.
-cv::Mat toneMappedAtSize(const cv::Mat& image, const ImageTags& tags, cv::Size drawn, cv::Mat& finite) {
-    const DisplayRange range = hdrSignalRange(image.depth(), tags);
+// only). `range` is the signal's black and nominal white (hdrBlackAndWhite). A fourth channel is alpha, how
+// opaque a pixel is rather than light, so it stays mapped linearly from the sender's range however black and
+// white are dragged. HLG and PQ imply BT.2020 primaries when none are given.
+cv::Mat toneMappedAtSize(const cv::Mat& image, const ImageTags& tags, const DisplayRange& range,
+                         cv::Size drawn, cv::Mat& finite) {
     const bool shrinkFirst = !isFloatingPoint(image.depth()) && drawn != image.size();
     cv::Mat signal = image;
     if (isFloatingPoint(image.depth())) {
@@ -198,8 +199,9 @@ cv::Mat toneMappedAtSize(const cv::Mat& image, const ImageTags& tags, cv::Size d
         std::vector<cv::Mat> planes;
         cv::split(signal, planes);
         cv::Mat alpha;
-        const double scale = 127.5 / (range.max / 2 - range.min / 2); // in halves: no range overflows
-        planes[3].convertTo(alpha, CV_8U, scale, -range.min * scale);
+        const DisplayRange opacity = hdrSignalRange(image.depth(), tags);
+        const double scale = 127.5 / (opacity.max / 2 - opacity.min / 2); // in halves: no range overflows
+        planes[3].convertTo(alpha, CV_8U, scale, -opacity.min * scale);
         planes.pop_back();
         cv::Mat colour;
         cv::merge(planes, colour);
@@ -223,7 +225,7 @@ struct ClipRange {
 std::optional<ClipRange> clippingRange(const cv::Mat& image, const DisplaySettings& settings,
                                        const ImageTags& tags, bool hdr, bool automatic) {
     if (hdr) {
-        const DisplayRange signal = hdrSignalRange(image.depth(), tags);
+        const DisplayRange signal = hdrBlackAndWhite(image.depth(), settings, tags);
         return ClipRange{signal.min, hdrScaleTop(image.depth(), signal)};
     }
     if (automatic) {
@@ -322,13 +324,14 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, co
                                           std::clamp(options.size.height, 1, image.rows));
     const bool coloured = image.channels() == 1 && settings.colours != ColourMap::Grey;
     // Hdr shows what it cannot tone-map, an image without an HDR tag or of two channels, as Auto.
-    const bool hdr = settings.mode == RangeMode::Hdr && options.tags.isHdr() && image.channels() != 2;
+    const bool hdr = showsHdr(settings, options.tags, image.channels());
     const bool automatic = settings.mode == RangeMode::Auto || (settings.mode == RangeMode::Hdr && !hdr);
     const bool hinted = automatic && options.tags.hasValueRange();
     cv::Mat eightBit;
     cv::Mat finite;
     if (hdr) {
-        eightBit = toneMappedAtSize(image, options.tags, drawn, finite);
+        eightBit = toneMappedAtSize(image, options.tags,
+                                    hdrBlackAndWhite(image.depth(), settings, options.tags), drawn, finite);
     } else {
         if (automatic && !hinted && image.depth() == CV_8U) {
             eightBit = image;
@@ -356,6 +359,18 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, co
         }
     }
     return display;
+}
+
+bool showsHdr(const DisplaySettings& settings, const ImageTags& tags, int channels) {
+    return settings.mode == RangeMode::Hdr && tags.isHdr() && channels != 2;
+}
+
+DisplayRange hdrBlackAndWhite(int depth, const DisplaySettings& settings, const ImageTags& tags) {
+    const DisplayRange& range = settings.range;
+    if (std::isfinite(range.min) && std::isfinite(range.max) && range.min < range.max) {
+        return range;
+    }
+    return hdrSignalRange(depth, tags);
 }
 
 cv::Size sizeWithin(cv::Size image, cv::Size bounds) {
