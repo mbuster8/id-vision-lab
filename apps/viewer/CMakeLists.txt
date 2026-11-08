@@ -29,6 +29,8 @@ add_library(viewer_ui STATIC
     image_view.h
     live_channel_panel.cpp
     live_channel_panel.h
+    live_converter.cpp
+    live_converter.h
     main_window.cpp
     main_window.h
     main_window.ui

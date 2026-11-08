@@ -133,6 +133,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_tags_conversion_test.cpp
             viewer/image_view_test.cpp
             viewer/live_channel_panel_test.cpp
+            viewer/live_converter_test.cpp
             viewer/main_window_test.cpp
             viewer/owner_only.cpp
             viewer/owner_only_test.cpp
