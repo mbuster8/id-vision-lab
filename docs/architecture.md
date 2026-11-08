@@ -328,10 +328,15 @@ may read them:
 - **macOS and Linux.** The viewer sets the folders to `0700` and the files to `0600` (`private_files.h`):
   the activity log is created with them, and files written atomically through `QSaveFile` get them as they
   are committed.
-- **Windows.** Qt's permission bits do not reach Windows' access lists, so setting them changes nothing
-  there. The folders and files inherit the access list of the user's `AppData` folder instead, which lets in
-  only that user, SYSTEM and Administrators. The tests check the access list itself through
-  `tests/viewer/owner_only.h`; its `.cpp` is the only file that includes `<windows.h>`.
+- **Windows.** Qt's permission bits do not reach Windows' access lists, so the viewer gives each folder a
+  protected access list of its own (`makePrivateFolder` in `private_files.cpp`): the current user, SYSTEM
+  and Administrators, as in the user's own `AppData` folder. Protected means it inherits nothing from the
+  folder above, so a redirected or shared profile folder that lets more accounts in does not pass that on.
+  The files inside inherit the folder's list as they are created, and setting it on a folder an earlier
+  viewer made also reaches the files already there. When Windows refuses, for example on a drive without
+  access lists, the folder counts as unavailable and the viewer keeps everything in memory. The tests check
+  the access list itself through `tests/viewer/owner_only.h`. `private_files.cpp` and `owner_only.cpp` are
+  the only files that include `<windows.h>`.
 
 ## Extension points
 

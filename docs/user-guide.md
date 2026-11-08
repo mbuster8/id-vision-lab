@@ -140,9 +140,10 @@ received and modified times and their original pixels at every depth. It is off 
   is still running.
 - **Privacy.** The folders and files are readable by your user account only, but they are **not
   encrypted**: anyone with access to your account, or to a backup of it, can read the stored images.
-  Leave the setting off for images that must not reach the disk. On Windows they take the access list of
-  your `AppData` folder, which lets in only your account, SYSTEM and the Administrators group (an
-  administrator can read any file on the machine anyway). `%APPDATA%` is the roaming profile: on a domain
+  Leave the setting off for images that must not reach the disk. On Windows the viewer gives each folder
+  an access list of its own that lets in only your account, SYSTEM and the Administrators group (an
+  administrator can read any file on the machine anyway), whatever the folders above allow; where Windows
+  cannot set one, the viewer keeps everything in memory. `%APPDATA%` is the roaming profile: on a domain
   with roaming profiles, stored images travel to the profile server when you sign out.
 - **Clear History…** deletes every image of this viewer, in memory and on disk, after asking. It cannot be
   undone.

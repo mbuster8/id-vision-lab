@@ -24,6 +24,23 @@ TEST(OwnerOnly, NoticesAFileEveryoneCanRead) {
     EXPECT_FALSE(test_support::isOwnerOnly(path));
 }
 
+// The viewer's test against a wide-open root relies on this: a file made in the widened folder is not
+// private.
+TEST(OwnerOnly, NoticesWhatAWideOpenFolderPassesOn) {
+#ifndef _WIN32
+    GTEST_SKIP() << "Only Windows passes a folder's access on to the files made in it";
+#endif
+    const QTemporaryDir folder;
+    ASSERT_TRUE(folder.isValid());
+    ASSERT_TRUE(test_support::letEveryoneReadWhatItHolds(folder.path()));
+    const QString path = QDir(folder.path()).filePath(QStringLiteral("inherited.txt"));
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.close();
+
+    EXPECT_FALSE(test_support::isOwnerOnly(path));
+}
+
 TEST(OwnerOnly, MissingFileIsNotOwnerOnly) {
     EXPECT_FALSE(test_support::isOwnerOnly(QStringLiteral("/nonexistent/missing.txt")));
 }
