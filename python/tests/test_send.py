@@ -1,5 +1,7 @@
 """Sending, as the C++ client sends: against a fake viewer on a loopback port of each test's own."""
 
+import os
+import signal
 import time
 
 import numpy as np
@@ -73,9 +75,60 @@ def test_wrong_kinds_raise_before_anything_is_sent():
             client.send(small(), "x", transfer="hdr")
         with pytest.raises(TypeError):
             client.send(small(), "x", overlays=[(1, 2)])
+        with pytest.raises(TypeError):
+            client.send(small(), 42)  # a name that is not a str, with no viewer to answer
         assert time.monotonic() - start < 0.1
     with pytest.raises(ValueError):
         vd.send_image(small(), "x", primaries="p3")
+
+
+# Anything raised while a request is out (here as if copying the pixels ran out of memory) leaves the REQ socket
+# unable to send again: it is dropped before the error goes on, and the next send starts afresh.
+def test_any_error_during_a_send_drops_the_socket(monkeypatch):
+    real_wait = vd._wait_for
+    failed = []
+
+    def wait_failing_once(socket, event, timeout):
+        if event == zmq.POLLIN and not failed:
+            failed.append(True)
+            raise MemoryError
+        return real_wait(socket, event, timeout)
+
+    monkeypatch.setattr(vd, "_wait_for", wait_failing_once)
+    with FakeViewer() as fake, client_for(fake.endpoint) as client:
+        with pytest.raises(MemoryError):
+            client.send(small(), "x")
+        assert client.send(small(), "x") is DELIVERED
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX only")
+@pytest.mark.filterwarnings(
+    "ignore:This process .* is multi-threaded:DeprecationWarning"
+)  # the fake viewer's thread
+def test_a_forked_child_sends_on_its_own(isolated_endpoint):
+    with FakeViewer(endpoint=isolated_endpoint) as fake:
+        assert vd.send_image(small(), "parent") is DELIVERED
+        # As if another thread were in the middle of a send when the process forked: the child gets the lock held.
+        with vd._shared_client_lock:
+            pid = os.fork()
+            if pid == 0:
+                code = 1
+                try:
+                    code = 0 if vd.send_image(small(), "child") is DELIVERED else 2
+                finally:
+                    os._exit(code)
+        deadline = time.monotonic() + 10
+        while True:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            if time.monotonic() > deadline:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+                pytest.fail("the forked child never finished its send")
+            time.sleep(0.05)
+        assert os.waitstatus_to_exitcode(status) == 0
+    assert [header["name"] for header, _ in fake.received] == ["parent", "child"]
 
 
 def test_no_viewer_waits_once_then_backs_off():

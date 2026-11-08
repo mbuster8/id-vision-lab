@@ -161,7 +161,16 @@ class Polygon:
     colour: str = OVERLAY_GREEN
 
     def __post_init__(self):
-        pairs = np.asarray(self.points, dtype=np.float64).reshape(-1, 2)
+        pairs = np.asarray(self.points, dtype=np.float64)
+        if pairs.size == 0:
+            pairs = pairs.reshape(0, 2)
+        elif pairs.ndim == 3 and pairs.shape[1:] == (1, 2):  # an OpenCV contour
+            pairs = pairs.reshape(-1, 2)
+        elif pairs.ndim != 2 or pairs.shape[1] != 2:
+            raise ValueError(
+                f"a polygon's points are (x, y) pairs, an (N, 2) array or an OpenCV contour (N, 1, 2), "
+                f"not an array of shape {pairs.shape}"
+            )
         object.__setattr__(self, "points", tuple((float(x), float(y)) for x, y in pairs))
         _checked_label_and_colour(self.label, self.colour)
 
@@ -317,8 +326,10 @@ def _wire_pixels(image, rgb: bool) -> np.ndarray:
     return np.ascontiguousarray(array)
 
 
-def _check_description(value_range, transfer, primaries, overlays) -> None:
+def _check_description(name, value_range, transfer, primaries, overlays) -> None:
     """Arguments of the wrong kind are a programming error: raised at once, before anything is sent."""
+    if not isinstance(name, str):
+        raise TypeError(f"the name is a str, not {type(name).__name__}")
     if value_range is not None:
         if (
             isinstance(value_range, (str, bytes))
@@ -402,7 +413,7 @@ def encode(
     (or of the caller's own array when it already is one). ValueError for an image the viewer cannot take; TypeError or
     ValueError for arguments of the wrong kind."""
     overlays = None if overlays is None else list(overlays)  # a generator is read once
-    _check_description(value_range, transfer, primaries, overlays)
+    _check_description(name, value_range, transfer, primaries, overlays)
     rows, cols, channels, depth = _check_image(image)
     header = _header(
         rows,
@@ -522,7 +533,7 @@ class Client:
 
     def _send(self, image, name, live, rgb, value_range, transfer, primaries, overlays) -> SendResult:
         overlays = None if overlays is None else list(overlays)
-        _check_description(value_range, transfer, primaries, overlays)
+        _check_description(name, value_range, transfer, primaries, overlays)
         # Cheap checks first: while no viewer is available, an image is never converted or copied.
         try:
             _check_image(image)
@@ -559,8 +570,9 @@ class Client:
         except ValueError:
             return SendResult.INVALID_IMAGE
 
-        # A REQ socket interrupted between its request and the reply could never send again: drop it, so the next
-        # send starts afresh, then let the interrupt through.
+        # A REQ socket interrupted between its request and the reply (Ctrl+C, or an error such as running out of
+        # memory while the pixels are copied) could never send again: drop it, so the next send starts afresh, then
+        # let the interrupt or error through.
         try:
             try:
                 # copy=True: the caller may change the array as soon as send returns.
@@ -576,7 +588,7 @@ class Client:
             except zmq.ZMQError:
                 self._recover()
                 return SendResult.TIMEOUT
-        except KeyboardInterrupt:
+        except BaseException:
             self._drop_socket()
             raise
         return SendResult.DELIVERED if _is_ok_reply(reply) else SendResult.REJECTED
@@ -649,3 +661,17 @@ def _reset_shared_client() -> None:
         if _shared_client is not None:
             _shared_client.close()
         _shared_client = None
+
+
+def _start_afresh_in_a_forked_child() -> None:
+    """A child gets copies of the locks as they were at the fork, held if another thread was sending, and the
+    parent's client and context, whose sockets are not its own: it starts with new ones."""
+    global _context, _context_lock, _shared_client, _shared_client_lock
+    _context = None
+    _context_lock = threading.Lock()
+    _shared_client = None
+    _shared_client_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX only; Windows has no fork
+    os.register_at_fork(after_in_child=_start_afresh_in_a_forked_child)

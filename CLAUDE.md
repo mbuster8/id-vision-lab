@@ -90,7 +90,9 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   (`toDisplayImage`, `valueExtent`, `rangeMarkers`, `histogramOf`) keep no state and also run on the
   converter's thread. Window tests use `LiveConversion::Immediate` unless they test the thread.
 - **Wire-format changes:** a new optional header field keeps `version` 2; changing or removing a field
-  bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change.
+  bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender
+  (`python/visual_debug.py`) with them: both encoders must write `tests/wire/header_cases.json`'s golden
+  headers, and the Python side is checked only by the venv's pytest and CI's Ubuntu job, not by ctest.
 - **Security:** no exception ever leaves `visual_debug` (every send returns a `SendResult`); reply reasons
   are fixed ASCII and never echo request bytes; the header is parsed without exceptions and never copied
   or dumped (a deeply nested header would overflow the worker's stack); the server binds loopback only

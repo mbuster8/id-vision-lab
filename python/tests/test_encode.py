@@ -181,6 +181,20 @@ def test_at_most_256_shapes_and_labels_of_64_bytes():
     assert overlays_of(vd.Point(0, 0, label="a" + "é" * 40))[0]["label"] == "a" + "é" * 31
 
 
+@pytest.mark.parametrize(
+    "points", [np.zeros((4, 3)), [1, 2, 3, 4, 5, 6], np.zeros((2, 2, 2)), [(1, 2, 3)], np.zeros((3, 2, 1))]
+)
+def test_polygon_points_must_be_pairs(points):
+    with pytest.raises(ValueError):
+        vd.Polygon(points)
+
+
+def test_name_must_be_a_string():
+    for name in (42, b"bytes", None):
+        with pytest.raises(TypeError):
+            vd.encode(np.zeros((1, 1), np.uint8), name)
+
+
 def test_a_contour_is_a_polygon():
     contour = np.array([[[1, 2]], [[3, 4]], [[5, 6]]], np.int32)
     assert vd.Polygon(contour) == vd.Polygon([(1, 2), (3, 4), (5, 6)])
