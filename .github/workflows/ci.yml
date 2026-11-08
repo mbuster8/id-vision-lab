@@ -116,18 +116,28 @@ jobs:
           New-Item -ItemType Directory -Force $env:VCPKG_BINARY_CACHE | Out-Null
 
       # The libraries vcpkg built before. Its file cache is keyed by each package's own inputs, so an older
-      # cache still serves every package a changed vcpkg.json did not touch.
+      # cache still serves every package a changed vcpkg.json did not touch. Restored and saved as separate
+      # steps, and saved even when the job fails: actions/cache saves only after success, so a run that
+      # failed after building FFmpeg would throw it away and the next one would build it again.
       - name: Restore vcpkg's binary cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.VCPKG_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-${{ runner.os }}-
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-${{ runner.os }}-
+
+      - name: Count vcpkg's cached packages
+        shell: pwsh
+        run: |
+          $count = @(Get-ChildItem -Recurse -File $env:VCPKG_BINARY_CACHE -ErrorAction SilentlyContinue).Count
+          "VCPKG_CACHED_BEFORE=$count" >> $env:GITHUB_ENV
 
       # Qt's prebuilt MSVC binaries, as the Qt Online Installer gives them locally (ADR-002).
       - name: Restore Qt
         id: qt-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\Qt\${{ env.QT_VERSION }}
           key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
@@ -145,6 +155,14 @@ jobs:
           }
           aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
 
+      # Saved straight away, so a later failure in the job does not lose it.
+      - name: Save Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\Qt\${{ env.QT_VERSION }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
+
       - name: Point the presets at Qt
         shell: pwsh
         run: '"QT_ROOT_DIR=C:\Qt\$env:QT_VERSION\msvc2022_64" >> $env:GITHUB_ENV'
@@ -156,12 +174,38 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
-          cmake --preset windows-debug
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Visual Studio's own Ninja; say so plainly if the developer environment did not provide it.
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { Write-Error "Ninja is not on PATH"; exit 1 }
+          # Retried: vcpkg downloads each library's source from GitHub while configuring, and gives up after
+          # three tries a second apart. A new attempt restores what the last one built from the file cache.
+          # Fresh each time, so a failed attempt's cache entries (such as an unset CMAKE_MAKE_PROGRAM) go.
+          for ($attempt = 1; ; $attempt++) {
+            cmake --preset windows-debug --fresh
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { exit $LASTEXITCODE }
+            Write-Host "Configure attempt $attempt failed; trying again in $(120 * $attempt) seconds."
+            Start-Sleep -Seconds (120 * $attempt)
+          }
           cmake --build --preset windows-debug
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --preset windows-debug
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Only when vcpkg added packages, so a run with nothing new does not store another copy.
+      - name: Count vcpkg's cached packages again
+        id: vcpkg-count
+        if: always()
+        shell: pwsh
+        run: |
+          $count = @(Get-ChildItem -Recurse -File $env:VCPKG_BINARY_CACHE -ErrorAction SilentlyContinue).Count
+          "grew=$($count -gt [int]$env:VCPKG_CACHED_BEFORE)".ToLower() >> $env:GITHUB_OUTPUT
+
+      - name: Save vcpkg's binary cache
+        if: always() && steps.vcpkg-count.outputs.grew == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   format:
     name: clang-format
