@@ -125,7 +125,7 @@ and build into a separate folder:
 ```sh
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
-ctest --test-dir build/no-qt               # the tests that need no Qt (398 on macOS, 395 on Linux and Windows)
+ctest --test-dir build/no-qt               # the tests that need no Qt
 ```
 
 CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
@@ -133,10 +133,10 @@ CMake then does not look for Qt at all; both libraries, the three examples and t
 ## Running the tests
 
 ```sh
-ctest --preset debug                       # everything (800 tests on macOS, about 110 seconds; 800 on Linux and Windows)
+ctest --preset debug                       # everything
 ctest --preset debug -R WireFormat         # only tests whose name matches a regular expression
 ctest --preset debug -R "Client|Server"
-ctest --preset asan                        # the same tests under the sanitizers (about 151 seconds on macOS)
+ctest --preset asan                        # the same tests under the sanitizers
 ctest --preset debug -L whole              # only the whole-program runs
 ctest --preset debug -LE whole             # everything except them
 ```
@@ -390,19 +390,18 @@ cmake --build --preset windows-debug
 ctest --preset windows-debug
 ```
 
-**The first configure takes a long time**: vcpkg builds OpenCV, FFmpeg and the other libraries from source
-(21 minutes on the Legion 5, most of it FFmpeg and OpenCV). It keeps what it built in its binary cache, under
-`%LOCALAPPDATA%\vcpkg\archives`, so the next configure, of either preset or of a fresh clone, takes about 20
-seconds. vcpkg builds the debug and release libraries together.
+**The first configure takes a long time**: vcpkg builds OpenCV, FFmpeg and the other libraries from source,
+most of the time going to FFmpeg and OpenCV. It keeps what it built in its binary cache, under
+`%LOCALAPPDATA%\vcpkg\archives`, so the next configure, of either preset or of a fresh clone, is quick. vcpkg
+builds the debug and release libraries together.
 
-The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 800 tests pass, in 206 seconds (debug),
-187 seconds (release) and 343 seconds (`windows-asan`); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
-build without Qt, as on the other platforms:
+The build has no warnings under MSVC's `/W4 /permissive-`. One test, `ClientServer.RefusesNonLoopbackBindByDefault`,
+is skipped on Windows on purpose. To build without Qt, as on the other platforms:
 
 ```powershell
 cmake --preset windows-debug -B build\no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build\no-qt
-ctest --test-dir build\no-qt               # the 395 tests that need no Qt
+ctest --test-dir build\no-qt               # the tests that need no Qt
 ```
 
 ### Running on Windows

@@ -22,8 +22,11 @@ documents rather than re-deriving them:
 
 - Check before stating: that an API exists, with that signature, in the versions this project supports
   (OpenCV 4.6 and 5.x, Qt 6.4 and newer); a tool's or action's current version. Say what you could not check.
-- Numbers in docs, commits and reports (test counts, timings, sizes) come from a run in this session. Never
-  present an estimate as a measurement.
+- Numbers in docs, commits and reports come from a run in this session. Never present an estimate as a
+  measurement.
+- No test counts or timings in Markdown files, CLAUDE.md or skills: they change with every new test and with how
+  busy the machine is, so they drift. What matters is that everything builds, runs and passes, which CI and
+  `scripts/check.sh` show. A commit message or pull request may name the tests a change adds.
 - Say what was not done: tests not run, platforms not built, steps skipped.
 - Look facts up yourself; ask the owner only for decisions, with a recommendation.
 

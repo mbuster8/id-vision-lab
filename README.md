@@ -113,7 +113,7 @@ of vcpkg, and set `VCPKG_INSTALLATION_ROOT` and `QT_ROOT_DIR`: the
 Visual Studio x64 developer environment, from a clone of this repository:
 
 ```powershell
-cmake --preset windows-debug          # the first time, vcpkg builds OpenCV and FFmpeg: about 20 minutes
+cmake --preset windows-debug          # the first time, vcpkg builds OpenCV and FFmpeg, which takes long
 cmake --build --preset windows-debug
 $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
 build\windows-debug\apps\visual_debug_viewer.exe
@@ -131,7 +131,7 @@ Run these from the repository root. The [build guide](docs/build-guide.md) and t
 ```sh
 cmake --preset debug                    # configure; once, or after changing a CMakeLists.txt
 cmake --build --preset debug            # build everything into build/debug
-ctest --preset debug                    # all tests (800 on macOS, 800 on Linux and Windows)
+ctest --preset debug                    # all tests
 ctest --preset debug -R ClientServer    # only the tests whose name matches
 
 cmake --preset release                  # an optimised build, into build/release
@@ -140,7 +140,7 @@ ctest --preset release
 
 cmake --preset asan                     # Debug with AddressSanitizer and UndefinedBehaviorSanitizer
 cmake --build --preset asan             # into build/asan
-ctest --preset asan                     # the same tests under the sanitizers, about 127 seconds
+ctest --preset asan                     # the same tests under the sanitizers
 ```
 
 ### Check before a push
@@ -276,7 +276,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | Build | three qmake `.pro` files with hard-coded build paths | one CMake project with presets, warning-free under `-Wall -Wextra -Wpedantic` |
 | Message | a hand-packed binary header | a JSON header plus a pixel frame, validated field by field |
 | Streams | none: one still image at a time | live channels from cameras, video files and HDR video (FFmpeg's libraries), in real time |
-| Tests | none | 800 tests on macOS and 800 on Linux and Windows: the GoogleTest tests, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
+| Tests | none | GoogleTest tests of the libraries, the apps and the examples, plus each test program run whole, on macOS, Linux and Windows; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | Documentation | one paragraph in `readme.txt` | this README, five guides and two decision records |
 
 ### Defects found in the 2013 code, and what fixed them

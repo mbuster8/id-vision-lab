@@ -5,16 +5,16 @@ description: Run ID Vision Lab's CI pipeline on this machine before anything is 
 
 # Local CI
 
-`scripts/check.sh` runs what `.github/workflows/ci.yml` runs, so a push meets no surprises. CI has three jobs:
-macOS (debug and asan), Ubuntu 24.04 (debug, and the build without Qt) and clang-format. The script runs the
-first and third natively and the Ubuntu job in a container built from `docker/ubuntu-24.04.Dockerfile`. CodeQL
-is not reproduced locally.
+`scripts/check.sh` runs what `.github/workflows/ci.yml` runs, so a push meets no surprises. CI has four jobs:
+macOS (debug and asan), Ubuntu 24.04 (debug, and the build without Qt), Windows (windows-debug) and
+clang-format. The script runs macOS and clang-format natively and the Ubuntu job in a container built from
+`docker/ubuntu-24.04.Dockerfile`. The Windows job and CodeQL are not reproduced here.
 
-| Command | What it runs | Typical time |
-|---|---|---|
-| `scripts/check.sh` | clang-format, debug, asan, Ubuntu in Docker | a few minutes; the first Docker build longer |
-| `scripts/check.sh --quick` | clang-format, debug | about a minute |
-| `scripts/check.sh --linux` | the Ubuntu job only | 2–4 minutes |
+| Command | What it runs |
+|---|---|
+| `scripts/check.sh` | clang-format, debug, asan, Ubuntu in Docker (the first Docker build takes longest) |
+| `scripts/check.sh --quick` | clang-format, debug: the quickest |
+| `scripts/check.sh --linux` | the Ubuntu job only |
 
 ## Choosing the mode
 
@@ -48,8 +48,9 @@ say the Ubuntu job was not run. Do not start Docker yourself unasked.
 
 ## Reporting
 
-Give a short table — step, result, time — then, for a failure, the failing test or file, its first error line,
-the cause if known, and the log path. Mention steps that were skipped (Docker down, `--quick`).
+Give a short table — step and result — then, for a failure, the failing test or file, its first error line,
+the cause if known, and the log path. Mention steps that were skipped (Docker down, `--quick`). Test counts and
+timings are not needed: whether each step passed is what matters.
 
 ## The pre-push hook
 
@@ -60,5 +61,6 @@ asked. `git push --no-verify` skips it once.
 ## Limits
 
 - The working tree is checked, uncommitted changes included; the script says when there are some.
-- Windows is not covered yet: the Windows port brings its own presets and CI job.
+- Windows is not covered: the `windows-*` presets run on the Windows machine (the build guide's Windows
+  section) and in CI's Windows job.
 - Never push, and never commit unless the owner asked for it in that request.
