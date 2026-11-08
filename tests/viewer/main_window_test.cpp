@@ -3416,9 +3416,9 @@ TEST(MainWindowTest, RedrawsOfOneFrameCountOnce) {
 // A frame whose job a newer frame replaced while the converter was busy never reached the screen: it counts
 // with the dropped frames.
 TEST(MainWindowTest, ReplacedJobsCountAsSkipped) {
+    test_support::Latch latch;
     ClockedWindow clocked(LiveConversion::Threaded);
     MainWindow& window = *clocked.window;
-    test_support::Latch latch;
     window.setLiveConversionForTests(
         holdingWhen(latch, [](const LiveJob& job) { return job.frameNumber == 1; }));
     showSized(window);
@@ -3438,10 +3438,34 @@ TEST(MainWindowTest, ReplacedJobsCountAsSkipped) {
         << infoDetails(window).toStdString();
 }
 
-TEST(MainWindowTest, ResultForAChannelNoLongerInViewIsDropped) {
+// A frame redrawn (for a new range) while its first picture is still converting, its redraw then replaced by
+// the next frame's job, did reach the screen: nothing was dropped.
+TEST(MainWindowTest, ARedrawReplacedWhileItsFrameConvertsIsNotDropped) {
+    test_support::Latch latch;
     ClockedWindow clocked(LiveConversion::Threaded);
     MainWindow& window = *clocked.window;
+    window.setLiveConversionForTests(
+        holdingWhen(latch, [](const LiveJob& job) { return job.keep == ImageView::KeepView::No; }));
+    showSized(window);
+
+    feedLive(window, "camera", liveFrame(10));
+    QApplication::processEvents(); // shown: frame 1's first job, a fit, is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    applyFixedRange(window, QStringLiteral("0"), QStringLiteral("255")); // frame 1's redraw waits
+    feedLive(window, "camera", liveFrame(30));
+    QApplication::processEvents(); // frame 2's job replaces the redraw
+    latch.release();
+    ASSERT_TRUE(waitForGrey(window, 30)); // frame 1's picture came first
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(infoDetails(window).contains(QStringLiteral("2 drawn · 0 dropped")))
+        << infoDetails(window).toStdString();
+}
+
+TEST(MainWindowTest, ResultForAChannelNoLongerInViewIsDropped) {
     test_support::Latch latch;
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
     window.setLiveConversionForTests(
         holdingWhen(latch, [](const LiveJob& job) { return job.channel == "a"; }));
     showSized(window);
@@ -3461,9 +3485,9 @@ TEST(MainWindowTest, ResultForAChannelNoLongerInViewIsDropped) {
 }
 
 TEST(MainWindowTest, ResultAfterAStillTookTheViewIsDropped) {
+    test_support::Latch latch;
     ClockedWindow clocked(LiveConversion::Threaded);
     MainWindow& window = *clocked.window;
-    test_support::Latch latch;
     window.setLiveConversionForTests(holdingWhen(latch, [](const LiveJob&) { return true; }));
     showSized(window);
 
@@ -3482,9 +3506,9 @@ TEST(MainWindowTest, ResultAfterAStillTookTheViewIsDropped) {
 
 // Shown again meanwhile, the channel's earlier job is for a view that has gone: only the new one is applied.
 TEST(MainWindowTest, ResultFromAnEarlierViewOfTheSameChannelIsDropped) {
+    test_support::Latch latch;
     ClockedWindow clocked(LiveConversion::Threaded);
     MainWindow& window = *clocked.window;
-    test_support::Latch latch;
     window.setLiveConversionForTests(holdingWhen(latch, [](const LiveJob&) { return true; }));
     showSized(window);
 
@@ -3503,9 +3527,9 @@ TEST(MainWindowTest, ResultFromAnEarlierViewOfTheSameChannelIsDropped) {
 
 // A channel's first job fits the view to it, even when a newer frame's job replaced it before it ran.
 TEST(MainWindowTest, FirstFrameOfAChannelIsFitted) {
+    test_support::Latch latch;
     ClockedWindow clocked(LiveConversion::Threaded);
     MainWindow& window = *clocked.window;
-    test_support::Latch latch;
     window.setLiveConversionForTests(
         holdingWhen(latch, [](const LiveJob& job) { return job.channel == "a" && job.frameNumber == 2; }));
     showSized(window);
@@ -3534,10 +3558,10 @@ TEST(MainWindowTest, FirstFrameOfAChannelIsFitted) {
 
 // A zoom whose job is still running, then a fit back: the picture ends at the fitted size, not the zoom's.
 TEST(MainWindowTest, ZoomBackWhileAJobRunsEndsAtTheRightSize) {
-    ClockedWindow clocked(LiveConversion::Threaded);
-    MainWindow& window = *clocked.window;
     test_support::Latch latch;
     std::atomic<int> holdWiderThan = std::numeric_limits<int>::max(); // a zoom's picture, once known
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
     window.setLiveConversionForTests(holdingWhen(
         latch, [&holdWiderThan](const LiveJob& job) { return job.drawnSize.width > holdWiderThan; }));
     showSized(window);
@@ -3607,9 +3631,9 @@ TEST(MainWindowTest, TurningTheHistogramOffHidesItWhileLive) {
 
 // A frame converted with its histogram while the strip was on arrives after the strip was turned off.
 TEST(MainWindowTest, ALateHistogramAfterTurningItOffStaysHidden) {
+    test_support::Latch latch;
     ClockedWindow clocked(LiveConversion::Threaded);
     MainWindow& window = *clocked.window;
-    test_support::Latch latch;
     window.setLiveConversionForTests(
         holdingWhen(latch, [](const LiveJob& job) { return job.frameNumber == 2; }));
     showSized(window);

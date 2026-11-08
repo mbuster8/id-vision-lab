@@ -90,7 +90,7 @@ void LiveConverter::run() {
         }
         // Queued to this object, which lives on the UI thread: the receiver runs there, in posting order.
         QMetaObject::invokeMethod(
-            this, [this, result = std::move(*result)]() mutable { m_receiver(std::move(result)); },
+            this, [this, converted = std::move(*result)]() mutable { m_receiver(std::move(converted)); },
             Qt::QueuedConnection);
     }
 }

@@ -1096,12 +1096,13 @@ void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
                              .showClipping = m_showClipping,
                              .histogram = m_ui->actionShowHistogram->isChecked(),
                              .keep = keep});
-    // Another frame of this channel replaced a frame none of whose pictures was drawn: it never will be. A
-    // redraw of the same frame replacing its earlier job loses nothing.
+    // Another frame of this channel replaced a frame not drawn yet. A job for it may still be converting, so
+    // it is settled when a newer frame's picture is applied. A redraw of the same frame replacing its earlier
+    // job loses nothing.
     channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr; // an immediate result may have redrawn
     if (replaced && channel != nullptr && replaced->channel == channel->name &&
         replaced->frameNumber != frameNumber && replaced->frameNumber > channel->drawnNumber) {
-        m_live.markSkipped(channel->name);
+        m_replacedFrames[channel->name].insert(replaced->frameNumber);
     }
 }
 
@@ -1121,7 +1122,19 @@ void MainWindow::applyLiveResult(LiveResult result) {
         m_histogramStrip->setHistogram(*result.histogram, result.markers);
         m_histogramStrip->show();
     }
-    m_live.markDrawn(channel->name, result.job.frameNumber, m_clock());
+    const std::uint64_t frameNumber = result.job.frameNumber;
+    m_live.markDrawn(channel->name, frameNumber, m_clock());
+    // Results come in the order they were submitted, and a channel's frame numbers never go down: a replaced
+    // frame below this one can no longer be drawn, so it was skipped, unless it is this one.
+    if (const auto replaced = m_replacedFrames.find(channel->name); replaced != m_replacedFrames.end()) {
+        std::set<std::uint64_t>& numbers = replaced->second;
+        for (auto number = numbers.begin(); number != numbers.end() && *number <= frameNumber;
+             number = numbers.erase(number)) {
+            if (*number < frameNumber) {
+                m_live.markSkipped(channel->name);
+            }
+        }
+    }
     // The view fits only now: if the fitted view draws the frame at another size than the job assumed (the
     // window was resized meanwhile), draw it again at that size.
     if (keep == ImageView::KeepView::No) {
@@ -1230,6 +1243,7 @@ void MainWindow::forgetLiveChannel(const std::string& name) {
     m_live.close(name);
     m_rowPictures.erase(name);
     m_startCounts.erase(name);
+    m_replacedFrames.erase(name); // a channel started again numbers its frames afresh
     m_sidebar->liveChannels()->removeChannel(QString::fromStdString(name));
     if (m_liveChannel == name) {
         leaveLiveChannel();

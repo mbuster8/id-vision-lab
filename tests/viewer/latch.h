@@ -8,7 +8,8 @@ namespace test_support {
 
 // Holds a live conversion on the converter's thread until the test releases it, so what waits in the slot
 // meanwhile is known without timing. A hold gives up after ten seconds, so a test that fails before releasing
-// it cannot leave the converter's destructor waiting for ever.
+// it cannot leave the converter's destructor waiting for ever. Declare it before the converter or window that
+// uses it, so it outlives the thread that may be holding it.
 class Latch {
 public:
     void hold() {

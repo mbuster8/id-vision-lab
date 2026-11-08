@@ -227,6 +227,9 @@ private:
     // Reset first when closing: its thread may still be converting a frame.
     std::unique_ptr<LiveConverter> m_converter;
     std::uint64_t m_viewCounter = 0; // bumped by viewChanged
+    // Per channel, frames whose job a newer frame's replaced, not yet drawn: a job for one of them may still
+    // be converting, so whether it was skipped is known only when a newer frame's picture is applied.
+    std::map<std::string, std::set<std::uint64_t>> m_replacedFrames;
     LiveResultCounts m_liveResultCounts;
     std::chrono::nanoseconds m_liveUiTime{0};
     int m_liveUiDepth = 0;       // an immediate result is applied inside the take: counted once
