@@ -9,18 +9,19 @@ if(Qt6_VERSION VERSION_LESS 6.5)
     message(STATUS "Windows packages need Qt 6.5 or newer for qt_generate_deploy_app_script; not set up")
     return()
 endif()
+# A debug build loads the debug C++ runtime, which InstallRequiredSystemLibraries does not ship and Windows
+# does not have without Visual Studio, so its packages would not start elsewhere.
+if(NOT CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+    message(STATUS "Windows packages are made from a release build (the windows-release preset); not set up")
+    return()
+endif()
 
 include(GNUInstallDirs)
 set(id_vision_lab_packaged_apps visual_debug_viewer visual_debug_example_sender)
 
-# The apps, and the vcpkg DLLs they load, found where vcpkg installed them for this build type. Qt's DLLs come
-# from windeployqt below, and Windows' own and the C++ runtime's are left to the system and to
-# InstallRequiredSystemLibraries.
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(id_vision_lab_vcpkg_bin "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin")
-else()
-    set(id_vision_lab_vcpkg_bin "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
-endif()
+# The apps, and the vcpkg DLLs they load, found where vcpkg installed them. Qt's DLLs come from windeployqt
+# below, and Windows' own and the C++ runtime's are left to the system and to InstallRequiredSystemLibraries.
+set(id_vision_lab_vcpkg_bin "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
 install(TARGETS ${id_vision_lab_packaged_apps}
     RUNTIME_DEPENDENCY_SET id_vision_lab_runtime
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
