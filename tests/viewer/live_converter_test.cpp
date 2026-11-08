@@ -1,3 +1,4 @@
+#include "latch.h"
 #include "live_converter.h"
 #include "qimage_conversion.h"
 
@@ -12,10 +13,8 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -26,33 +25,7 @@ namespace {
 
 using namespace std::chrono_literals;
 using KeepView = ImageView::KeepView;
-
-// Holds a conversion on the worker until the test releases it, so what waits in the slot meanwhile is known
-// without timing.
-class Latch {
-public:
-    void hold() {
-        std::unique_lock lock(m_mutex);
-        m_entered = true;
-        m_changed.notify_all();
-        m_changed.wait(lock, [this] { return m_released; });
-    }
-    bool waitUntilEntered() {
-        std::unique_lock lock(m_mutex);
-        return m_changed.wait_for(lock, 10s, [this] { return m_entered; });
-    }
-    void release() {
-        const std::lock_guard lock(m_mutex);
-        m_released = true;
-        m_changed.notify_all();
-    }
-
-private:
-    std::mutex m_mutex;
-    std::condition_variable m_changed;
-    bool m_entered = false;
-    bool m_released = false;
-};
+using test_support::Latch;
 
 LiveJob jobFor(const std::string& channel, std::uint64_t frameNumber, KeepView keep = KeepView::IfSameSize) {
     return {.channel = channel,

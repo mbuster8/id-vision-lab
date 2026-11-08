@@ -92,9 +92,10 @@ void ImageInfoBar::showLiveChannel(const QString& name, const QString& details) 
     m_name->setToolTip(name);
     m_renameButton->hide();
     m_details->setText(details);
-    m_details->setToolTip(tr("Frames arrived and drawn in the last second, frames dropped while the viewer "
-                             "was busy, and the frame's age: the time it arrived minus the time the sender "
-                             "stamped on it, which means something only when both run on one computer."));
+    m_details->setToolTip(tr("Frames arrived and drawn in the last second; frames that never reached the "
+                             "screen, replaced while the viewer was busy receiving or converting; and the "
+                             "frame's age: the time it arrived minus the time the sender stamped on it, "
+                             "which means something only when both run on one computer."));
     m_freezeButton->setVisible(m_freezeButton->defaultAction() != nullptr);
     m_snapshotButton->setVisible(m_snapshotButton->defaultAction() != nullptr);
     show();

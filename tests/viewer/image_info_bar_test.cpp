@@ -97,6 +97,17 @@ TEST(ImageInfoBar, LiveDetailsShowStateRatesDropsAndAge) {
     EXPECT_TRUE(liveDetails(summary, channel, stats).startsWith(QStringLiteral("frozen · ")));
 }
 
+// Dropped counts every frame that never reached the screen: replaced in the sink, or before its conversion.
+TEST(ImageInfoBar, DroppedIncludesFramesSkippedBeforeConversion) {
+    const QString summary = QString::fromUtf8("1920×1080 · 3 ch · 8U");
+    viewer_core::LiveChannel channel;
+    channel.dropped = 12;
+    channel.skipped = 5;
+
+    EXPECT_TRUE(liveDetails(summary, channel, {.arrivedPerSecond = 30, .drawnPerSecond = 25})
+                    .contains(QStringLiteral("25 drawn · 17 dropped")));
+}
+
 TEST_F(ImageInfoBarTest, LiveChannelHasNoPencil) {
     m_bar.showLiveChannel(QStringLiteral("camera"), QStringLiteral("live · 4×3 · 1 ch · 8U"));
 

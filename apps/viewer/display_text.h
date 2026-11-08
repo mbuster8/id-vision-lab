@@ -36,8 +36,8 @@ QString imageDetails(const viewer_core::ReceivedImage& image, const QLocale& loc
 
 // "live · 1920×1080 · 3 ch · 8U · 30 fps in · 30 drawn · 12 dropped · 18 ms": the state ("frozen" before
 // "idle" before "live"), the summary and the shown frame's tags, frames arrived and drawn in the last second,
-// frames the viewer dropped, and the shown frame's age, left out without a sentAt. The info strip shows it
-// for a live channel.
+// frames that never reached the screen (replaced while the viewer was busy receiving or converting), and the
+// shown frame's age, left out without a sentAt. The info strip shows it for a live channel.
 QString liveDetails(const QString& summary, const viewer_core::LiveChannel& channel,
                     const viewer_core::LiveStats& stats);
 

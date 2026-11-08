@@ -12,7 +12,9 @@
 #include "image_sidebar.h"
 #include "image_store.h"
 #include "image_view.h"
+#include "latch.h"
 #include "live_channel_panel.h"
+#include "live_converter.h"
 #include "palette_support.h"
 #include "server_controls.h"
 #include "shades.h"
@@ -61,13 +63,17 @@
 #include <opencv2/core.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1443,7 +1449,8 @@ using namespace std::chrono_literals;
 
 // A window on a clock the test moves, so channels go idle and rates change without waiting.
 struct ClockedWindow {
-    ClockedWindow() : window(test_support::makeClockedTestWindow([this] { return now; })) {}
+    explicit ClockedWindow(LiveConversion conversion = LiveConversion::Immediate)
+        : window(test_support::makeClockedTestWindow([this] { return now; }, conversion)) {}
 
     Clock::time_point now = Clock::now();
     std::unique_ptr<MainWindow> window;
@@ -3350,6 +3357,273 @@ TEST(MainWindowTest, SwitchingImagesCancelsAHistogramDrag) {
     EXPECT_EQ(displayControlOf(*window)->settings(), viewer_core::DisplaySettings{});
     ASSERT_TRUE(panelOf(*window)->selectImage(2));
     EXPECT_EQ(displayControlOf(*window)->settings(), viewer_core::DisplaySettings{});
+}
+
+// --- The live channel in view, converted on the converter's thread (quick win 7) ---------------------------
+
+// The default conversion, held on the latch for the jobs `when` picks.
+LiveConverter::Conversion holdingWhen(test_support::Latch& latch, std::function<bool(const LiveJob&)> when) {
+    return [&latch, when = std::move(when)](const LiveJob& job) {
+        if (when(job)) {
+            latch.hold();
+        }
+        return convertLiveFrame(job);
+    };
+}
+
+// For results that may not change the view (a dropped one, a redraw); where a test knows what the view will
+// show, it waits for that instead, since a redraw of the frame before (after a resize, say) is a result too.
+bool waitForLiveResults(MainWindow& window, std::uint64_t received) {
+    return QTest::qWaitFor(
+        [&window, received] { return window.liveResultCountsForTests().received >= received; });
+}
+
+bool waitForGrey(MainWindow& window, int grey) {
+    return QTest::qWaitFor([&window, grey] { return viewedGrey(window) == grey; });
+}
+
+TEST(MainWindowTest, ThreadedLiveFramesReachTheView) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    showSized(window);
+
+    feedLive(window, "camera", liveFrame(50));
+    ASSERT_TRUE(waitForGrey(window, 50));
+    feedLive(window, "camera", liveFrame(60));
+    ASSERT_TRUE(waitForGrey(window, 60));
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(infoDetails(window).contains(QStringLiteral("2 drawn"))) << infoDetails(window).toStdString();
+}
+
+// A new range, Show Clipping or a zoom draws the same frame again: not another frame drawn.
+TEST(MainWindowTest, RedrawsOfOneFrameCountOnce) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    showCamera(window, 50);
+
+    applyFixedRange(window, QStringLiteral("0"), QStringLiteral("100"));
+    action(window, "actionShowClipping")->trigger();
+    window.tick(clocked.now);
+
+    EXPECT_EQ(window.liveResultCountsForTests().applied, 3U);
+    EXPECT_TRUE(infoDetails(window).contains(QStringLiteral("1 drawn"))) << infoDetails(window).toStdString();
+}
+
+// A frame whose job a newer frame replaced while the converter was busy never reached the screen: it counts
+// with the dropped frames.
+TEST(MainWindowTest, ReplacedJobsCountAsSkipped) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    window.setLiveConversionForTests(
+        holdingWhen(latch, [](const LiveJob& job) { return job.frameNumber == 1; }));
+    showSized(window);
+
+    feedLive(window, "camera", liveFrame(10));
+    QApplication::processEvents(); // shown: frame 1's job is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    feedLive(window, "camera", liveFrame(20));
+    QApplication::processEvents(); // frame 2's job waits
+    feedLive(window, "camera", liveFrame(30));
+    QApplication::processEvents(); // frame 3's replaces it
+    latch.release();
+    ASSERT_TRUE(waitForGrey(window, 30)); // frame 1's result came first
+    window.tick(clocked.now);
+
+    EXPECT_TRUE(infoDetails(window).contains(QStringLiteral("2 drawn · 1 dropped")))
+        << infoDetails(window).toStdString();
+}
+
+TEST(MainWindowTest, ResultForAChannelNoLongerInViewIsDropped) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    window.setLiveConversionForTests(
+        holdingWhen(latch, [](const LiveJob& job) { return job.channel == "a"; }));
+    showSized(window);
+
+    feedLive(window, "a", liveFrame(50));
+    QApplication::processEvents(); // a takes the view; its job is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    feedLive(window, "b", liveFrame(200));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("b"));
+    latch.release();
+    ASSERT_TRUE(waitForGrey(window, 200)); // a's result came first
+
+    const MainWindow::LiveResultCounts counts = window.liveResultCountsForTests();
+    EXPECT_EQ(counts.received - counts.applied, 1U); // a's, dropped
+    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("b"));
+}
+
+TEST(MainWindowTest, ResultAfterAStillTookTheViewIsDropped) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    window.setLiveConversionForTests(holdingWhen(latch, [](const LiveJob&) { return true; }));
+    showSized(window);
+
+    feedLive(window, "camera", liveFrame(50));
+    QApplication::processEvents(); // the channel takes the view; its job is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    window.addImage("still", greyStill(100));
+    ASSERT_TRUE(panelOf(window)->selectImage(1));
+    latch.release();
+    ASSERT_TRUE(waitForLiveResults(window, 1));
+
+    EXPECT_EQ(window.liveResultCountsForTests().applied, 0U);
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(viewedGrey(window), 100);
+}
+
+// Shown again meanwhile, the channel's earlier job is for a view that has gone: only the new one is applied.
+TEST(MainWindowTest, ResultFromAnEarlierViewOfTheSameChannelIsDropped) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    window.setLiveConversionForTests(holdingWhen(latch, [](const LiveJob&) { return true; }));
+    showSized(window);
+
+    feedLive(window, "camera", liveFrame(50));
+    QApplication::processEvents();
+    ASSERT_TRUE(latch.waitUntilEntered());
+    window.addImage("still", greyStill(100));
+    ASSERT_TRUE(panelOf(window)->selectImage(1));
+    chooseLiveRow(window, QStringLiteral("camera"));
+    latch.release();
+    ASSERT_TRUE(waitForGrey(window, 50)); // the earlier job's result came first
+
+    const MainWindow::LiveResultCounts counts = window.liveResultCountsForTests();
+    EXPECT_EQ(counts.received - counts.applied, 1U);
+}
+
+// A channel's first job fits the view to it, even when a newer frame's job replaced it before it ran.
+TEST(MainWindowTest, FirstFrameOfAChannelIsFitted) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    window.setLiveConversionForTests(
+        holdingWhen(latch, [](const LiveJob& job) { return job.channel == "a" && job.frameNumber == 2; }));
+    showSized(window);
+    feedLive(window, "a", liveFrame(50));
+    feedLive(window, "b", liveFrame(200)); // the same size
+    QApplication::processEvents();
+    ASSERT_TRUE(waitForGrey(window, 50));
+    auto* view = window.findChild<ImageView*>();
+    const QSize size(40, 30);
+    zoomIn(*view, QRectF(view->rect()).center());
+    ASSERT_NE(view->deviceScaleFor(size, ImageView::KeepView::IfSameSize),
+              view->deviceScaleFor(size, ImageView::KeepView::No));
+
+    feedLive(window, "a", liveFrame(60));
+    QApplication::processEvents(); // a's frame 2: its job is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    chooseLiveRow(window, QStringLiteral("b")); // b's first job, to be fitted, waits
+    feedLive(window, "b", liveFrame(210));
+    QApplication::processEvents(); // b's next frame replaces it
+    latch.release();
+    ASSERT_TRUE(waitForGrey(window, 210));
+
+    EXPECT_DOUBLE_EQ(view->deviceScaleFor(size, ImageView::KeepView::IfSameSize),
+                     view->deviceScaleFor(size, ImageView::KeepView::No));
+}
+
+// A zoom whose job is still running, then a fit back: the picture ends at the fitted size, not the zoom's.
+TEST(MainWindowTest, ZoomBackWhileAJobRunsEndsAtTheRightSize) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    std::atomic<int> holdWiderThan = std::numeric_limits<int>::max(); // a zoom's picture, once known
+    window.setLiveConversionForTests(holdingWhen(
+        latch, [&holdWiderThan](const LiveJob& job) { return job.drawnSize.width > holdWiderThan; }));
+    showSized(window);
+    feedLive(window, "camera", fourK());
+    QApplication::processEvents();
+    ASSERT_TRUE(waitForLiveResults(window, 1));
+    action(window, "actionFreeze")->trigger();
+    auto* view = window.findChild<ImageView*>();
+    const QSize fitted = view->picture().size();
+    ASSERT_LT(fitted.width(), 4000);
+    holdWiderThan = fitted.width();
+
+    const QPointF centre = QRectF(view->rect()).center();
+    const std::uint64_t before = window.liveResultCountsForTests().received;
+    zoomIn(*view, centre); // a larger picture: its job is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    sendMouse(*view, QEvent::MouseButtonDblClick, centre, Qt::NoModifier); // fit again
+    latch.release();
+    ASSERT_TRUE(waitForLiveResults(window, before + 2));
+
+    EXPECT_EQ(view->picture().size(), fitted);
+}
+
+TEST(MainWindowTest, ShowHistogramOnAFrozenChannelFillsTheStrip) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", liveFrame(70));
+    QApplication::processEvents();
+    action(*window, "actionFreeze")->trigger();
+
+    showHistogram(*window);
+
+    EXPECT_TRUE(stripOf(*window)->isVisible());
+    const viewer_core::Histogram& histogram = stripOf(*window)->histogram();
+    ASSERT_EQ(histogram.counts.size(), 1U);
+    EXPECT_GT(histogram.counts[0][70], 0U);
+}
+
+TEST(MainWindowTest, ThreadedHistogramComesWithTheFrame) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    showHistogram(window);
+
+    feedLive(window, "camera", liveFrame(60));
+    ASSERT_TRUE(waitForGrey(window, 60));
+
+    EXPECT_TRUE(stripOf(window)->isVisible());
+    const viewer_core::Histogram& histogram = stripOf(window)->histogram();
+    ASSERT_EQ(histogram.counts.size(), 1U);
+    EXPECT_GT(histogram.counts[0][60], 0U);
+}
+
+TEST(MainWindowTest, TurningTheHistogramOffHidesItWhileLive) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    showHistogram(*window);
+    feedLive(*window, "camera", liveFrame(60));
+    QApplication::processEvents();
+    ASSERT_TRUE(stripOf(*window)->isVisible());
+
+    showHistogram(*window); // off
+
+    EXPECT_FALSE(stripOf(*window)->isVisible());
+    EXPECT_TRUE(stripOf(*window)->histogram().counts.empty());
+}
+
+// A frame converted with its histogram while the strip was on arrives after the strip was turned off.
+TEST(MainWindowTest, ALateHistogramAfterTurningItOffStaysHidden) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    test_support::Latch latch;
+    window.setLiveConversionForTests(
+        holdingWhen(latch, [](const LiveJob& job) { return job.frameNumber == 2; }));
+    showSized(window);
+    showHistogram(window);
+    feedLive(window, "camera", liveFrame(50));
+    ASSERT_TRUE(waitForGrey(window, 50));
+    ASSERT_TRUE(stripOf(window)->isVisible());
+
+    feedLive(window, "camera", liveFrame(60));
+    QApplication::processEvents(); // frame 2's job, histogram included, is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+    showHistogram(window); // off
+    latch.release();
+    ASSERT_TRUE(waitForGrey(window, 60));
+
+    EXPECT_FALSE(stripOf(window)->isVisible());
 }
 
 // What the histogram adds to each live frame the window takes and draws, on the UI thread: 4K 16UC3 HLG
