@@ -306,7 +306,10 @@ or restarting peer:
   which sends return `ViewerUnavailable` at once. A host application is thus blocked once, for half a
   second, not on every image.
 - **Viewer appears later.** The socket is kept after `ViewerUnavailable`; ZeroMQ reconnects it in the
-  background, so the first send after the back-off is delivered.
+  background, so the first send after the back-off is delivered. Each connection attempt is abandoned after
+  `replyTimeout` (`ZMQ_CONNECT_TIMEOUT`), because Windows takes about two seconds to report a refused
+  connection where macOS and Linux report it at once; ZeroMQ then tries again, so a late viewer is found as
+  quickly on every platform.
 - **Reply lost.** After `Timeout`, the socket is closed and recreated, because a REQ socket still waiting
   for a reply cannot send again. The deadline is `replyTimeout` plus 10 ms per MiB, so a large image is
   not mistaken for a lost one.
@@ -315,6 +318,20 @@ or restarting peer:
 The server binds to loopback only unless `allowRemote` is set, limits frame size and queue length, replies
 only with fixed ASCII reasons, and survives any malformed message. Details are in
 [`wire-format.md`](wire-format.md#validation).
+
+## Files on disk
+
+The viewer keeps its activity log and, when asked, its images in a folder per endpoint under
+`QStandardPaths::AppDataLocation` (`data_folder.cpp`). They may show private documents, so only their owner
+may read them:
+
+- **macOS and Linux.** The viewer sets the folders to `0700` and the files to `0600` (`private_files.h`):
+  the activity log is created with them, and files written atomically through `QSaveFile` get them as they
+  are committed.
+- **Windows.** Qt's permission bits do not reach Windows' access lists, so setting them changes nothing
+  there. The folders and files inherit the access list of the user's `AppData` folder instead, which lets in
+  only that user, SYSTEM and Administrators. The tests check the access list itself through
+  `tests/viewer/owner_only.h`; its `.cpp` is the only file that includes `<windows.h>`.
 
 ## Extension points
 

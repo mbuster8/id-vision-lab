@@ -72,7 +72,7 @@ std::string describe(int error) {
 
 // The format in which `codec` hands over frames that kHardware decoded, or none.
 AVPixelFormat hardwareFormatOf(const AVCodec* codec) {
-    if (kHardware == AV_HWDEVICE_TYPE_NONE) {
+    if constexpr (kHardware == AV_HWDEVICE_TYPE_NONE) {
         return AV_PIX_FMT_NONE;
     }
     for (int i = 0;; ++i) {

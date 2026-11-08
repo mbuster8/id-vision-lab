@@ -1,9 +1,9 @@
 #include "data_folder.h"
 
 #include "image_store.h"
+#include "owner_only.h"
 
 #include <QDir>
-#include <QFileDevice>
 #include <QFileInfo>
 #include <QString>
 #include <QTemporaryDir>
@@ -34,14 +34,10 @@ TEST(DataFolder, CreatesOwnerOnlyFolders) {
     EXPECT_EQ(folder->path(), QDir(root.path()).filePath(QStringLiteral("tcp_127.0.0.1_7139")));
     EXPECT_EQ(folder->logFile(), folder->path() + QStringLiteral("/activity.log"));
     EXPECT_EQ(folder->imagesFolder(), folder->path() + QStringLiteral("/images"));
-    constexpr QFileDevice::Permissions kOthers = QFileDevice::ReadGroup | QFileDevice::WriteGroup |
-                                                 QFileDevice::ExeGroup | QFileDevice::ReadOther |
-                                                 QFileDevice::WriteOther | QFileDevice::ExeOther;
     for (const QString& path : {folder->path(), folder->imagesFolder()}) {
         SCOPED_TRACE(path.toStdString());
-        const QFileInfo info(path);
-        EXPECT_TRUE(info.isDir());
-        EXPECT_FALSE(info.permissions() & kOthers);
+        EXPECT_TRUE(QFileInfo(path).isDir());
+        EXPECT_TRUE(test_support::isOwnerOnly(path));
     }
 }
 

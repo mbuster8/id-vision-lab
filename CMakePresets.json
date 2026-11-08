@@ -13,6 +13,11 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "environment": {
         "PATH": "/opt/homebrew/bin${pathListSep}$penv{PATH}"
+      },
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
       }
     },
     {
@@ -39,43 +44,164 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "ID_VISION_LAB_SANITIZERS": "ON"
       }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}"
+      },
+      "environment": {
+        "PATH": "$env{QT_ROOT_DIR}/bin${pathListSep}$penv{PATH}"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "displayName": "Windows Debug (MSVC, vcpkg)",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows Release (MSVC, vcpkg)",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-asan",
+      "displayName": "Windows Debug with AddressSanitizer (MSVC, vcpkg)",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ID_VISION_LAB_SANITIZERS": "ON"
+      }
     }
   ],
   "buildPresets": [
     {
+      "name": "base",
+      "hidden": true,
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
       "name": "debug",
+      "inherits": "base",
       "configurePreset": "debug"
     },
     {
       "name": "release",
+      "inherits": "base",
       "configurePreset": "release"
     },
     {
       "name": "asan",
+      "inherits": "base",
       "configurePreset": "asan"
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "windows-base",
+      "configurePreset": "windows-debug"
+    },
+    {
+      "name": "windows-release",
+      "inherits": "windows-base",
+      "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-asan",
+      "inherits": "windows-base",
+      "configurePreset": "windows-asan"
     }
   ],
   "testPresets": [
     {
-      "name": "debug",
-      "configurePreset": "debug",
+      "name": "base",
+      "hidden": true,
       "output": {
         "outputOnFailure": true
+      },
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
       }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "configurePreset": "debug"
     },
     {
       "name": "release",
-      "configurePreset": "release",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "base",
+      "configurePreset": "release"
     },
     {
       "name": "asan",
-      "configurePreset": "asan",
+      "inherits": "base",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
       "output": {
         "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
       }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "windows-base",
+      "configurePreset": "windows-debug"
+    },
+    {
+      "name": "windows-release",
+      "inherits": "windows-base",
+      "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-asan",
+      "inherits": "windows-base",
+      "configurePreset": "windows-asan"
     }
   ]
 }

@@ -223,6 +223,24 @@ TEST(DisplayConverter, DoublesBeyondFloatRangeMapLinearly) {
     EXPECT_EQ(fixed.at<cv::Vec4b>(0, 3)[0], 0); // clipped below the range
 }
 
+// A float far above a narrow Fixed range shows white, not black. Scaled in single precision it would overflow
+// to +∞, which x86's rounding instruction turns into the integer minimum, so 0. Wide enough for OpenCV's
+// vector code.
+TEST(DisplayConverter, FloatsFarAboveAFixedRangeShowWhite) {
+    cv::Mat image(1, 64, CV_32FC1, cv::Scalar(0.5f));
+    image.at<float>(0, 1) = std::numeric_limits<float>::max();
+    image.at<float>(0, 2) = 3.0e38f;
+    image.at<float>(0, 3) = -std::numeric_limits<float>::max();
+
+    const cv::Mat display =
+        toDisplayImage(image, DisplaySettings{.mode = RangeMode::Fixed, .range = {0.0, 1.0}});
+
+    EXPECT_EQ(display.at<cv::Vec4b>(0, 1)[0], 255);
+    EXPECT_EQ(display.at<cv::Vec4b>(0, 2)[0], 255);
+    EXPECT_EQ(display.at<cv::Vec4b>(0, 3)[0], 0);
+    EXPECT_NEAR(display.at<cv::Vec4b>(0, 0)[0], 128, 1);
+}
+
 // A long thin image is averaged along its long side too, though its short side is shorter than the shrink:
 // every fourth column white shrinks to an even grey, not to stripes.
 TEST(DisplayConverter, DrawnSizeAveragesThinImages) {

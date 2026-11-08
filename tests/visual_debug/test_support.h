@@ -102,6 +102,23 @@ inline void unsetEnvironment(const char* name) {
 #endif
 }
 
+// The variable's value, or nothing when it is not set. MSVC deprecates getenv (warning C4996) for _dupenv_s.
+inline std::optional<std::string> environmentValue(const char* name) {
+#ifdef _WIN32
+    char* copy = nullptr;
+    std::size_t length = 0;
+    std::optional<std::string> value;
+    if (_dupenv_s(&copy, &length, name) == 0 && copy != nullptr) {
+        value = copy;
+    }
+    std::free(copy);
+    return value;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
+#endif
+}
+
 inline bool isAscii(std::string_view text) {
     return std::all_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; });
 }

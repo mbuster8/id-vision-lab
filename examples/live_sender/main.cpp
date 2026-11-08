@@ -36,7 +36,6 @@
 #include <chrono>
 #include <csignal>
 #include <exception>
-#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -203,9 +202,9 @@ std::unique_ptr<live_sender::FfmpegVideo> openHdrVideo(const std::string& path) 
         return nullptr;
     }
     const live_sender::VideoInfo& info = video->info();
-    std::cout << std::filesystem::path(path).filename().string() << ": " << info.size.width << 'x'
-              << info.size.height << ", " << info.bitDepth << "-bit, " << nameOf(info.transfer) << ", "
-              << nameOf(info.primaries) << ", " << info.decoder << '\n';
+    std::cout << live_sender::fileNameOf(path) << ": " << info.size.width << 'x' << info.size.height << ", "
+              << info.bitDepth << "-bit, " << nameOf(info.transfer) << ", " << nameOf(info.primaries) << ", "
+              << info.decoder << '\n';
     if (info.dolbyVisionProfile == 5) {
         std::cerr << "warning: Dolby Vision profile 5 has no HDR10 or HLG base layer, so its colours will be "
                      "wrong\n";

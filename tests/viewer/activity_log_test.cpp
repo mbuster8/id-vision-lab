@@ -1,11 +1,10 @@
 #include "activity_log.h"
+#include "owner_only.h"
 
 #include <QDate>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
-#include <QFileDevice>
-#include <QFileInfo>
 #include <QIcon>
 #include <QModelIndex>
 #include <QString>
@@ -155,17 +154,15 @@ TEST(ActivityLog, CompactsTheFile) {
 TEST(ActivityLog, KeepsTheFileOwnerOnly) {
     const QTemporaryDir folder;
     const QString path = QDir(folder.path()).filePath(QStringLiteral("activity.log"));
-    constexpr QFileDevice::Permissions kOthers =
-        QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
     ActivityLog log(path);
 
     log.append(entry(1));
-    EXPECT_FALSE(QFileInfo(path).permissions() & kOthers);
+    EXPECT_TRUE(test_support::isOwnerOnly(path));
     for (int number = 2; number <= 1101; ++number)
         log.append(entry(number));
 
     EXPECT_EQ(lineCount(path), ActivityLog::kMaxEntries); // rewritten
-    EXPECT_FALSE(QFileInfo(path).permissions() & kOthers);
+    EXPECT_TRUE(test_support::isOwnerOnly(path));
 }
 
 TEST(ActivityLog, SkipsDamagedLines) {

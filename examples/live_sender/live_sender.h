@@ -60,6 +60,11 @@ struct ChannelNames {
     std::string edges = "edges";
 };
 
+// The last part of `path`: what follows its last separator ('/', and on Windows also '\\' and a drive's ':').
+// Works on the bytes, so a name that is not valid UTF-8 never throws, as std::filesystem::path would on
+// Windows under the UTF-8 code page.
+std::string fileNameOf(const std::string& path);
+
 // "camera" and "edges" for an empty name; otherwise NAME and "NAME edges", so several live_senders can share
 // a viewer.
 ChannelNames channelNames(const std::string& name);

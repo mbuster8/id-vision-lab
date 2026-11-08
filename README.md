@@ -105,6 +105,22 @@ build/debug/examples/pipeline_demo/pipeline_demo
 and sends ten images to the viewer: colour, alpha, greyscale, signed 16-bit, 32- and 64-bit floating
 point, a cropped region and 16-bit colour. Hover over them to see the original values.
 
+## Quick start (Windows)
+
+Install Visual Studio 2022 with **Desktop development with C++**, Qt 6 for **MSVC 2022 64-bit** and a clone
+of vcpkg, and set `VCPKG_INSTALLATION_ROOT` and `QT_ROOT_DIR`: the
+[build guide](docs/build-guide.md#prerequisites-windows) lists every step. Then, in PowerShell inside the
+Visual Studio x64 developer environment, from a clone of this repository:
+
+```powershell
+cmake --preset windows-debug          # the first time, vcpkg builds OpenCV and FFmpeg: about 20 minutes
+cmake --build --preset windows-debug
+$env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+build\windows-debug\apps\visual_debug_viewer.exe
+```
+
+and, in a second terminal, `build\windows-debug\examples\pipeline_demo\pipeline_demo.exe`.
+
 ## Everyday commands
 
 Run these from the repository root. The [build guide](docs/build-guide.md) and the
@@ -115,7 +131,7 @@ Run these from the repository root. The [build guide](docs/build-guide.md) and t
 ```sh
 cmake --preset debug                    # configure; once, or after changing a CMakeLists.txt
 cmake --build --preset debug            # build everything into build/debug
-ctest --preset debug                    # all 689 tests, about 97 seconds
+ctest --preset debug                    # all tests (800 on macOS, 797 on Linux and Windows)
 ctest --preset debug -R ClientServer    # only the tests whose name matches
 
 cmake --preset release                  # an optimised build, into build/release
@@ -245,6 +261,7 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 | [Wire format](docs/wire-format.md) | The message format, validation rules and replies, for writing a sender in any language |
 | [Architecture](docs/architecture.md) | Components, dependency rule, threads, transport behaviour, extension points |
 | [ADR-001](docs/ADR/ADR-001-technology-stack.md) | Why C++20, Qt 6, ZeroMQ, JSON and GoogleTest |
+| [ADR-002](docs/ADR/ADR-002-windows-dependencies.md) | How Windows gets its libraries: vcpkg, Qt's installer, MSVC and Ninja |
 
 ## What changed since 2013
 
@@ -252,15 +269,15 @@ build/debug/apps/viewer/visual_debug_viewer.app/Contents/MacOS/visual_debug_view
 
 | | 2013 | 2026 |
 |---|---|---|
-| Platform | Ubuntu | macOS on Apple silicon (Windows and Linux next) |
+| Platform | Ubuntu | macOS on Apple silicon, Ubuntu 24.04 and Windows 11 (MSVC, vcpkg) |
 | UI | Qt 4.8.1 | Qt 6 |
 | OpenCV | 2.4, with C-era names such as `CV_LOAD_IMAGE_UNCHANGED` | 5.0, using only API that also exists in 4.x |
 | C++ | pre-C++11 style: `0` for null, manual `new` and `delete` | C++20 |
 | Build | three qmake `.pro` files with hard-coded build paths | one CMake project with presets, warning-free under `-Wall -Wextra -Wpedantic` |
 | Message | a hand-packed binary header | a JSON header plus a pixel frame, validated field by field |
 | Streams | none: one still image at a time | live channels from cameras, video files and HDR video (FFmpeg's libraries), in real time |
-| Tests | none | 682 GoogleTest tests, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
-| Documentation | one paragraph in `readme.txt` | this README, five guides and a decision record |
+| Tests | none | 800 tests on macOS and 797 on Linux and Windows: the GoogleTest tests, plus each test program run whole; also run under AddressSanitizer and UndefinedBehaviorSanitizer |
+| Documentation | one paragraph in `readme.txt` | this README, five guides and two decision records |
 
 ### Defects found in the 2013 code, and what fixed them
 
@@ -313,13 +330,15 @@ id-vision-lab/
 ├── tests/                 GoogleTest tests for all of the above
 ├── resources/icons/       the apps' icons
 ├── docs/                  guides, wire format, architecture, decision records
-├── cmake/                 warning, sanitizer and macOS icon settings
+├── cmake/                 warning, sanitizer, icon and Windows packaging settings
+├── packaging/licenses/    the third-party notices the Windows packages ship
 ├── scripts/               check.sh (the CI pipeline, locally), the Ubuntu package list, the pre-push hook
 ├── docker/                the CI's Ubuntu job as a container
 ├── .github/               continuous integration, CodeQL and Dependabot
 ├── .claude/skills/        Claude Code skills: local-ci and pr-ready
 ├── CMakeLists.txt
-├── CMakePresets.json      debug, release and asan builds
+├── CMakePresets.json      debug, release and asan builds; windows-debug, windows-release and windows-asan
+├── vcpkg.json             the Windows libraries, at pinned versions
 ├── LICENSE                Apache License 2.0
 └── NOTICE
 ```
@@ -328,8 +347,10 @@ id-vision-lab/
 
 Builds and passes all tests on macOS with Apple silicon. Continuous integration builds and tests every push
 on macOS and on Ubuntu 24.04 (with the distribution's OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest
-versions supported). Windows support (vcpkg, presets and a setup script) is the next step; the code is
-already written to be portable.
+versions supported). On Windows 11 it builds with MSVC and vcpkg, warning-free, and passes all tests, also
+under AddressSanitizer; `cpack` makes a portable `.zip` and an `.msi` installer of the two apps
+([build guide](docs/build-guide.md#packages-for-windows)). Continuous integration has a Windows job too,
+which has not run on GitHub yet.
 
 ## Licence
 

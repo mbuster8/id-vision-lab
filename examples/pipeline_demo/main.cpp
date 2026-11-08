@@ -12,9 +12,6 @@
 #include "visual_debug/endpoint.h"
 #include "visual_debug/wire_format.h"
 
-#include <opencv2/imgcodecs.hpp>
-
-#include <exception>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -46,19 +43,6 @@ std::optional<Arguments> parseArguments(int argc, char* argv[]) {
     return arguments;
 }
 
-// Read as 8-bit colour: the stages make the 16-bit and floating-point images themselves.
-std::optional<cv::Mat> readImage(const std::string& path) {
-    try {
-        cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
-        if (visual_debug::isSupportedImage(image)) {
-            return image;
-        }
-    } catch (const std::exception&) {
-        // reported below like any other unreadable file
-    }
-    return std::nullopt;
-}
-
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -70,7 +54,7 @@ int main(int argc, char* argv[]) {
 
     cv::Mat original = pipeline_demo::makeTestPattern();
     if (arguments->imagePath) {
-        const auto image = readImage(*arguments->imagePath);
+        const auto image = pipeline_demo::readImage(*arguments->imagePath);
         if (!image) {
             std::cerr << "cannot read an image from " << *arguments->imagePath << '\n';
             return kExitUsageError;

@@ -90,6 +90,22 @@ TEST(ClientServer, DeliversImageToSink) {
     EXPECT_EQ(cv::norm(received.image, image, cv::NORM_INF), 0.0);
 }
 
+// ZeroMQ takes its connect timeout as an int of milliseconds and refuses a negative one, so a reply timeout
+// longer than about 24.8 days, or a negative one, must still connect, as it did before that option was set.
+TEST(ClientServer, DeliversWithAnyReplyTimeout) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+
+    for (const std::chrono::milliseconds timeout :
+         {std::chrono::milliseconds(1000h), std::chrono::milliseconds(-1h)}) {
+        SCOPED_TRACE(timeout.count());
+        Client client({.endpoint = server.boundEndpoint(), .replyTimeout = timeout});
+
+        EXPECT_EQ(client.send(smallImage(), "image"), SendResult::Delivered);
+    }
+}
+
 TEST(ClientServer, DeliversLiveFrameWithSentAt) {
     CollectingSink sink;
     Server server(sink, {.endpoint = kAnyLoopbackPort});

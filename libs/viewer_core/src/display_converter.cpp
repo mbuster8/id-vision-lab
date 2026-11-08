@@ -69,8 +69,17 @@ cv::Mat toEightBit(const Plane& plane, const DisplayRange& range, int channels) 
         // Straight to 8 bits, OpenCV works in single precision: a double beyond float's range becomes
         // infinity, and so does a scale beyond it. Doubles, and such scales, are scaled in double precision
         // first and clipped there, so only 0 to 255 reaches the conversion.
-        if (plane.values.depth() != CV_64F && scale >= std::numeric_limits<float>::min() &&
-            scale <= std::numeric_limits<float>::max()) {
+        if (plane.values.depth() == CV_32F && scale > 1.0 && scale <= std::numeric_limits<float>::max()) {
+            // A float far above the range would also become infinity when scaled, which x86's rounding
+            // instruction turns into the integer minimum, so black. Clipped to the range first, in floats,
+            // no value can overflow; with a scale of at most 1, none can anyway.
+            constexpr double kFloatMax = std::numeric_limits<float>::max();
+            cv::Mat clipped;
+            cv::min(plane.values, std::min(range.max, kFloatMax), clipped);
+            cv::max(clipped, std::max(range.min, -kFloatMax), clipped);
+            clipped.convertTo(result, CV_8U, scale, -range.min * scale);
+        } else if (plane.values.depth() != CV_64F && scale >= std::numeric_limits<float>::min() &&
+                   scale <= std::numeric_limits<float>::max()) {
             plane.values.convertTo(result, CV_8U, scale, -range.min * scale);
         } else {
             cv::Mat scaled;

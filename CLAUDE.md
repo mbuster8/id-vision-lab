@@ -38,11 +38,19 @@ cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF   # proves
 scripts/check.sh                      # what CI runs, here: clang-format, debug, asan, Ubuntu in Docker
 ```
 
+On Windows the presets are `windows-debug`, `windows-release` and `windows-asan` (MSVC, vcpkg from
+`vcpkg.json`, Qt from `$env:QT_ROOT_DIR`), run inside the VS x64 developer environment; `scripts/check.sh
+--linux` from Git Bash covers the Ubuntu job, and clang-format is Qt Creator's copy. `cpack --config
+build\windows-release\CPackConfig.cmake -B build\windows-release\packages` makes the `.zip` and the `.msi`
+(WiX 3) from `cmake/windows_packaging.cmake`; licences shipped with them are in `packaging/licenses/`. Setup and commands:
+[`docs/build-guide.md#windows`](docs/build-guide.md#windows).
+
 Before a push or a pull request, run `scripts/check.sh` (the `local-ci` skill); to prepare a pull request,
 use the `pr-ready` skill.
 
 The apps build as `build/<preset>/apps/viewer/visual_debug_viewer` and
-`build/<preset>/apps/example_sender/visual_debug_example_sender` (`.app` bundles on macOS). Their shown names
+`build/<preset>/apps/example_sender/visual_debug_example_sender` (`.app` bundles on macOS; on Windows
+`build\<preset>\apps\visual_debug_viewer.exe` and `visual_debug_example_sender.exe`, without the subfolder). Their shown names
 live in `apps/qt_common/application_identity.h` and `MACOSX_BUNDLE_BUNDLE_NAME`, and also name their settings
 and data folders: renaming an app moves them.
 
@@ -52,7 +60,8 @@ and data folders: renaming an app moves them.
 `apps/example_sender` · `apps/qt_common` ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
-the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, macOS bundle icons) · `scripts/`
+the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
+manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`
 (`check.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
 `.claude/skills/` (`local-ci`, `pr-ready`). Older commits use former names (`Image_processing`, Slovak
 identifiers): [`docs/former-names.md`](docs/former-names.md).
@@ -73,14 +82,21 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   are fixed ASCII and never echo request bytes; the header is parsed without exceptions and never copied
   or dumped (a deeply nested header would overflow the worker's stack); the server binds loopback only
   unless `allowRemote` is set.
-- **Portability** (Windows comes next): no POSIX- or GNU-only APIs; paths through `std::filesystem` or Qt;
-  production code reads environment variables only through `visual_debug::defaultEndpoint()`; non-ASCII
-  source is UTF-8 (MSVC gets `/utf-8`); OpenCV API must also exist in 4.x (OpenCV 5 moved some headers:
-  guard them with `__has_include`).
-- **Warnings:** zero from project code under `-Wall -Wextra -Wpedantic`.
+- **Portability** (macOS, Linux and Windows): no POSIX- or GNU-only APIs; paths through `std::filesystem` or
+  Qt; production code reads environment variables only through `visual_debug::defaultEndpoint()` (tests
+  through `test_support::environmentValue`: MSVC warns on `getenv`); non-ASCII source is UTF-8 (MSVC gets
+  `/utf-8`); OpenCV API must also exist in 4.x (OpenCV 5 moved some headers: guard them with
+  `__has_include`). On Windows `cv::imread`/`imwrite` take narrow paths, so in the apps a non-ASCII path
+  goes through Qt and `cv::imdecode`/`imencode`, while the examples (and their tests) get a UTF-8 code page
+  from `id_vision_lab_use_utf8_code_page()`; under it `std::filesystem::path` throws on bytes that are not
+  UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach access lists, so privacy tests use
+  `tests/viewer/owner_only.h`, whose `.cpp` is the only file that includes `<windows.h>`.
+- **Warnings:** zero from project code under `-Wall -Wextra -Wpedantic`, and under MSVC's `/W4`.
 - **UI tests run offscreen in the Fusion style**, so they cannot see macOS drawing (a `QToolBar`'s buttons
   lose their frames) or how a live appearance switch reaches child widgets (only as `PaletteChange`). Check
-  such changes in the running app too.
+  such changes in the running app too. On Windows the offscreen platform has no fonts of its own:
+  `tests/qt_common/test_main.cpp` points it at `%WINDIR%\Fonts` and Segoe UI 9 pt, or text-sized layouts
+  come out wrong.
 
 ## Conventions
 

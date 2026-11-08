@@ -3,6 +3,7 @@
 #include <opencv2/core/mat.hpp>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,5 +23,10 @@ std::vector<PipelineStage> buildPipeline();
 
 // A BGR test image with a gradient, shapes and text, so every stage has something to show.
 cv::Mat makeTestPattern(cv::Size size = {640, 480});
+
+// The image at `path` (UTF-8) as 8-bit colour, the stages making the 16-bit and floating-point images
+// themselves; nothing when it cannot be read. On Windows a non-ASCII path needs the UTF-8 code page that
+// cmake/utf8_code_page.cmake gives the program, since OpenCV opens files by their narrow path there.
+std::optional<cv::Mat> readImage(const std::string& path);
 
 } // namespace pipeline_demo

@@ -1,12 +1,12 @@
 #include "image_store.h"
 #include "image_tags_conversion.h"
+#include "owner_only.h"
 
 #include "visual_debug/wire_format.h"
 
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
-#include <QFileDevice>
 #include <QFileInfo>
 #include <QString>
 #include <QStringList>
@@ -321,14 +321,11 @@ TEST(ImageStore, FilesAreOwnerOnly) {
     ImageStore store(folder.path());
     const QString key = store.write("private", smallImage());
     ASSERT_TRUE(store.writeIndex({indexEntry(key, "private")}));
-    constexpr QFileDevice::Permissions kOthers =
-        QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
-
     for (const QString& path :
          {imagePath(folder, key), QDir(folder.path()).filePath(QStringLiteral("index.json"))}) {
         SCOPED_TRACE(path.toStdString());
         EXPECT_TRUE(QFileInfo::exists(path));
-        EXPECT_FALSE(QFileInfo(path).permissions() & kOthers);
+        EXPECT_TRUE(test_support::isOwnerOnly(path));
     }
 }
 

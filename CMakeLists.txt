@@ -17,6 +17,7 @@ option(ID_VISION_LAB_SANITIZERS "Build with AddressSanitizer and UndefinedBehavi
 
 include(cmake/compiler_warnings.cmake)
 include(cmake/sanitizers.cmake)
+include(cmake/utf8_code_page.cmake)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(cppzmq REQUIRED)
