@@ -53,20 +53,31 @@ LiveChannels::ReceiveResult LiveChannels::receive(LiveFrameIn frame, SteadyTime 
         timing.newestReceivedAt = frame.receivedAt;
         timing.newestSentAt = frame.sentAt;
         timing.newestTags = frame.tags;
+        timing.newestNumber = channel.received;
     } else {
         channel.shown = std::move(frame.image);
         channel.shownReceivedAt = frame.receivedAt;
         channel.shownSentAt = frame.sentAt;
         channel.shownTags = frame.tags;
+        channel.shownNumber = channel.received;
         result.shownChanged = true;
     }
     return result;
 }
 
-void LiveChannels::markDrawn(const std::string& name, SteadyTime now) {
+void LiveChannels::markDrawn(const std::string& name, std::uint64_t frameNumber, SteadyTime now) {
+    const std::optional<std::size_t> index = indexOf(name);
+    if (!index || frameNumber <= m_channels[*index].drawnNumber) {
+        return;
+    }
+    m_channels[*index].drawnNumber = frameNumber;
+    m_channels[*index].drawn += 1;
+    record(m_timings[*index].draws, now, 1);
+}
+
+void LiveChannels::markSkipped(const std::string& name, std::uint64_t frames) {
     if (const std::optional<std::size_t> index = indexOf(name)) {
-        m_channels[*index].drawn += 1;
-        record(m_timings[*index].draws, now, 1);
+        m_channels[*index].skipped += frames;
     }
 }
 
@@ -98,6 +109,7 @@ bool LiveChannels::setFrozen(const std::string& name, bool frozen) {
     channel.shownReceivedAt = timing.newestReceivedAt;
     channel.shownSentAt = timing.newestSentAt;
     channel.shownTags = timing.newestTags;
+    channel.shownNumber = timing.newestNumber;
     return true;
 }
 

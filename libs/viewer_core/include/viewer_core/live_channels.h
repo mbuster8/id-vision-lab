@@ -43,7 +43,11 @@ struct LiveChannel {
     bool frozen = false;
     std::uint64_t received = 0; // frames the UI took
     std::uint64_t dropped = 0;  // replaced in the sink
-    std::uint64_t drawn = 0;
+    std::uint64_t skipped = 0;  // taken, then replaced by a newer frame before any picture of them was drawn
+    std::uint64_t drawn = 0;    // frames drawn, each counted once however often it is redrawn
+    // Frames are numbered by `received` as the UI takes them: the shown frame's number, and the newest drawn.
+    std::uint64_t shownNumber = 0;
+    std::uint64_t drawnNumber = 0;
 };
 
 struct LiveStats {
@@ -65,8 +69,13 @@ public:
     };
 
     ReceiveResult receive(LiveFrameIn frame, SteadyTime now);
-    void markDrawn(const std::string& name, SteadyTime now); // nothing for an unknown name
-    std::vector<std::string> updateIdle(SteadyTime now);     // channels that have just gone idle, in order
+    // Counts frame `frameNumber` drawn, unless a frame of that number or a newer one was already: a redraw is
+    // not another frame. Nothing for an unknown name.
+    void markDrawn(const std::string& name, std::uint64_t frameNumber, SteadyTime now);
+    // Frames the UI took but replaced before drawing them. They had arrived, so no rate changes. Nothing for
+    // an unknown name.
+    void markSkipped(const std::string& name, std::uint64_t frames = 1);
+    std::vector<std::string> updateIdle(SteadyTime now); // channels that have just gone idle, in order
 
     // Unfreezing shows `newest`, if a frame arrived while frozen. True when the shown frame changed, which is
     // only then; false for an unknown name.
@@ -89,6 +98,7 @@ private:
         std::chrono::system_clock::time_point newestReceivedAt{};
         std::optional<SentTime> newestSentAt{};
         ImageTags newestTags{};
+        std::uint64_t newestNumber = 0;
     };
 
     std::optional<std::size_t> indexOf(const std::string& name) const;

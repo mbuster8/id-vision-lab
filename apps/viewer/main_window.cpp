@@ -1039,7 +1039,7 @@ void MainWindow::showLiveChannel(const std::string& name) {
 
 void MainWindow::drawLiveFrame(ImageView::KeepView keep) {
     if (paintLiveFrame(keep)) {
-        m_live.markDrawn(*m_liveChannel, m_clock());
+        m_live.markDrawn(*m_liveChannel, m_live.find(*m_liveChannel)->shownNumber, m_clock());
     }
 }
 

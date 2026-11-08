@@ -75,7 +75,7 @@ TEST(LiveChannels, ArrivalRateCountsReplacedFrames) {
     for (int take = 0; take < 30; ++take) {
         now = kStart + take * 33ms;
         channels.receive(frameFor("camera", take, 1), now);
-        channels.markDrawn("camera", now);
+        channels.markDrawn("camera", channels.find("camera")->shownNumber, now);
     }
 
     const viewer_core::LiveStats stats = channels.stats("camera", now);
@@ -90,7 +90,7 @@ TEST(LiveChannels, ArrivalRateCountsReplacedFrames) {
 TEST(LiveChannels, RatesFallToZeroAfterTheWindow) {
     LiveChannels channels;
     channels.receive(frameFor("camera", 0, 2), kStart);
-    channels.markDrawn("camera", kStart);
+    channels.markDrawn("camera", 1, kStart);
 
     EXPECT_EQ(channels.stats("camera", kStart + 999ms).arrivedPerSecond, 3);
     EXPECT_EQ(channels.stats("camera", kStart + 999ms).drawnPerSecond, 1);
@@ -241,15 +241,74 @@ TEST(LiveChannels, CloseForgetsTheChannel) {
     EXPECT_EQ(namesOf(channels), (std::vector<std::string>{"edges"}));
     EXPECT_FALSE(channels.close("camera"));
     EXPECT_EQ(channels.stats("camera", kStart).arrivedPerSecond, 0);
-    channels.markDrawn("camera", kStart);
+    channels.markDrawn("camera", 1, kStart);
+    channels.markSkipped("camera");
     const LiveChannels::SteadyTime later = kStart + kIdleAfter - 1s;
     EXPECT_TRUE(channels.updateIdle(later).empty());
     const LiveChannels::ReceiveResult reopened = channels.receive(frameFor("camera"), later);
     EXPECT_TRUE(reopened.started);
     EXPECT_EQ(channels.find("camera")->received, 1u);
     EXPECT_EQ(channels.find("camera")->dropped, 0u);
+    EXPECT_EQ(channels.find("camera")->skipped, 0u);
     EXPECT_EQ(channels.stats("camera", later).arrivedPerSecond, 1);
     EXPECT_EQ(namesOf(channels), (std::vector<std::string>{"edges", "camera"}));
+    // A restarted channel numbers its frames afresh, so its first frame counts as drawn.
+    EXPECT_EQ(channels.find("camera")->shownNumber, 1u);
+    channels.markDrawn("camera", 1, later);
+    EXPECT_EQ(channels.find("camera")->drawn, 1u);
+}
+
+// Each frame the UI takes gets the next number; the shown frame keeps its own, also while frozen.
+TEST(LiveChannels, ShownNumberFollowsTheShownFrame) {
+    LiveChannels channels;
+    channels.receive(frameFor("camera", 1), kStart);
+    channels.receive(frameFor("camera", 2, 4), kStart + 10ms); // replaced frames get no number
+    channels.receive(frameFor("camera", 3), kStart + 20ms);
+    EXPECT_EQ(channels.find("camera")->shownNumber, 3u);
+
+    channels.setFrozen("camera", true);
+    channels.receive(frameFor("camera", 4), kStart + 30ms);
+    channels.receive(frameFor("camera", 5), kStart + 40ms);
+    EXPECT_EQ(channels.find("camera")->shownNumber, 3u);
+
+    channels.setFrozen("camera", false);
+    EXPECT_EQ(valueOf(channels.find("camera")->shown), 5);
+    EXPECT_EQ(channels.find("camera")->shownNumber, 5u);
+}
+
+// Frames the UI took but never drew, because a newer one replaced them before they were converted.
+TEST(LiveChannels, SkippedFramesCountAsDroppedOnce) {
+    LiveChannels channels;
+    channels.receive(frameFor("camera", 0, 3), kStart);
+
+    channels.markSkipped("camera");
+    channels.markSkipped("camera");
+    channels.markSkipped("nobody");
+
+    const LiveChannel* camera = channels.find("camera");
+    EXPECT_EQ(camera->skipped, 2u);
+    EXPECT_EQ(camera->dropped, 3u);
+    EXPECT_EQ(camera->received, 1u);
+    EXPECT_EQ(channels.stats("camera", kStart).arrivedPerSecond, 4); // skipped frames had arrived
+}
+
+// Redrawing a frame already drawn (a new display range, a zoom) is not another frame drawn.
+TEST(LiveChannels, ADrawCountsOncePerFrame) {
+    LiveChannels channels;
+    channels.receive(frameFor("camera", 1), kStart);
+    channels.receive(frameFor("camera", 2), kStart + 10ms);
+
+    channels.markDrawn("camera", 2, kStart + 10ms);
+    channels.markDrawn("camera", 2, kStart + 20ms);
+    channels.markDrawn("camera", 1, kStart + 30ms); // an older frame, after a newer one
+    channels.markDrawn("nobody", 1, kStart + 30ms);
+
+    EXPECT_EQ(channels.find("camera")->drawn, 1u);
+    EXPECT_EQ(channels.find("camera")->drawnNumber, 2u);
+    EXPECT_EQ(channels.stats("camera", kStart + 30ms).drawnPerSecond, 1);
+    channels.receive(frameFor("camera", 3), kStart + 40ms);
+    channels.markDrawn("camera", 3, kStart + 40ms);
+    EXPECT_EQ(channels.find("camera")->drawn, 2u);
 }
 
 } // namespace
