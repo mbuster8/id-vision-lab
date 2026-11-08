@@ -2,10 +2,14 @@
 
 #include "image_store.h"
 #include "owner_only.h"
+#include "private_files.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 
 #include <gtest/gtest.h>
@@ -37,6 +41,58 @@ TEST(DataFolder, CreatesOwnerOnlyFolders) {
     for (const QString& path : {folder->path(), folder->imagesFolder()}) {
         SCOPED_TRACE(path.toStdString());
         EXPECT_TRUE(QFileInfo(path).isDir());
+        EXPECT_TRUE(test_support::isOwnerOnly(path));
+    }
+}
+
+// Private whatever the root lets others do: on Windows a shared or redirected profile folder can pass wider
+// access on to everything made in it, so the folders get an access list of their own, which the files they
+// hold inherit.
+TEST(DataFolder, StaysOwnerOnlyUnderAWideOpenRoot) {
+    const QTemporaryDir root;
+    ASSERT_TRUE(test_support::letEveryoneReadWhatItHolds(root.path()));
+
+    const auto folder = DataFolder::open(root.path(), kEndpoint);
+
+    ASSERT_NE(folder, nullptr);
+    ImageStore(folder->imagesFolder()).write("stored", cv::Mat(2, 2, CV_8UC1, cv::Scalar(1)));
+    ASSERT_TRUE(
+        writeFileAtomically(folder->logFile(), [](QIODevice& device) { return device.write("x") == 1; }));
+    QStringList paths{folder->path(), folder->imagesFolder(), folder->logFile()};
+    for (const QString& image : QDir(folder->imagesFolder()).entryList(QDir::Files)) {
+        paths.append(QDir(folder->imagesFolder()).filePath(image));
+    }
+    ASSERT_GT(paths.size(), 3); // the stored image is among them
+    for (const QString& path : paths) {
+        SCOPED_TRACE(path.toStdString());
+        EXPECT_TRUE(test_support::isOwnerOnly(path));
+    }
+}
+
+// A folder an earlier viewer made under a wide-open root is private once a viewer opens it. On Windows its
+// files too, which inherited the root's access; on macOS and Linux every viewer made its files 0600 itself.
+TEST(DataFolder, MakesAnEarlierFolderPrivate) {
+    const QTemporaryDir root;
+    ASSERT_TRUE(test_support::letEveryoneReadWhatItHolds(root.path()));
+    const QString earlier = QDir(root.path()).filePath(DataFolder::folderNameFor(kEndpoint));
+    ASSERT_TRUE(QDir().mkpath(QDir(earlier).filePath(QStringLiteral("images"))));
+    const QString log = QDir(earlier).filePath(QStringLiteral("activity.log"));
+    QFile file(log);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.close();
+#ifdef _WIN32
+    ASSERT_FALSE(test_support::isOwnerOnly(log)); // it inherited the root's access
+#endif
+
+    const auto folder = DataFolder::open(root.path(), kEndpoint);
+
+    ASSERT_NE(folder, nullptr);
+    QStringList paths{folder->path(), folder->imagesFolder()};
+#ifdef _WIN32
+    paths.append(log);
+#endif
+    for (const QString& path : paths) {
+        SCOPED_TRACE(path.toStdString());
         EXPECT_TRUE(test_support::isOwnerOnly(path));
     }
 }

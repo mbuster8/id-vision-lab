@@ -14,4 +14,9 @@ bool isOwnerOnly(const QString& path);
 // Lets every account read the file at `path`, so a test can check that isOwnerOnly notices.
 bool letEveryoneRead(const QString& path);
 
+// Lets every account read whatever the folder at `path` will hold, as a shared or redirected profile folder
+// might: on Windows, files and folders made inside it inherit that access. On macOS and Linux nothing is
+// inherited, so this only widens the folder itself.
+bool letEveryoneReadWhatItHolds(const QString& path);
+
 } // namespace test_support

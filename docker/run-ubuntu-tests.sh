@@ -17,3 +17,6 @@ echo "== Ubuntu 24.04: build and test without Qt"
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build/no-qt
 ctest --test-dir build/no-qt --output-on-failure
+
+echo "== Ubuntu 24.04: test coverage, built with Clang (a report, no threshold)"
+CXX=clang++ scripts/coverage.sh

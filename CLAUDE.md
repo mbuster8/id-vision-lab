@@ -22,20 +22,24 @@ documents rather than re-deriving them:
 
 - Check before stating: that an API exists, with that signature, in the versions this project supports
   (OpenCV 4.6 and 5.x, Qt 6.4 and newer); a tool's or action's current version. Say what you could not check.
-- Numbers in docs, commits and reports (test counts, timings, sizes) come from a run in this session. Never
-  present an estimate as a measurement.
+- Numbers in docs, commits and reports come from a run in this session. Never present an estimate as a
+  measurement.
+- No test counts or timings in Markdown files, CLAUDE.md or skills: they change with every new test and with how
+  busy the machine is, so they drift. What matters is that everything builds, runs and passes, which CI and
+  `scripts/check.sh` show. A commit message or pull request may name the tests a change adds.
 - Say what was not done: tests not run, platforms not built, steps skipped.
 - Look facts up yourself; ask the owner only for decisions, with a recommendation.
 
 ## Commands
 
 ```sh
-cmake --preset debug                  # also: release, asan
+cmake --preset debug                  # also: release, asan, coverage
 cmake --build --preset debug
 ctest --preset debug                  # all tests; -R <regex> to filter
 ctest --preset asan                   # sanitizers; undefined behaviour aborts the test
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF   # proves the libraries need no Qt
 scripts/check.sh                      # what CI runs, here: clang-format, debug, asan, Ubuntu in Docker
+scripts/coverage.sh                   # coverage preset: line and function coverage per library and app
 ```
 
 On Windows the presets are `windows-debug`, `windows-release` and `windows-asan` (MSVC, vcpkg from
@@ -60,9 +64,9 @@ and data folders: renaming an app moves them.
 `apps/example_sender` · `apps/qt_common` ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
-the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
+the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
 manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`
-(`check.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
+(`check.sh`, `coverage.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
 `.claude/skills/` (`local-ci`, `pr-ready`). Older commits use former names (`Image_processing`, Slovak
 identifiers): [`docs/former-names.md`](docs/former-names.md).
 
@@ -89,8 +93,9 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   `__has_include`). On Windows `cv::imread`/`imwrite` take narrow paths, so in the apps a non-ASCII path
   goes through Qt and `cv::imdecode`/`imencode`, while the examples (and their tests) get a UTF-8 code page
   from `id_vision_lab_use_utf8_code_page()`; under it `std::filesystem::path` throws on bytes that are not
-  UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach access lists, so privacy tests use
-  `tests/viewer/owner_only.h`, whose `.cpp` is the only file that includes `<windows.h>`.
+  UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach access lists, so the viewer sets its folders' lists in
+  `apps/viewer/private_files.cpp` and privacy tests use `tests/viewer/owner_only.h`; those two `.cpp` files are
+  the only ones that include `<windows.h>`.
 - **Warnings:** zero from project code under `-Wall -Wextra -Wpedantic`, and under MSVC's `/W4`.
 - **UI tests run offscreen in the Fusion style**, so they cannot see macOS drawing (a `QToolBar`'s buttons
   lose their frames) or how a live appearance switch reaches child widgets (only as `PaletteChange`). Check

@@ -4,17 +4,12 @@
 #include "private_files.h"
 
 #include <QDir>
-#include <QFile>
 #include <QStringList>
 
 namespace {
 
 const QString kImagesName = QStringLiteral("images");
 const QString kLockName = QStringLiteral("viewer.lock");
-
-bool makePrivateFolder(const QString& path) {
-    return QDir().mkpath(path) && QFile::setPermissions(path, kOwnerOnlyFolder);
-}
 
 // Every endpoint's folder under the root, whichever viewer made it.
 QStringList endpointFolders(const QString& root) {

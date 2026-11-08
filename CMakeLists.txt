@@ -14,9 +14,11 @@ option(ID_VISION_LAB_BUILD_QT_APPS "Build the Qt 6 viewer and example sender" ON
 option(ID_VISION_LAB_BUILD_EXAMPLES "Build the command-line examples" ON)
 option(ID_VISION_LAB_BUILD_TESTS "Build the GoogleTest unit tests" ON)
 option(ID_VISION_LAB_SANITIZERS "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(ID_VISION_LAB_COVERAGE "Build with Clang's source-based code coverage" OFF)
 
 include(cmake/compiler_warnings.cmake)
 include(cmake/sanitizers.cmake)
+include(cmake/coverage.cmake)
 include(cmake/utf8_code_page.cmake)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)

@@ -10,4 +10,5 @@ apt-get install --yes --no-install-recommends \
     build-essential cmake ninja-build pkgconf \
     qt6-base-dev qt6-qpa-plugins libgl-dev \
     libopencv-dev libzmq3-dev cppzmq-dev nlohmann-json3-dev libgtest-dev \
-    libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
+    libavcodec-dev libavformat-dev libswscale-dev libavutil-dev \
+    clang llvm libclang-rt-dev # the coverage report: Clang, its profile runtime, llvm-profdata and llvm-cov

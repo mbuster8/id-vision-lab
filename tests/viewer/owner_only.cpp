@@ -117,8 +117,11 @@ bool isOwnerOnly(const QString& path) {
 #endif
 }
 
-bool letEveryoneRead(const QString& path) {
 #ifdef _WIN32
+namespace {
+
+// Adds an entry that lets everyone read `path`, passed on to what it holds as `inheritance` says.
+bool grantEveryoneRead(const QString& path, DWORD inheritance) {
     const std::wstring native = nativePath(path);
     PACL acl = nullptr;
     PSECURITY_DESCRIPTOR rawDescriptor = nullptr;
@@ -134,7 +137,7 @@ bool letEveryoneRead(const QString& path) {
     EXPLICIT_ACCESS_W access{};
     access.grfAccessPermissions = GENERIC_READ;
     access.grfAccessMode = GRANT_ACCESS;
-    access.grfInheritance = NO_INHERITANCE;
+    access.grfInheritance = inheritance;
     access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
     access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
     access.Trustee.ptstrName = reinterpret_cast<LPWSTR>(everyone.data());
@@ -146,9 +149,27 @@ bool letEveryoneRead(const QString& path) {
     std::wstring writable = native; // SetNamedSecurityInfoW takes a non-const path
     return SetNamedSecurityInfoW(writable.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
                                  rawWidened, nullptr) == ERROR_SUCCESS;
+}
+
+} // namespace
+#endif
+
+bool letEveryoneRead(const QString& path) {
+#ifdef _WIN32
+    return grantEveryoneRead(path, NO_INHERITANCE);
 #else
     return QFile::setPermissions(path,
                                  QFile::permissions(path) | QFileDevice::ReadGroup | QFileDevice::ReadOther);
+#endif
+}
+
+bool letEveryoneReadWhatItHolds(const QString& path) {
+#ifdef _WIN32
+    return grantEveryoneRead(path, SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+#else
+    return QFile::setPermissions(path, QFile::permissions(path) | QFileDevice::ReadGroup |
+                                           QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                                           QFileDevice::ExeOther);
 #endif
 }
 

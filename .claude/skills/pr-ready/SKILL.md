@@ -49,10 +49,10 @@ Show it in the conversation, ready to paste; write no file for it.
 | Check | Result |
 |---|---|
 | clang-format 22.1.8 | passed |
-| debug (macOS), <n> tests | passed, <time> |
-| asan (macOS), <n> tests | passed, <time> |
-| Ubuntu 24.04 in Docker, <n> + <n> tests | passed, <time> |
-<manual checks done, with what was looked at>
+| debug (macOS) | passed |
+| asan (macOS) | passed |
+| Ubuntu 24.04 in Docker, with and without Qt | passed |
+<manual checks done, with what was looked at; the tests the branch adds, by name, when that helps>
 
 ## Notes for the reviewer
 <decisions, risks, follow-ups; omit when there are none>
@@ -60,10 +60,11 @@ Show it in the conversation, ready to paste; write no file for it.
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
-Take every number from this run's output; leave a row out rather than guess it. Write in British English, and
-link only to files that are committed.
+Report only what this run showed; leave a row out rather than guess it. No test counts or timings: whether each
+check passed is what matters. Write in British English, and link only to files that are committed.
 
 ## 5. Hand over
 
 Say what passed, what the review found and what was done about it, and that the branch is ready (or not) for
-the owner to push and open. `gh` may not be installed; the owner opens the pull request in the browser.
+the owner to push and open. `gh` is installed on both machines (`gh auth status` says whether it is logged in):
+open the pull request with it only when the owner asks, and read CI's results on it with `gh pr checks`.
