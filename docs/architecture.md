@@ -184,7 +184,8 @@ shown frame to the history as an ordinary image with
 |---|---|
 | The host application's thread | `Client::send` or `sendImage`. `sendImage` serialises calls from several threads behind a mutex; a `Client` is used from one thread at a time. |
 | The server's worker thread | `Server`'s receive loop: polls the socket every 100 ms, decodes, calls `ImageSink::onImageReceived`, replies. It checks a stop flag on each poll, so `stop()` returns promptly without killing the thread. |
-| The viewer's UI thread | Everything in `viewer_core` and all widgets. Nothing there needs a lock. |
+| The viewer's UI thread | All widgets, and `viewer_core`'s classes (`LiveChannels`, `ImageHistory`, `DisplaySettingsStore`). Nothing there needs a lock. |
+| The viewer's live converter thread | `LiveConverter`'s one `std::thread`: the picture of the live channel in view at its drawn size, and its histogram while the strip is shown, with `viewer_core`'s free functions (`toDisplayImage`, `valueExtent`, `rangeMarkers`, `histogramOf`), which keep no state. One job waits at a time; see below. |
 | The viewer's storage thread | `StorageWorker`, started by `StorageController`: writes, deletes and loads the images kept between sessions, and their index. Only a viewer with a data folder has one. |
 | `live_sender`'s threads | The main thread sends frames, played in real time by `RealTimeFrames`: a frame that was ready but is more than a frame late is skipped, as the sending fell behind; one it had to wait for is never skipped, as the reading fell behind, and the schedule starts again from it. A file's frames are decoded on `ReadAhead`'s thread, at most three ahead: it waits for room before it reads, so it never holds more. Each frame's edges are found on a `std::async` thread while the frame goes out. With `--hdr`, FFmpeg adds its own: frame threads for software decoding and slice threads in `sws_scale_frame`'s conversion. |
 
@@ -238,6 +239,23 @@ for the calls already queued, so the newest image is never lost. The server thre
 it never accepts images before its UI can take them. `MainWindow` declares its `QtImageSink` before its
 `Server`, so the server's thread has stopped before the sink is destroyed.
 
+**The live converter.** The UI thread takes live frames and applies pictures; it does not convert them.
+Every draw of the channel in view (a new frame, a settings change or histogram drag, Show Clipping, Show
+Histogram turned on, a zoom or resize that changes the drawn size, unfreezing, showing the channel) makes a
+`LiveJob` and submits it to the window's `LiveConverter`. A job copies what the conversion needs (settings,
+tags, drawn size, Show Clipping, whether the histogram is wanted, how the view keeps its zoom) and shares the
+frame's pixels, which nothing changes in place, so the converter's thread reads nothing of the window's. One
+job waits at a time: a newer one replaces it, and a fit the replaced job asked for carries into its
+replacement. Results are posted back with `QMetaObject::invokeMethod` to the converter, which lives on the UI
+thread, and applied in order. A result is dropped unless its channel is still in view and the window's view
+counter, bumped by every change of what the view shows, is the one the job was made with, so a late picture
+never shows a channel or still no longer in view. Each job carries its frame's number: a frame counts as drawn
+once, when its first picture is applied, and a frame whose job a newer frame of the channel replaced before any
+of its pictures was drawn counts as skipped, which "dropped" includes. The window's destructor stops the
+converter first, waiting for a frame being converted. Tests construct the window in `LiveConversion::Immediate`
+mode, which converts before `submit` returns, unless they test the thread, which they hold on a latch through
+`setLiveConversionForTests`.
+
 ## Display rules
 
 `viewer_core::toDisplayImage` produces what is on screen; the pixel readout always reads the original.
@@ -285,11 +303,11 @@ Each image name and live channel can have its own `DisplaySettings`, kept for th
 changes, when another image of the same size is shown, and on the live timer's tick, and hands the lines
 from `regionLines` (in `display_text`) back to the view.
 
-**Histogram.** `HistogramStrip` sits between the info strip and the view. While Show Histogram is on,
-`MainWindow` computes `valueExtent`, `rangeMarkers` and `histogramOf` on the original in view for every picture
-that reaches the view (`showPicture`): each still shown or redrawn, and each live frame drawn. It runs on the UI
-thread beside the conversion; both are pure functions of the frame and a copy of the settings, so they can move
-off it together. The strip owns a drag's state: it freezes the axis and the markers a drag began on, holds back
+**Histogram.** `HistogramStrip` sits between the info strip and the view. While Show Histogram is on, it shows
+`valueExtent`, `rangeMarkers` and `histogramOf` of the original in view: for a still, computed on the UI thread
+whenever it is shown or its settings change; for the live channel in view, computed on the live converter's
+thread with each picture and set when the picture is applied. Turning the strip off hides it at once, and a
+histogram still on its way is not shown. The strip owns a drag's state: it freezes the axis and the markers a drag began on, holds back
 histograms that arrive meanwhile, and emits `rangeDragged` at most once per turn of the event loop, with whether
 the markers were HDR's. `MainWindow` turns that into Fixed or HDR settings (`settingsForDrag`) and applies them
 through `DisplaySettingsControl::applySettings`, so the Range button, the menus and the per-name store stay one.

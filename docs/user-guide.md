@@ -316,9 +316,10 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
 - **The info strip** shows, for example,
   `camera  live · 1920×1080 · 3 ch · 8U · 30 fps in · 30 drawn · 12 dropped · 18 ms`: the state, the frame's
   size and type (and its description, if the sender gave one: see [The info strip](#the-info-strip)), the
-  frames that arrived and the frames the view drew in the last second, the frames dropped
-  since the channel's row appeared, idle spells included (a newer frame arrived before the view could take
-  the older one), and the frame's
+  frames that arrived and the frames the view drew in the last second (a frame drawn again for a new range or
+  a zoom counts once), the frames dropped since the channel's row appeared, idle spells included (frames that
+  never reached the screen: a newer frame arrived before the viewer could take the older one, or before it
+  had converted it for the screen), and the frame's
   age: the time it arrived minus the time the sender stamped on it. The age compares two clocks, so it means
   something only when sender and viewer run on one computer; a frame without a stamp shows none. The counters
   refresh twice a second.
@@ -352,6 +353,11 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
   shrunk to the drawn size before it is coloured and drawn, instead of being converted whole and scaled on
   screen; zooming or resizing the window redraws it at the new size. Zoomed in to 1:1 or closer, the whole
   frame is converted. The readout, Copy Image, Save As and Snapshot always use the full frame.
+- **Converted beside the window.** The channel in view is converted for the screen, and its histogram
+  counted, on a thread of its own, so the window stays free to draw and to answer the mouse while frames
+  stream. When frames come faster than they can be converted, the newest waits and older ones are skipped,
+  counted as dropped. The readout, region statistics and Freeze use the newest frame taken, which can be a
+  frame ahead of the picture for the few milliseconds its conversion takes.
 
 ### The info strip
 

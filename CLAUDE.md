@@ -40,6 +40,8 @@ ctest --preset asan                   # sanitizers; undefined behaviour aborts t
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF   # proves the libraries need no Qt
 scripts/check.sh                      # what CI runs, here: clang-format, debug, asan, Ubuntu in Docker
 scripts/coverage.sh                   # coverage preset: line and function coverage per library and app
+python/.venv/bin/python -m pytest python/tests   # the Python sender (venv setup: build guide)
+python/.venv/bin/black --check python            # black 24.2.0, Ubuntu 24.04's, as CI runs it
 ```
 
 On Windows the presets are `windows-debug`, `windows-release` and `windows-asan` (MSVC, vcpkg from
@@ -63,11 +65,13 @@ and data folders: renaming an app moves them.
 `libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `apps/viewer` ·
 `apps/example_sender` · `apps/qt_common` ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
+`python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
 `tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
-the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
+the shared Qt test `main()` and helpers) · `tests/wire/header_cases.json` (golden headers both senders must
+write) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
 manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`
 (`check.sh`, `coverage.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
-`.claude/skills/` (`local-ci`, `pr-ready`). Older commits use former names (`Image_processing`, Slovak
+`.claude/skills/` (`local-ci`, `pr-ready`, `authorised-delivery`). Older commits use former names (`Image_processing`, Slovak
 identifiers): [`docs/former-names.md`](docs/former-names.md).
 
 ## Rules that keep it working
@@ -78,8 +82,13 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   to the UI thread by queued signal; the UI must call `markHandled()` for every image it takes, or the sink
   fills its eight slots and the viewer reports busy. Live frames (`sendLive`) never wait and skip those
   slots: the sink keeps each channel's newest frame and the UI takes them all with `takeLiveFrames()`;
-  live frames and snapshots never reach `StorageController`. `viewer_core` is UI-thread only and has no
-  locks.
+  live frames and snapshots never reach `StorageController`. The live channel in view is converted, and its
+  histogram counted, on `LiveConverter`'s one thread (`apps/viewer/live_converter.h`): a job copies or
+  shares read-only all it needs, a newer job replaces the waiting one, and a result is applied only if its
+  channel and the window's view counter still match. `viewer_core`'s classes (`LiveChannels`,
+  `ImageHistory`, `DisplaySettingsStore`) are UI-thread only and have no locks; its free functions
+  (`toDisplayImage`, `valueExtent`, `rangeMarkers`, `histogramOf`) keep no state and also run on the
+  converter's thread. Window tests use `LiveConversion::Immediate` unless they test the thread.
 - **Wire-format changes:** a new optional header field keeps `version` 2; changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change.
 - **Security:** no exception ever leaves `visual_debug` (every send returns a `SendResult`); reply reasons
@@ -88,7 +97,8 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   unless `allowRemote` is set.
 - **Portability** (macOS, Linux and Windows): no POSIX- or GNU-only APIs; paths through `std::filesystem` or
   Qt; production code reads environment variables only through `visual_debug::defaultEndpoint()` (tests
-  through `test_support::environmentValue`: MSVC warns on `getenv`); non-ASCII source is UTF-8 (MSVC gets
+  through `test_support::environmentValue`: MSVC warns on `getenv`; in Python only `default_endpoint()`
+  reads `VISUAL_DEBUG_ENDPOINT`, and `python/tests/conftest.py` points it at an unused port for every test); non-ASCII source is UTF-8 (MSVC gets
   `/utf-8`); OpenCV API must also exist in 4.x (OpenCV 5 moved some headers: guard them with
   `__has_include`). On Windows `cv::imread`/`imwrite` take narrow paths, so in the apps a non-ASCII path
   goes through Qt and `cv::imdecode`/`imencode`, while the examples (and their tests) get a UTF-8 code page
