@@ -26,6 +26,9 @@ jobs:
         include:
           - language: c-cpp
             build-mode: manual
+          # The Python sender (python/).
+          - language: python
+            build-mode: none
           # The workflows themselves: unsafe triggers, script injection, over-broad permissions.
           - language: actions
             build-mode: none
