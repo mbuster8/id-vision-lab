@@ -6,8 +6,8 @@ description: Run ID Vision Lab's CI pipeline on this machine before anything is 
 # Local CI
 
 `scripts/check.sh` runs what `.github/workflows/ci.yml` runs, so a push meets no surprises. CI has four jobs:
-macOS (debug and asan), Ubuntu 24.04 (debug, and the build without Qt), Windows (windows-debug) and
-clang-format. The script runs macOS and clang-format natively and the Ubuntu job in a container built from
+macOS (debug and asan), Ubuntu 24.04 (debug, the build without Qt, and a coverage report built with Clang),
+Windows (windows-debug) and clang-format. The script runs macOS and clang-format natively and the Ubuntu job in a container built from
 `docker/ubuntu-24.04.Dockerfile`. The Windows job and CodeQL are not reproduced here.
 
 | Command | What it runs |
