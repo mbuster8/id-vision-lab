@@ -450,6 +450,81 @@ TEST(DisplayConverter, HdrMarksTheScaleTop) {
     EXPECT_EQ(rgbAt(automatic, 1), viewer_core::kClippedAbove);
 }
 
+// --- HDR's black and white, as the histogram drags them ----------------------------------------------------
+
+TEST(DisplayConverter, HdrOverrideIsTheSignalsBlackAndWhite) {
+    const cv::Mat signal = hdrSignal(4, 5);
+    const DisplaySettings settings{.mode = RangeMode::Hdr, .range = {1000, 40000}};
+
+    const cv::Mat display = toDisplayImage(signal, settings, {.tags = kHlg});
+
+    const cv::Mat expected = rgbaOf(viewer_core::toneMapToSdr(signal, viewer_core::Transfer::Hlg,
+                                                              viewer_core::Primaries::Bt2020, {1000, 40000}));
+    EXPECT_EQ(cv::norm(display, expected, cv::NORM_INF), 0.0);
+}
+
+TEST(DisplayConverter, HdrWithoutAUsableRangeIsUnchanged) {
+    const cv::Mat signal = hdrSignal(4, 5);
+    const cv::Mat plain = toDisplayImage(signal, kHdr, {.tags = kHlg});
+    constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+    for (const viewer_core::DisplayRange range :
+         {viewer_core::DisplayRange{5, 5}, viewer_core::DisplayRange{9, 3},
+          viewer_core::DisplayRange{kNan, 10}}) {
+        EXPECT_EQ(cv::norm(toDisplayImage(signal, {.mode = RangeMode::Hdr, .range = range}, {.tags = kHlg}),
+                           plain, cv::NORM_INF),
+                  0.0);
+    }
+}
+
+TEST(DisplayConverter, HdrOverrideMovesTheClippingBottom) {
+    const cv::Mat image = rowOf(CV_16UC3, {1000, 30000});
+    const DisplaySettings settings{.mode = RangeMode::Hdr, .range = {2000, 60000}};
+
+    const cv::Mat marked = toDisplayImage(image, settings, {.tags = kHlg, .showClipping = true});
+    const cv::Mat plain = toDisplayImage(image, kHdr, {.tags = kHlg, .showClipping = true});
+
+    EXPECT_EQ(rgbAt(marked, 0), viewer_core::kClippedBelowGrey); // 1000 is at or below the moved black
+    EXPECT_NE(rgbAt(plain, 0), viewer_core::kClippedBelowGrey);  // kHlg's black is 0
+    EXPECT_NE(rgbAt(marked, 1), viewer_core::kClippedAbove);     // the top stays the depth's maximum
+}
+
+// Alpha is how opaque a pixel is, not light: it stays mapped from the sender's range.
+TEST(DisplayConverter, HdrOverrideKeepsAlphaOnTheSendersRange) {
+    const cv::Mat image(1, 2, CV_16UC4, cv::Scalar(30000, 30000, 30000, 32768));
+
+    const cv::Mat moved =
+        toDisplayImage(image, {.mode = RangeMode::Hdr, .range = {20000, 40000}}, {.tags = kHlg});
+    const cv::Mat plain = toDisplayImage(image, kHdr, {.tags = kHlg});
+
+    EXPECT_EQ(moved.at<cv::Vec4b>(0, 0)[3], plain.at<cv::Vec4b>(0, 0)[3]); // 128 either way
+}
+
+TEST(DisplayConverter, HdrOverrideOnAnUntaggedImageShowsAsAuto) {
+    const cv::Mat signal = hdrSignal(4, 5);
+    EXPECT_EQ(cv::norm(toDisplayImage(signal, {.mode = RangeMode::Hdr, .range = {1000, 40000}}),
+                       toDisplayImage(signal, DisplaySettings{}), cv::NORM_INF),
+              0.0);
+}
+
+TEST(HdrBlackAndWhite, OverrideWhenUsableElseTheSignalRange) {
+    using viewer_core::hdrBlackAndWhite;
+    EXPECT_EQ(hdrBlackAndWhite(CV_16U, {.mode = RangeMode::Hdr, .range = {10, 20}}, kHlg),
+              (viewer_core::DisplayRange{10, 20}));
+    EXPECT_EQ(hdrBlackAndWhite(CV_16U, kHdr, kHlg), kHlg.valueRange);
+    EXPECT_EQ(hdrBlackAndWhite(CV_32F, kHdr, {.transfer = viewer_core::Transfer::Pq}),
+              (viewer_core::DisplayRange{0, 1}));
+}
+
+TEST(ShowsHdr, OnlyForTaggedImagesOfOneThreeOrFourChannels) {
+    using viewer_core::showsHdr;
+    EXPECT_TRUE(showsHdr(kHdr, kHlg, 3));
+    EXPECT_TRUE(showsHdr(kHdr, kHlg, 1));
+    EXPECT_TRUE(showsHdr(kHdr, kHlg, 4));
+    EXPECT_FALSE(showsHdr(kHdr, kHlg, 2));
+    EXPECT_FALSE(showsHdr(kHdr, {}, 3));
+    EXPECT_FALSE(showsHdr(DisplaySettings{}, kHlg, 3));
+}
+
 double distance(const cv::Vec3b& a, const cv::Vec3b& b) {
     return cv::norm(cv::Vec3d(a[0], a[1], a[2]) - cv::Vec3d(b[0], b[1], b[2]));
 }

@@ -59,6 +59,11 @@ QString coloursName(ColourMap colours) {
     return DisplaySettingsControl::tr("Grey");
 }
 
+// HDR's own black and white, dragged on the histogram, as hdrBlackAndWhite takes them.
+bool usable(const DisplayRange& range) {
+    return std::isfinite(range.min) && std::isfinite(range.max) && range.min < range.max;
+}
+
 std::optional<double> parsed(const QString& text) {
     bool ok = false;
     const double value = QLocale::c().toDouble(text, &ok);
@@ -220,6 +225,17 @@ QMenu* DisplaySettingsControl::rangeMenu() const { return m_rangeMenu; }
 
 QMenu* DisplaySettingsControl::coloursMenu() const { return m_coloursMenu; }
 
+const viewer_core::DisplaySettings& DisplaySettingsControl::settings() const { return m_settings; }
+
+void DisplaySettingsControl::applySettings(const viewer_core::DisplaySettings& settings) {
+    if (m_popup != nullptr) {
+        m_popup->hide(); // it was typed for the settings these replace
+    }
+    m_settings = settings;
+    showSettings();
+    emit settingsChanged(m_settings);
+}
+
 void DisplaySettingsControl::chooseRange(RangeMode mode) {
     switch (mode) {
     case RangeMode::Auto:
@@ -279,7 +295,11 @@ void DisplaySettingsControl::showSettings() {
         m_rangeButton->setToolTip(tr("Each picture from its own minimum to its maximum"));
         break;
     case RangeMode::Hdr:
-        m_rangeButton->setToolTip(tr("HLG or PQ tone-mapped for this screen"));
+        m_rangeButton->setToolTip(
+            usable(m_settings.range)
+                ? tr("HLG or PQ tone-mapped for this screen, black at %1 and white at %2")
+                      .arg(formattedNumber(m_settings.range.min), formattedNumber(m_settings.range.max))
+                : tr("HLG or PQ tone-mapped for this screen"));
         break;
     case RangeMode::Hold:
     case RangeMode::Fixed:
@@ -292,9 +312,12 @@ void DisplaySettingsControl::showSettings() {
     m_coloursActions[indexOf(m_settings.colours)]->setChecked(true);
 }
 
-// Auto's range for Auto and HDR, which have none of their own.
+// Auto's range for Auto, and for HDR unless its black and white were dragged on the histogram.
 DisplayRange DisplaySettingsControl::currentRange() const {
     if (m_settings.mode == RangeMode::Hold || m_settings.mode == RangeMode::Fixed) {
+        return m_settings.range;
+    }
+    if (m_settings.mode == RangeMode::Hdr && m_hdrAvailable && usable(m_settings.range)) {
         return m_settings.range;
     }
     return m_autoRange ? m_autoRange() : DisplayRange{};

@@ -32,6 +32,10 @@ public:
     void setAutoRangeProvider(std::function<viewer_core::DisplayRange()> provider);
     QMenu* rangeMenu() const; // the Image menu shows the same actions
     QMenu* coloursMenu() const;
+    const viewer_core::DisplaySettings& settings() const; // what the buttons show now
+    // Settings chosen elsewhere, by a drag on the histogram: shown, then emitted once, as Apply in Fixed…
+    // does.
+    void applySettings(const viewer_core::DisplaySettings& settings);
 
 signals:
     void settingsChanged(viewer_core::DisplaySettings settings);

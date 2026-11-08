@@ -16,7 +16,8 @@ cv::Mat toDisplayImage(const cv::Mat& image);
 
 // The same with a display range and colour map. Auto with Grey is exactly toDisplayImage(image). Hold and
 // Fixed map settings.range to 0-255 for every depth, 8U included, clipping values outside it; a range whose
-// minimum is not below its maximum shows black. A colour map applies to single-channel images only. NaN and
+// minimum is not below its maximum shows black. Hdr with a usable settings.range takes it as the signal's
+// black and nominal white (hdrBlackAndWhite). A colour map applies to single-channel images only. NaN and
 // infinities are black (0, 0, 0, 255) whatever the map.
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings);
 
@@ -46,6 +47,14 @@ struct DisplayOptions {
 // or 0-255 for 8U, and nothing for other depths without a hint (stretched, they lose nothing); HDR's black
 // and the top of the scale (hdr_tone_map.h). NaN is never marked.
 cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, const DisplayOptions& options);
+
+// Whether toDisplayImage tone-maps an image with these settings and tags: HDR chosen, the tags say HLG or PQ,
+// and the image does not have two channels. Otherwise HDR is shown as Auto.
+bool showsHdr(const DisplaySettings& settings, const ImageTags& tags, int channels);
+
+// HDR's black and nominal white for such an image: the settings' range when both ends are finite and the
+// minimum is below the maximum (set by dragging on the histogram), else the sender's (hdrSignalRange).
+DisplayRange hdrBlackAndWhite(int depth, const DisplaySettings& settings, const ImageTags& tags);
 
 // The largest size of the image's shape within `bounds`, never larger than the image, each side at least 1.
 cv::Size sizeWithin(cv::Size image, cv::Size bounds);

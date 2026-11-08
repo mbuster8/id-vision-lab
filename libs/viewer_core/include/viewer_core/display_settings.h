@@ -23,7 +23,7 @@ struct DisplayRange {
 
 struct DisplaySettings {
     RangeMode mode = RangeMode::Auto;
-    DisplayRange range{}; // used by Hold and Fixed
+    DisplayRange range{}; // used by Hold and Fixed, and by Hdr as its black and white when set
     ColourMap colours = ColourMap::Grey;
     bool operator==(const DisplaySettings&) const = default;
 };

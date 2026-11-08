@@ -15,6 +15,8 @@ add_library(viewer_ui STATIC
     eliding_label.cpp
     eliding_label.h
     epoch_time.h
+    histogram_strip.cpp
+    histogram_strip.h
     image_info_bar.cpp
     image_info_bar.h
     image_sidebar.cpp

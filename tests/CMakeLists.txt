@@ -33,6 +33,7 @@ id_vision_lab_add_test_executable(viewer_core_tests
         viewer_core/display_converter_test.cpp
         viewer_core/display_settings_test.cpp
         viewer_core/hdr_tone_map_test.cpp
+        viewer_core/histogram_test.cpp
         viewer_core/region_statistics_test.cpp
         viewer_core/image_history_test.cpp
         viewer_core/image_tags_test.cpp
@@ -121,6 +122,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/activity_log_test.cpp
             viewer/data_folder_test.cpp
             viewer/display_settings_control_test.cpp
+            viewer/histogram_strip_test.cpp
             viewer/image_info_bar_test.cpp
             viewer/image_sidebar_test.cpp
             viewer/image_store_test.cpp

@@ -2,6 +2,7 @@ add_library(viewer_core STATIC
     src/display_converter.cpp
     src/display_settings.cpp
     src/hdr_tone_map.cpp
+    src/histogram.cpp
     src/image_formats.cpp
     src/image_history.cpp
     src/image_tags.cpp

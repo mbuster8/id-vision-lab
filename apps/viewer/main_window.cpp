@@ -10,6 +10,7 @@
 #include "divider_splitter.h"
 #include "eliding_label.h"
 #include "epoch_time.h"
+#include "histogram_strip.h"
 #include "image_file.h"
 #include "image_info_bar.h"
 #include "image_sidebar.h"
@@ -21,6 +22,7 @@
 #include "shades.h"
 #include "thumbnail_panel.h"
 #include "ui_main_window.h"
+#include "viewer_core/histogram.h"
 
 #include "viewer_core/display_converter.h"
 #include "viewer_core/pixel_inspector.h"
@@ -80,6 +82,7 @@ constexpr std::string_view kTooManyChannelsReason = "too many live channels";
 constexpr std::size_t kNamedRefusedChannels = 8;
 const QString kSidebarWidthKey = QStringLiteral("viewer/sidebarWidth");
 const QString kLogOpenKey = QStringLiteral("viewer/logOpen");
+const QString kHistogramShownKey = QStringLiteral("viewer/histogramShown");
 const QString kLogHeightKey = QStringLiteral("viewer/logHeight");
 
 QString picturesFolder() { return QStandardPaths::writableLocation(QStandardPaths::PicturesLocation); }
@@ -131,14 +134,16 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     m_sidebar = new ImageSidebar;
     m_thumbnails = m_sidebar->thumbnails();
     m_infoBar = new ImageInfoBar;
+    m_histogramStrip = new HistogramStrip;
     m_imageView = new ImageView;
-    // The info strip sits on top of the image, in the splitter's second section.
+    // The info strip sits on top of the image, in the splitter's second section, the histogram under it.
     auto* imageArea = new QWidget;
     imageArea->setObjectName(QStringLiteral("imageArea"));
     auto* imageLayout = new QVBoxLayout(imageArea);
     imageLayout->setContentsMargins(0, 0, 0, 0);
     imageLayout->setSpacing(0);
     imageLayout->addWidget(m_infoBar);
+    imageLayout->addWidget(m_histogramStrip);
     imageLayout->addWidget(m_imageView, 1);
     auto* splitter = new DividerSplitter(Qt::Horizontal);
     splitter->setObjectName(QStringLiteral("mainSplitter"));
@@ -253,6 +258,12 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     m_ui->menuImage->addAction(m_ui->actionShowOverlays);
     m_infoBar->setOverlayAction(m_ui->actionShowOverlays);
     connect(m_ui->actionShowOverlays, &QAction::toggled, m_imageView, &ImageView::setOverlaysShown);
+    // Show Histogram, off at the first start and remembered after.
+    m_ui->menuImage->addAction(m_ui->actionShowHistogram);
+    m_ui->actionShowHistogram->setChecked(QSettings().value(kHistogramShownKey, false).toBool());
+    connect(m_ui->actionShowHistogram, &QAction::toggled, this, &MainWindow::setHistogramShown);
+    connect(m_histogramStrip, &HistogramStrip::rangeDragged, this, &MainWindow::applyDraggedRange);
+    connect(m_histogramStrip, &HistogramStrip::resetRequested, this, &MainWindow::resetRangeFromHistogram);
     // Freeze and Snapshot act on the live channel in view. Space freezes from anywhere but a text field,
     // which takes printable keys before shortcuts.
     m_ui->actionFreeze->setShortcuts(
@@ -742,6 +753,7 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     if (entry == nullptr) {
         return;
     }
+    m_histogramStrip->cancelDrag(); // a range dragged for the image before must not reach this one's name
     if (m_liveChannel) {
         m_liveChannel.reset();
         m_sink.protectLiveChannel(std::nullopt);
@@ -762,6 +774,68 @@ void MainWindow::showPicture(const QImage& picture, ImageView::KeepView keep, QS
                              const viewer_core::ImageTags& tags) {
     m_imageView->setImage(picture, keep, imageSize, tags.overlays);
     m_infoBar->setOverlayCount(static_cast<int>(tags.overlayList().size()));
+    updateHistogram();
+}
+
+// Of the original in view, with the settings it is drawn with; only while the strip is shown, so a hidden
+// strip costs a live frame nothing. On the UI thread, beside the conversion, from pure functions of the
+// frame: quick win 7 can move both off it together.
+void MainWindow::updateHistogram() {
+    const cv::Mat* original = nullptr;
+    const viewer_core::ImageTags* tags = nullptr;
+    const std::string* name = nullptr;
+    if (const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
+        original = &channel->shown;
+        tags = &channel->shownTags;
+        name = &channel->name;
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        original = &entry->original;
+        tags = &entry->origin.tags;
+        name = &entry->name;
+    }
+    if (!m_ui->actionShowHistogram->isChecked() || original == nullptr || original->empty()) {
+        m_histogramStrip->clear();
+        m_histogramStrip->hide();
+        return;
+    }
+    const viewer_core::ValueExtent extent = viewer_core::valueExtent(*original);
+    const std::optional<viewer_core::RangeMarkers> markers = viewer_core::rangeMarkers(
+        original->depth(), original->channels(), settingsFor(*name, *tags), *tags, extent);
+    m_histogramStrip->setHistogram(viewer_core::histogramOf(*original, extent, markers), markers);
+    m_histogramStrip->show();
+}
+
+void MainWindow::setHistogramShown(bool shown) {
+    QSettings().setValue(kHistogramShownKey, shown);
+    updateHistogram();
+}
+
+// The strip says whether its drag began on HDR's markers; it keeps those markers for the whole drag, so a
+// frame that arrives meanwhile, of another kind or with nothing finite, never changes what the drag means.
+void MainWindow::applyDraggedRange(viewer_core::DisplayRange range, bool hdr) {
+    if (!m_liveChannel && !m_currentId) {
+        return;
+    }
+    DisplaySettingsControl* control = m_infoBar->displayControl();
+    control->applySettings(viewer_core::settingsForDrag(control->settings(), hdr, range));
+}
+
+// As choosing the name's default in the Range menu: Auto, or HDR for HLG and PQ, with the colour map kept.
+void MainWindow::resetRangeFromHistogram() {
+    const viewer_core::ImageTags* tags = nullptr;
+    if (const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
+        tags = &channel->shownTags;
+    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
+        tags = &entry->origin.tags;
+    }
+    if (tags == nullptr) {
+        return;
+    }
+    DisplaySettingsControl* control = m_infoBar->displayControl();
+    viewer_core::DisplaySettings settings = control->settings();
+    settings.mode = viewer_core::defaultSettings(*tags).mode;
+    settings.range = {};
+    control->applySettings(settings);
 }
 
 QImage MainWindow::shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping) const {
@@ -946,6 +1020,7 @@ void MainWindow::showLiveChannel(const std::string& name) {
     if (channel == nullptr || m_liveChannel == name || m_mutedChannels.contains(name)) {
         return;
     }
+    m_histogramStrip->cancelDrag();
     m_currentId.reset();
     m_liveChannel = name;
     m_sink.protectLiveChannel(name); // never closed to make room while in view
@@ -1216,6 +1291,8 @@ void MainWindow::clearView() {
     m_sidebar->liveChannels()->setSelected(std::nullopt);
     m_imageView->clear();
     m_infoBar->clear();
+    m_histogramStrip->clear();
+    m_histogramStrip->hide();
     m_pixelLabel->clear();
     setWindowTitle(viewerWindowTitle(QString(), m_endpoint));
     updateEditActions();
