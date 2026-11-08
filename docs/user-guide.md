@@ -211,6 +211,7 @@ build\windows-debug\apps\visual_debug_viewer.exe --endpoint tcp://127.0.0.1:7140
 | **Image → Range**, **Image → Colours** | The same choices as the info strip's **Range** and **Colours** buttons (see [Display range and colours](#display-range-and-colours)). |
 | **Image → Show Clipping** (⇧⌘K) | Mark the pixels at or beyond the ends of the range in use, in the view (see [Display range and colours](#display-range-and-colours)). Also at the foot of the **Range** button's menu. |
 | **Image → Show Overlays** (⇧⌘O, or O) | Draw the shapes a sender attached to the image or frame over it, or hide them; on at every start (see [Overlays](#overlays)). O works from anywhere but a text field. Also the info strip's **◩ overlays** button. |
+| **Image → Show Histogram** (⇧⌘H) | Show or hide a strip under the info strip with a histogram of the image or frame in view and the range in use drawn on it, whose ends you can drag (see [Display range and colours](#display-range-and-colours)). Off at the first start; the choice is kept. |
 | **Image → Freeze** (⇧⌘T, or Space) | Keep a live channel's frame in view while frames go on arriving; again to show the newest. Space freezes from anywhere but a text field or a button that has the keyboard focus, which Space presses instead. Only while a live channel is shown (see [Live channels](#live-channels)). |
 | **Image → Snapshot** (⌘T) | Copy the live frame in view into the history, as `camera 14:03:22.517`. Only while a live channel is shown. |
 | **View → Appearance** | **System** (the default) follows the system's light or dark appearance; **Light** and **Dark** keep one whatever the system does. The choice is kept, and the example sender shares it (see [Running the example sender](#running-the-example-sender)). Needs Qt 6.8 or newer: built with older Qt, the menu is absent and both programs follow the system. |
@@ -483,6 +484,31 @@ Auto on an image without a value range stretches the image's own extremes to bla
 nothing, apart from 8-bit images at 0 and 255. A shrunk picture keeps every mark: a block with a marked pixel
 is marked. The marks are in the view only, never in thumbnails, live rows, Copy Image or Save As, and the
 setting holds for every image until the viewer quits.
+
+**Histogram.** **Image → Show Histogram** (⇧⌘H) opens a strip under the info strip with a histogram of the
+image or live frame in view: one curve per colour channel, in the colour the view shows it (blue, green and red;
+red and green for two channels; one curve for a single channel, whatever its colour map). It counts the original
+values, not the picture. Alpha, a fourth channel, is left out; NaN and infinite values are left out and counted
+over the whole image ("12 NaN/∞ left out"). A large image is counted on an even grid of its pixels, every n-th
+across and down, and the tooltip says so ("sampled: 1 pixel in 16"); its smallest and largest values still come
+from every pixel. The axis spans the image's values and the range in use, with a little room either side, so the
+values the range clips are in view; whole numbers fall in bins of whole codes. Two lines mark the range in use,
+what shows black and what shows white: for Auto the image's own extremes, a sender's value range, or 0 and 255
+for 8-bit; for Hold and Fixed their own; under HDR the video's black and nominal white, with a dashed line at the
+top of the scale. Hovering shows a bin's values and each channel's share of the values counted.
+
+Drag a line to move that end, or drag between the lines to move both and keep the width; the picture follows,
+and the ends of a whole-number image snap to whole codes. Under Auto, Hold and Fixed a drag sets a Fixed range.
+Under HDR it moves the video's black and white instead, and the picture stays tone-mapped: the **Range** button's
+tooltip names them, **Fixed…** starts from them, and choosing **HDR** in the Range menu returns to the sender's.
+Double-click the strip to return to the name's default range (Auto, or HDR for HLG and PQ), keeping the colours.
+Right-click it for **Linear Counts** or **Log Counts**; the log scale keeps one tall peak, such as a black border
+or an empty mask, from flattening the rest, and the choice is kept. With a live channel in view the strip follows
+every frame drawn. It is computed only while it is shown.
+
+One limit, open with the question of what "clipped" means for PQ: HLG highlights above nominal white are shown
+up to the headroom a 12-bit video has. With HDR's white dragged far down, the picture clips below the top of the
+scale, while the dashed line and Show Clipping still name the top.
 
 | Colours | On screen |
 |---|---|
