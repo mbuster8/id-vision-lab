@@ -3,17 +3,29 @@
 A pure-Python sender for the viewer's wire format, version 2 (docs/wire-format.md), written to send exactly what the
 C++ visual_debug library sends: for the shared golden cases (tests/wire/header_cases.json) the very same header bytes,
 and for any input a header that reads back as the same values.
+
+    import visual_debug as vd
+    vd.send_image(image, "Sobel X")               # a numpy array, BGR as OpenCV holds it; rgb=True to swap
+    vd.send_live(frame, "camera", overlays=[vd.Rectangle(10, 20, 100, 50, label="face")])
+
+Nothing about the image or the viewer raises: each send returns a SendResult. With no viewer running, the first send
+waits once for the reply timeout and later ones return at once until the retry interval has passed.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import enum
 import json
 import math
 import numbers
+import os
 import re
+import threading
+import time
 
 import numpy as np
+import zmq
 
 # The wire format's limits (libs/visual_debug/include/visual_debug/wire_format.h).
 PROTOCOL_VERSION = 2
@@ -28,6 +40,8 @@ MAX_POLYGON_POINTS = 1024
 MAX_LABEL_BYTES = 64
 MAX_OVERLAY_COORDINATE = 1_000_000.0
 _LARGEST_EXACT_INTEGER = 2.0**53
+
+DEFAULT_ENDPOINT = "tcp://127.0.0.1:7139"
 
 OVERLAY_GREEN = "#78E678"  # every overlay's colour unless it names another
 OVERLAY_RED = "#E05050"
@@ -387,6 +401,7 @@ def encode(
     """The two frames of a request: the JSON header, and the pixels as a byte view of a contiguous little-endian copy
     (or of the caller's own array when it already is one). ValueError for an image the viewer cannot take; TypeError or
     ValueError for arguments of the wrong kind."""
+    overlays = None if overlays is None else list(overlays)  # a generator is read once
     _check_description(value_range, transfer, primaries, overlays)
     rows, cols, channels, depth = _check_image(image)
     header = _header(
@@ -405,3 +420,232 @@ def encode(
     if len(header) > MAX_HEADER_BYTES:
         raise ValueError("header too large")
     return header, memoryview(_wire_pixels(image, rgb)).cast("B")
+
+
+# --- Sending (libs/visual_debug/src/client.cpp, step for step) -------------------------------------------------------
+
+
+class SendResult(enum.Enum):
+    """What became of an image; str() gives the C++ toString() text."""
+
+    DELIVERED = "Delivered"
+    VIEWER_UNAVAILABLE = "Viewer unavailable"
+    REJECTED = "Rejected"
+    INVALID_IMAGE = "Invalid image"
+    TIMEOUT = "Timeout"
+    INVALID_ENDPOINT = "Invalid endpoint"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def default_endpoint() -> str:
+    """VISUAL_DEBUG_ENDPOINT when it is set and not empty, else tcp://127.0.0.1:7139. The only place that reads it."""
+    return os.environ.get("VISUAL_DEBUG_ENDPOINT") or DEFAULT_ENDPOINT
+
+
+# Whatever answers on the viewer's port cannot push a large reply into the host application.
+_MAX_REPLY_BYTES = 64 * 1024
+_MEBIBYTE = 1024 * 1024
+
+# The module's own context, never zmq.Context.instance(), which a Jupyter kernel uses itself. A forked child cannot use
+# its parent's, so it makes its own.
+_context = None
+_context_pid = None
+_context_lock = threading.Lock()
+
+
+def _shared_context() -> zmq.Context:
+    global _context, _context_pid
+    with _context_lock:
+        if _context is None or _context_pid != os.getpid():
+            _context = zmq.Context()
+            _context_pid = os.getpid()
+        return _context
+
+
+def _wait_for(socket, event: int, timeout: float) -> bool:
+    """True when the socket is ready for `event` within `timeout` seconds."""
+    return bool(socket.poll(max(0, round(timeout * 1000)), event) & event)
+
+
+def _is_ok_reply(reply: bytes) -> bool:
+    try:
+        value = json.loads(reply)
+    except Exception:  # not UTF-8, not JSON, or nested too deeply: in any case not "ok"
+        return False
+    return isinstance(value, dict) and value.get("status") == "ok"
+
+
+class Client:
+    """Sends images to a viewer over ZeroMQ REQ/REP. With no viewer running, the host program is blocked once for the
+    reply timeout, not on every send; once a viewer appears, sending recovers by itself. Times are in seconds.
+    Not thread-safe, as the C++ Client: use one per thread, or send_image(), which serialises its calls."""
+
+    def __init__(self, endpoint: str | None = None, reply_timeout: float = 0.5, retry_interval: float = 1.0):
+        self.endpoint = default_endpoint() if endpoint is None else endpoint
+        self.reply_timeout = float(reply_timeout)
+        self.retry_interval = float(retry_interval)
+        self._socket = None
+        self._socket_pid = None
+        self._socket_is_fresh = False
+        self._back_off_until = 0.0
+
+    def send(
+        self, image, name: str, *, rgb=False, value_range=None, transfer=None, primaries=None, overlays=None
+    ) -> SendResult:
+        """Sends an image to the viewer's history. TypeError or ValueError only for arguments of the wrong kind."""
+        return self._send(image, name, False, rgb, value_range, transfer, primaries, overlays)
+
+    def send_live(
+        self,
+        frame,
+        channel: str,
+        *,
+        rgb=False,
+        value_range=None,
+        transfer=None,
+        primaries=None,
+        overlays=None,
+    ) -> SendResult:
+        """Sends one frame of a live channel: the viewer shows it in place of the channel's previous frame."""
+        return self._send(frame, channel, True, rgb, value_range, transfer, primaries, overlays)
+
+    def close(self) -> None:
+        self._drop_socket()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def _send(self, image, name, live, rgb, value_range, transfer, primaries, overlays) -> SendResult:
+        overlays = None if overlays is None else list(overlays)
+        _check_description(value_range, transfer, primaries, overlays)
+        # Cheap checks first: while no viewer is available, an image is never converted or copied.
+        try:
+            _check_image(image)
+        except ValueError:
+            return SendResult.INVALID_IMAGE
+        if time.monotonic() < self._back_off_until:
+            return SendResult.VIEWER_UNAVAILABLE
+        if self._socket is not None and self._socket_pid != os.getpid():
+            self._socket = None  # the parent's, after a fork: unusable here, and not ours to close
+        if self._socket is None and not self._open_socket():
+            return SendResult.INVALID_ENDPOINT
+
+        # Only a fresh socket waits for its connection. Afterwards ZeroMQ keeps reconnecting in the background, so a
+        # program without a viewer is blocked once, not on every retry.
+        connect_wait = self.reply_timeout if self._socket_is_fresh else 0.0
+        self._socket_is_fresh = False
+        if not _wait_for(self._socket, zmq.POLLOUT, connect_wait):
+            self._start_back_off()
+            return SendResult.VIEWER_UNAVAILABLE
+
+        sent_at = time.time_ns() // 1_000_000 if live else None
+        try:
+            header, pixels = encode(
+                image,
+                name,
+                live=live,
+                sent_at=sent_at,
+                rgb=rgb,
+                value_range=value_range,
+                transfer=transfer,
+                primaries=primaries,
+                overlays=overlays,
+            )
+        except ValueError:
+            return SendResult.INVALID_IMAGE
+
+        # A REQ socket interrupted between its request and the reply could never send again: drop it, so the next
+        # send starts afresh, then let the interrupt through.
+        try:
+            try:
+                # copy=True: the caller may change the array as soon as send returns.
+                self._socket.send_multipart([header, pixels], flags=zmq.NOBLOCK, copy=True)
+            except zmq.ZMQError:
+                self._recover()
+                return SendResult.VIEWER_UNAVAILABLE
+            try:
+                if not _wait_for(self._socket, zmq.POLLIN, self._reply_deadline(pixels.nbytes)):
+                    self._recover()  # a lost reply would block the REQ socket for good ("Lazy Pirate")
+                    return SendResult.TIMEOUT
+                reply = self._socket.recv(flags=zmq.NOBLOCK)
+            except zmq.ZMQError:
+                self._recover()
+                return SendResult.TIMEOUT
+        except KeyboardInterrupt:
+            self._drop_socket()
+            raise
+        return SendResult.DELIVERED if _is_ok_reply(reply) else SendResult.REJECTED
+
+    def _open_socket(self) -> bool:
+        socket = _shared_context().socket(zmq.REQ)
+        socket.setsockopt(zmq.LINGER, 0)  # the program's exit never waits for undelivered images
+        socket.setsockopt(zmq.IMMEDIATE, 1)  # no connection means "unavailable", not "queued"
+        socket.setsockopt(zmq.MAXMSGSIZE, _MAX_REPLY_BYTES)
+        socket.setsockopt(zmq.IPV6, 1)  # dual-stack: tcp://[::1] works as well as 127.0.0.1
+        # Abandoning a connection attempt after the reply timeout lets ZeroMQ retry, so a viewer that starts later is
+        # found as quickly on Windows, which takes about 2 s to report a refused connection, as elsewhere.
+        socket.setsockopt(zmq.CONNECT_TIMEOUT, min(max(0, round(self.reply_timeout * 1000)), 2**31 - 1))
+        try:
+            socket.connect(self.endpoint)
+        except zmq.ZMQError:
+            socket.close(linger=0)
+            return False
+        self._socket = socket
+        self._socket_pid = os.getpid()
+        self._socket_is_fresh = True
+        return True
+
+    def _reply_deadline(self, pixel_bytes: int) -> float:
+        """Copying a large image through loopback takes a while, so each started MiB adds 10 ms."""
+        return self.reply_timeout + 0.010 * ((pixel_bytes + _MEBIBYTE - 1) // _MEBIBYTE)
+
+    def _recover(self) -> None:
+        """After an unexpected error the socket's state is unknown: drop it and back off."""
+        self._drop_socket()
+        self._start_back_off()
+
+    def _drop_socket(self) -> None:
+        if self._socket is not None and self._socket_pid == os.getpid():
+            self._socket.close(linger=0)
+        self._socket = None
+
+    def _start_back_off(self) -> None:
+        self._back_off_until = time.monotonic() + self.retry_interval
+
+
+# One client for the whole process, made on first use (reading the endpoint then), behind a lock.
+_shared_client = None
+_shared_client_lock = threading.Lock()
+
+
+def send_image(image, name: str, **description) -> SendResult:
+    """The one-line debugging call: sends an image to the viewer at default_endpoint() through one process-wide Client.
+    Safe from any thread. Keywords as Client.send: rgb, value_range, transfer, primaries, overlays."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = Client()
+        return _shared_client.send(image, name, **description)
+
+
+def send_live(frame, channel: str, **description) -> SendResult:
+    """The same for one frame of a live channel, such as a camera. Shares send_image's client."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = Client()
+        return _shared_client.send_live(frame, channel, **description)
+
+
+def _reset_shared_client() -> None:
+    """Closes the shared client, so the next send makes a new one and reads the endpoint again. For tests."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is not None:
+            _shared_client.close()
+        _shared_client = None
