@@ -5,6 +5,12 @@ docs/videos/
 
 # Build trees and IDE state
 build/
+
+# The Python sender's local environment and caches
+python/.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
 CMakeUserPresets.json
 *.user
 .qtcreator/

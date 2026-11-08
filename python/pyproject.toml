@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visual-debug"
+version = "0.1.0"
+description = "Send numpy images to the Visual Debug Viewer, as the C++ visual_debug library does."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+# Declared floors; tested only with Python 3.12, numpy 1.26, pyzmq 24 (Ubuntu 24.04) and newer (see README.md).
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.22", "pyzmq>=22"]
+
+[tool.setuptools]
+py-modules = ["visual_debug"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 110
+target-version = ["py310"]
