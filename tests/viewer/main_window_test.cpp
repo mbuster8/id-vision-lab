@@ -28,6 +28,7 @@
 #include <QColor>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -54,6 +55,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QToolButton>
 #include <QWheelEvent>
 
@@ -3654,6 +3656,87 @@ TEST(MainWindowMeasurement, DISABLED_HistogramFrameCost) {
 
     std::cout << "[ histogram ] 4K 16UC3 HLG frame taken and drawn: strip off " << off << " ms, on " << on
               << " ms, difference " << on - off << " ms\n";
+}
+
+// The UI thread's time in live frames (taking them and applying their results) is summed for the measurement
+// below; a still costs it nothing.
+TEST(MainWindowTest, LiveUiTimeCountsTakingAndApplying) {
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    showSized(window);
+    window.addImage("still", greyStill(10));
+    EXPECT_EQ(window.liveUiTimeForTests().count(), 0);
+
+    feedLive(window, "camera", liveFrame(60));
+    QApplication::processEvents();
+    const std::chrono::nanoseconds taken = window.liveUiTimeForTests();
+    chooseLiveRow(window, QStringLiteral("camera"));
+    ASSERT_TRUE(waitForGrey(window, 60));
+
+    EXPECT_GT(taken.count(), 0);
+    EXPECT_GT(window.liveUiTimeForTests(), taken);
+}
+
+// Waits for the window to apply one more live result, blocked on its event queue rather than polling, so the
+// time it took is not rounded to a polling step. A timer wakes it to give up after five seconds.
+bool waitForNextResult(MainWindow& window) {
+    const std::uint64_t applied = window.liveResultCountsForTests().applied;
+    QElapsedTimer waited;
+    waited.start();
+    QTimer wake;
+    wake.start(100);
+    while (window.liveResultCountsForTests().applied == applied) {
+        if (waited.elapsed() > 5000) {
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents);
+    }
+    return true;
+}
+
+// How long the UI thread works on each live frame, taking it and applying its picture, and how long from its
+// arrival to its picture in the view: 4K 16UC3 HLG frames, each waited for until drawn, converted immediately
+// (on the UI thread, as before the converter) and threaded, the strip off and on, with OpenCV's own thread
+// count and with two; median of 60 frames each. Run by hand in a release build:
+// --gtest_also_run_disabled_tests --gtest_filter=*LiveFrameCost*
+TEST(MainWindowMeasurement, DISABLED_LiveFrameCost) {
+    cv::Mat frame(2160, 3840, CV_16UC3);
+    cv::randu(frame, cv::Scalar::all(0), cv::Scalar::all(65536));
+    const auto median = [](std::vector<double> values) {
+        std::sort(values.begin() + 1, values.end()); // the first starts the channel
+        return values[values.size() / 2];
+    };
+    const int openCvThreads = cv::getNumThreads();
+    for (const int threads : {openCvThreads, 2}) {
+        cv::setNumThreads(threads);
+        for (const LiveConversion conversion : {LiveConversion::Immediate, LiveConversion::Threaded}) {
+            for (const bool strip : {false, true}) {
+                const auto window = test_support::makeClockedTestWindow(&Clock::now, conversion);
+                showSized(*window);
+                if (strip) {
+                    showHistogram(*window);
+                }
+                std::vector<double> uiTimes;
+                std::vector<double> toScreen;
+                for (int i = 0; i < 61; ++i) {
+                    const std::chrono::nanoseconds uiBefore = window->liveUiTimeForTests();
+                    QElapsedTimer timer;
+                    timer.start();
+                    feedLive(*window, "camera", frame, std::chrono::system_clock::now(), std::nullopt,
+                             kHlgDescription);
+                    ASSERT_TRUE(waitForNextResult(*window));
+                    toScreen.push_back(static_cast<double>(timer.nsecsElapsed()) / 1e6);
+                    uiTimes.push_back(static_cast<double>((window->liveUiTimeForTests() - uiBefore).count()) /
+                                      1e6);
+                }
+                std::cout << "[ live frame ] 4K 16UC3 HLG, "
+                          << (conversion == LiveConversion::Threaded ? "threaded" : "immediate") << ", strip "
+                          << (strip ? "on" : "off") << ", OpenCV threads " << threads << ": UI thread "
+                          << median(uiTimes) << " ms, arrival to view " << median(toScreen) << " ms\n";
+            }
+        }
+    }
+    cv::setNumThreads(openCvThreads);
 }
 
 } // namespace

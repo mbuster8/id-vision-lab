@@ -101,6 +101,8 @@ public:
         std::uint64_t applied = 0;
     };
     LiveResultCounts liveResultCountsForTests() const;
+    // The UI thread's time spent on live frames so far: taking them and applying their results.
+    std::chrono::nanoseconds liveUiTimeForTests() const;
 
 signals:
     void restoreFinished(); // the stored images are back, or there were none to restore
@@ -226,6 +228,8 @@ private:
     std::unique_ptr<LiveConverter> m_converter;
     std::uint64_t m_viewCounter = 0; // bumped by viewChanged
     LiveResultCounts m_liveResultCounts;
+    std::chrono::nanoseconds m_liveUiTime{0};
+    int m_liveUiDepth = 0;       // an immediate result is applied inside the take: counted once
     bool m_showClipping = false; // for the view only, for this session
     // The rows' pictures, by channel, with the frame count each was made at: a picture is made again only
     // for a newer frame.

@@ -36,6 +36,7 @@
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -94,6 +95,29 @@ bool isTextField(const QWidget* widget) {
            qobject_cast<const QTextEdit*>(widget) != nullptr ||
            qobject_cast<const QPlainTextEdit*>(widget) != nullptr;
 }
+
+// Adds the time from construction to destruction to `total`, for MainWindowMeasurement; a nested one, such as
+// an immediate result applied inside the take that made it, adds nothing of its own.
+class LiveUiTiming {
+public:
+    LiveUiTiming(std::chrono::nanoseconds& total, int& depth) : m_total(total), m_depth(depth) {
+        if (m_depth++ == 0) {
+            m_timer.start();
+        }
+    }
+    ~LiveUiTiming() {
+        if (--m_depth == 0) {
+            m_total += std::chrono::nanoseconds(m_timer.nsecsElapsed());
+        }
+    }
+    LiveUiTiming(const LiveUiTiming&) = delete;
+    LiveUiTiming& operator=(const LiveUiTiming&) = delete;
+
+private:
+    std::chrono::nanoseconds& m_total;
+    int& m_depth;
+    QElapsedTimer m_timer;
+};
 
 } // namespace
 
@@ -944,6 +968,7 @@ cv::Mat MainWindow::thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) 
 // and the idle ones it closed to make room. Only the shown channel's frame is converted and drawn; the rest
 // waits for the tick.
 void MainWindow::takeLiveFrames() {
+    const LiveUiTiming timing(m_liveUiTime, m_liveUiDepth);
     QtImageSink::LiveBatch batch = m_sink.takeLiveFrames();
     const Clock::time_point now = m_clock();
     LiveChannelPanel* panel = m_sidebar->liveChannels();
@@ -1081,6 +1106,7 @@ void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
 }
 
 void MainWindow::applyLiveResult(LiveResult result) {
+    const LiveUiTiming timing(m_liveUiTime, m_liveUiDepth);
     ++m_liveResultCounts.received;
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->name != result.job.channel ||
@@ -1484,6 +1510,8 @@ void MainWindow::setLiveConversionForTests(LiveConverter::Conversion conversion)
 }
 
 MainWindow::LiveResultCounts MainWindow::liveResultCountsForTests() const { return m_liveResultCounts; }
+
+std::chrono::nanoseconds MainWindow::liveUiTimeForTests() const { return m_liveUiTime; }
 
 void MainWindow::setConfirmationForTests(std::function<bool(const QString&)> confirm) {
     m_confirm = std::move(confirm);
