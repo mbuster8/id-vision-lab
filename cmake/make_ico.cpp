@@ -65,6 +65,11 @@ int wmain(int argc, wchar_t* argv[]) {
         std::cerr << "make_ico: cannot read an 8-bit image from the input\n";
         return 1;
     }
+    // Icons are square; a wider or taller picture would be stretched into them.
+    if (image.cols != image.rows) {
+        std::cerr << "make_ico: the image is " << image.cols << 'x' << image.rows << ", not square\n";
+        return 1;
+    }
     image = toBgra(image);
 
     std::vector<std::vector<unsigned char>> pngs;
