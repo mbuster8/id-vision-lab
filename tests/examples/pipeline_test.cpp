@@ -6,13 +6,26 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace {
+
+// Sixteen random hexadecimal digits, ASCII, for a name no other run uses.
+std::u8string randomSuffix() {
+    std::random_device device;
+    const std::uint64_t value = (std::uint64_t{device()} << 32U) | device();
+    std::u8string digits;
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        digits.push_back(u8"0123456789abcdef"[(value >> shift) & 0xFU]);
+    }
+    return digits;
+}
 
 TEST(Pipeline, TestPatternIsColourAndSized) {
     const cv::Mat pattern = pipeline_demo::makeTestPattern();
@@ -78,8 +91,10 @@ TEST(Pipeline, WorksOnGreyscaleInput) {
 // The path arrives as UTF-8, as argv does on macOS and Linux, and on Windows through the UTF-8 code page in
 // the program's manifest.
 TEST(Pipeline, ReadsAnImageFromANonAsciiPath) {
-    const std::filesystem::path folder = std::filesystem::temp_directory_path() / u8"pipeline_test_ž_日本";
-    std::filesystem::create_directories(folder);
+    // A folder of its own, so two runs at once (two presets or two clones) never remove each other's file.
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() / (u8"pipeline_test_ž_日本_" + randomSuffix());
+    ASSERT_TRUE(std::filesystem::create_directory(folder));
     const std::filesystem::path file = folder / u8"obrázok č.1.png";
     std::vector<unsigned char> png;
     ASSERT_TRUE(cv::imencode(".png", cv::Mat(48, 64, CV_8UC3, cv::Scalar(10, 20, 30)), png));

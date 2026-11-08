@@ -86,9 +86,18 @@ QToolButton* buttonOf(MainWindow& window, const QString& objectName) {
     return window.findChild<QToolButton*>(objectName);
 }
 
+// Encoded by OpenCV and written by Qt: cv::imwrite takes a narrow path, which on Windows is the ANSI code
+// page and cannot name every folder, such as a temporary folder under a Japanese user name.
 QString writeImage(const QTemporaryDir& directory, const QString& fileName) {
     const QString path = QDir(directory.path()).filePath(fileName);
-    cv::imwrite(QFile::encodeName(path).toStdString(), cv::Mat(4, 6, CV_8UC3, cv::Scalar(1, 2, 3)));
+    std::vector<uchar> bytes;
+    QFile file(path);
+    if (!cv::imencode(".png", cv::Mat(4, 6, CV_8UC3, cv::Scalar(1, 2, 3)), bytes) ||
+        !file.open(QIODevice::WriteOnly) ||
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size())) !=
+            static_cast<qint64>(bytes.size())) {
+        ADD_FAILURE() << "cannot write " << path.toStdString();
+    }
     return path;
 }
 
