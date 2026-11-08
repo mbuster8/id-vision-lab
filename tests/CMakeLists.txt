@@ -91,6 +91,13 @@ endif()
 # the tests' settings apart from the owner's. The apps get a program each: both have a main_window.h.
 if(ID_VISION_LAB_BUILD_QT_APPS)
     find_package(Qt6 REQUIRED COMPONENTS Widgets Test)
+    if(ID_VISION_LAB_COVERAGE)
+        # Coverage matches a function's counts by its name and the shape of its branches. This main() would
+        # leave counts under "main" that the apps' and examples' own main(), which no test runs, could match
+        # or clash with; without them, each of those counts as not reached.
+        set_source_files_properties(qt_common/test_main.cpp
+            PROPERTIES COMPILE_OPTIONS "-fno-profile-instr-generate;-fno-coverage-mapping")
+    endif()
     id_vision_lab_add_test_executable(qt_common_tests
         SOURCES
             qt_common/test_main.cpp

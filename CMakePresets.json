@@ -46,6 +46,15 @@
       }
     },
     {
+      "name": "coverage",
+      "displayName": "Debug with Clang's source-based code coverage",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ID_VISION_LAB_COVERAGE": "ON"
+      }
+    },
+    {
       "name": "windows-base",
       "hidden": true,
       "generator": "Ninja",
@@ -124,6 +133,11 @@
       "configurePreset": "asan"
     },
     {
+      "name": "coverage",
+      "inherits": "base",
+      "configurePreset": "coverage"
+    },
+    {
       "name": "windows-base",
       "hidden": true,
       "condition": {
@@ -175,6 +189,14 @@
       "name": "asan",
       "inherits": "base",
       "configurePreset": "asan"
+    },
+    {
+      "name": "coverage",
+      "inherits": "base",
+      "configurePreset": "coverage",
+      "environment": {
+        "LLVM_PROFILE_FILE": "${sourceDir}/build/coverage/profiles/%m.profraw"
+      }
     },
     {
       "name": "windows-base",

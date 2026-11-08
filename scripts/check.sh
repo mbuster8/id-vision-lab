@@ -2,8 +2,8 @@
 # The CI pipeline on this machine, so that a push meets no surprises. Run it from anywhere in the repository:
 #
 #     scripts/check.sh           what CI runs: clang-format, debug and asan builds and tests here, and the
-#                                Ubuntu job in Docker (a few minutes; the first Docker run takes longer)
-#     scripts/check.sh --quick   clang-format, and the debug build and tests here (about a minute)
+#                                Ubuntu job in Docker (the first Docker run takes longest)
+#     scripts/check.sh --quick   clang-format, and the debug build and tests here: the quickest
 #     scripts/check.sh --linux   only the Ubuntu job in Docker
 #
 # It stops at the first failing step and names it. Each step's full output goes to build/check-logs/; a failing

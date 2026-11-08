@@ -33,12 +33,13 @@ documents rather than re-deriving them:
 ## Commands
 
 ```sh
-cmake --preset debug                  # also: release, asan
+cmake --preset debug                  # also: release, asan, coverage
 cmake --build --preset debug
 ctest --preset debug                  # all tests; -R <regex> to filter
 ctest --preset asan                   # sanitizers; undefined behaviour aborts the test
 cmake --preset debug -B build/no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF   # proves the libraries need no Qt
 scripts/check.sh                      # what CI runs, here: clang-format, debug, asan, Ubuntu in Docker
+scripts/coverage.sh                   # coverage preset: line and function coverage per library and app
 ```
 
 On Windows the presets are `windows-debug`, `windows-release` and `windows-asan` (MSVC, vcpkg from
@@ -63,9 +64,9 @@ and data folders: renaming an app moves them.
 `apps/example_sender` · `apps/qt_common` ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
-the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
+the shared Qt test `main()` and helpers) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
 manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`
-(`check.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
+(`check.sh`, `coverage.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
 `.claude/skills/` (`local-ci`, `pr-ready`). Older commits use former names (`Image_processing`, Slovak
 identifiers): [`docs/former-names.md`](docs/former-names.md).
 

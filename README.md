@@ -147,8 +147,9 @@ ctest --preset asan                     # the same tests under the sanitizers
 
 ```sh
 scripts/check.sh                        # what CI runs: clang-format, debug and asan here, Ubuntu in Docker
-scripts/check.sh --quick                # clang-format and debug only, about a minute
+scripts/check.sh --quick                # clang-format and debug only, the quickest
 scripts/check.sh --linux                # only the CI's Ubuntu job, in Docker
+scripts/coverage.sh                     # how much of the code the tests reach, per library and app
 ```
 
 It stops at the first failing step and names it, so a push meets no surprises. The Ubuntu job needs Docker
@@ -332,7 +333,7 @@ id-vision-lab/
 ├── docs/                  guides, wire format, architecture, decision records
 ├── cmake/                 warning, sanitizer, icon and Windows packaging settings
 ├── packaging/licenses/    the third-party notices the Windows packages ship
-├── scripts/               check.sh (the CI pipeline, locally), the Ubuntu package list, the pre-push hook
+├── scripts/               check.sh (the CI pipeline, locally), coverage.sh, the Ubuntu package list, the pre-push hook
 ├── docker/                the CI's Ubuntu job as a container
 ├── .github/               continuous integration, CodeQL and Dependabot
 ├── .claude/skills/        Claude Code skills: local-ci and pr-ready

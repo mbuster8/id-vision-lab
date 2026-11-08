@@ -116,6 +116,7 @@ build tool, `id_vision_lab_make_ico` (from `cmake/make_ico.cpp`, with OpenCV), w
 | `ID_VISION_LAB_BUILD_EXAMPLES` | `ON` | `pipeline_demo`, `minimal_sender`, `overlay_sender`, `live_sender` and their tests |
 | `ID_VISION_LAB_BUILD_TESTS` | `ON` | All GoogleTest executables |
 | `ID_VISION_LAB_SANITIZERS` | `OFF` | AddressSanitizer and UndefinedBehaviorSanitizer (the `asan` preset turns it on) |
+| `ID_VISION_LAB_COVERAGE` | `OFF` | Clang's source-based code coverage (the `coverage` preset turns it on; Clang only) |
 
 ### Building without Qt
 
@@ -154,13 +155,49 @@ The Qt tests create an offscreen `QApplication`, so they open no windows and als
 In the `asan` build, undefined behaviour aborts the program like a memory error, so it fails the test
 rather than printing a report into a passing run.
 
+### Test coverage
+
+```sh
+scripts/coverage.sh                        # builds the coverage preset, runs every test, prints the coverage
+```
+
+The script measures how much of the code the tests reach, with Clang's source-based coverage. The `coverage`
+preset builds everything with `-fprofile-instr-generate -fcoverage-mapping` into `build/coverage`, and its test
+preset has each test program write its counts to `build/coverage/profiles/`. The script merges them and prints
+the share of lines and of functions the tests ran in each library, each app and the examples, and in all of
+them together. The tests' own code, generated code (moc, uic, rcc) and other projects' headers do not count.
+Code that only the apps' and the examples' own programs contain, such as their `main()`, counts as not reached,
+since no test runs those programs. It stops if a test fails: coverage from a failing run says little.
+
+`build/coverage/report.txt` lists every file, and `build/coverage/html/index.html` shows every line with how
+often it ran.
+
+`llvm-cov` matches a function's counts by its name and a hash of its branches, across all the programs, so:
+
+- It warns that some functions "have mismatched data" and leaves them out: inline functions that Qt's macros
+  write into many files (`tr()`, metatype ids, flag operators) and some test helpers, whose hash differs from
+  file to file. They are a handful of one-line functions.
+- The Qt tests' shared `main()` (`tests/qt_common/test_main.cpp`) is built without coverage, so that the apps'
+  and the examples' own `main()`, which no test runs, cannot take its counts and show as reached.
+- Both apps have a `MainWindow`: a function with the same name and the same branches in both shares its counts
+  between the two apps' figures.
+
+On macOS it uses Xcode's `llvm-profdata` and `llvm-cov` through `xcrun`. The preset refuses compilers other
+than Clang, so on Linux run it as `CXX=clang++ scripts/coverage.sh`, with Clang's profile runtime and LLVM's
+tools of the same version (on Ubuntu, `clang`, `llvm` and `libclang-rt-dev`, which
+`scripts/install-ubuntu-deps.sh` installs). MSVC has nothing like it, so Windows has no coverage preset.
+
+CI's Ubuntu job runs it after the tests and puts the table on the run's summary page, and `scripts/check.sh`'s
+Ubuntu job does the same in Docker. It is a report: no coverage threshold fails a run, though a test that fails
+under it does.
+
 ## Checking changes before a push
 
 `scripts/check.sh` runs what continuous integration runs, on this machine:
 
 ```sh
 scripts/check.sh            # clang-format, debug and asan here, and the Ubuntu job in Docker
-scripts/check.sh --quick    # clang-format and debug only (about a minute)
+scripts/check.sh --quick    # clang-format and debug only, the quickest
 scripts/check.sh --linux    # only the Ubuntu job in Docker
 ```
 
@@ -169,7 +206,7 @@ output of every step is in `build/check-logs/`. clang-format must be version 22.
 Creator's bundled copy, a `clang-format` on `PATH`, or the one `CLANG_FORMAT` names.
 
 The Ubuntu job needs Docker Desktop running. It builds an image from `docker/ubuntu-24.04.Dockerfile` with the
-CI's packages (the first time takes a few minutes), then builds and tests a copy of the working tree in a
+CI's packages (the first time takes longest), then builds and tests a copy of the working tree in a
 throwaway container, with the C locale and Qt offscreen as on GitHub's runners. Your own `build/` folders are
 never touched. To look around inside the container, for example to run one failing test:
 
