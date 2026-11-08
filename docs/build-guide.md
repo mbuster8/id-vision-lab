@@ -395,14 +395,14 @@ ctest --preset windows-debug
 `%LOCALAPPDATA%\vcpkg\archives`, so the next configure, of either preset or of a fresh clone, takes about 20
 seconds. vcpkg builds the debug and release libraries together.
 
-The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 796 tests pass, in 210 seconds (debug),
-151 seconds (release) and 352 seconds (`windows-asan`); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
+The build has no warnings under MSVC's `/W4 /permissive-`. On this machine all 797 tests pass, in 212 seconds (debug),
+172 seconds (release) and 332 seconds (`windows-asan`); one, `ClientServer.RefusesNonLoopbackBindByDefault`, is skipped on purpose. To
 build without Qt, as on the other platforms:
 
 ```powershell
 cmake --preset windows-debug -B build\no-qt -DID_VISION_LAB_BUILD_QT_APPS=OFF
 cmake --build build\no-qt
-ctest --test-dir build\no-qt               # the 394 tests that need no Qt
+ctest --test-dir build\no-qt               # the 395 tests that need no Qt
 ```
 
 ### Running on Windows
