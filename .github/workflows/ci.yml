@@ -73,7 +73,10 @@ jobs:
     env:
       QT_VERSION: 6.12.0
       QT_ARCH: win64_msvc2022_64
-      AQTINSTALL_VERSION: 3.3.0
+      # aqtinstall's master at this commit, not a release: from Qt 6.11 the Windows x64 packages sit in one folder
+      # per compiler (qt6_6120/qt6_6120_msvc2022_64/), which 3.3.0, the newest release, cannot find. Support
+      # came with aqtinstall pull request #1000 (merged 24 March 2026); go back to a release once one has it.
+      AQTINSTALL_COMMIT: 5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7
       VCPKG_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,13 +123,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\Qt\${{ env.QT_VERSION }}
-          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_VERSION }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
 
       - name: Install Qt
         if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          pipx install "aqtinstall==$env:AQTINSTALL_VERSION"
+          pipx install "git+https://github.com/miurahr/aqtinstall.git@$env:AQTINSTALL_COMMIT"
           aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
 
       - name: Point the presets at Qt
