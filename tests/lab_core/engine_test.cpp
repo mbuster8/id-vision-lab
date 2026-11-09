@@ -444,6 +444,36 @@ TEST(Engine, SeekingUntilTheFrameArrives) {
     EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
 }
 
+// A click on the slider seeks on the press and again on the release, and holding ← at the first frame keeps
+// asking for frame 0: a seek already running to that frame goes on rather than start again.
+TEST(Engine, SameTargetDoesNotRestartTheSeek) {
+    Harness h;
+    ListSource::Counters counters;
+    bool ready = true;
+    h.engine.startReplay([&](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<ListSource>(framesApart(10, 40ms), true, &counters);
+        source->readyWhen = [&ready] { return ready; };
+        return source;
+    });
+    pausedAt(h, 2);
+    ready = false;
+
+    h.engine.seek(7);
+    h.engine.pump();
+    h.engine.seek(7);
+    h.engine.pump();
+    EXPECT_EQ(counters.seeks, 1);
+
+    h.engine.seek(0);
+    h.engine.pump();
+    h.engine.seekBy(-1);
+    h.engine.pump();
+    EXPECT_EQ(counters.seeks, 2);
+
+    ready = true;
+    EXPECT_EQ(pumpUntilAResult(h), 0U);
+}
+
 // A count worked out from a duration can be a frame too many: a seek to the last then finds the end.
 class OverstatedSource : public ListSource {
 public:

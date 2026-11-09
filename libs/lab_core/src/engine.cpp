@@ -805,6 +805,11 @@ void Engine::doSeek() {
         wanted = std::min(wanted, static_cast<std::int64_t>(*count - 1));
     }
     const auto target = static_cast<std::uint64_t>(wanted);
+    // A seek already running to that frame goes on: a slider click asks on its press and its release, and ←
+    // held at the first frame keeps asking for frame 0.
+    if (m_seekTarget == target) {
+        return;
+    }
     // A step back at the first frame, paused: nothing to do, and no reason to end a recording.
     if (m_state == EngineState::Paused && !m_seekTarget && m_onScreen && m_onScreen->number == target) {
         return;
