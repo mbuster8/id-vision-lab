@@ -1397,8 +1397,10 @@ bool LabWindow::olderViewer() const {
     return m_link->state().viewer == visual_debug::ViewerState::PredatesPing;
 }
 
-// ▶: starts the stream, asking first for another computer, or goes on after ⏸.
+// ▶: starts the stream, asking first for another computer, or goes on after ⏸. The address as typed counts:
+// on macOS a click on a button leaves the field focused, so its editing never finished.
 void LabWindow::startStream() {
+    endpointChanged();
     if (m_stream == Stream::Paused) {
         m_engine->pauseSending(false);
         m_stream = Stream::On;
@@ -1442,6 +1444,7 @@ void LabWindow::stopStream() {
 // The picture Show shows, into the viewer's history: the frame with its tags and the processor's overlays
 // whatever the Overlays toggle (the viewer has its own), or a processor's picture with its description.
 void LabWindow::sendFrame() {
+    endpointChanged(); // the address as typed, as for ▶
     if (!m_onScreen || !confirmFor(endpointText())) {
         refreshStatus();
         return;

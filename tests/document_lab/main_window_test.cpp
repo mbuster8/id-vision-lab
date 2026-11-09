@@ -1565,6 +1565,34 @@ TEST(LabWindow, EndpointChangeStopsTheStream) {
     EXPECT_EQ(lab.linkEndpoints.back(), "tcp://127.0.0.1:7141");
 }
 
+// On macOS a click on a button leaves the address field focused, so its editing never finishes: ▶ and Send
+// Frame take the address as typed, and the stream goes on when the field loses the focus later.
+TEST(LabWindow, TypedAddressCountsForTheStream) {
+    Lab lab;
+    lab.pump();
+    endpointEdit(lab)->setText(QStringLiteral("tcp://127.0.0.1:7140"));
+
+    button(lab, "streamButton")->click();
+    lab.pump();
+
+    EXPECT_EQ(lab.linkEndpoints.back(), "tcp://127.0.0.1:7140");
+    emit endpointEdit(lab)->editingFinished();
+    EXPECT_TRUE(button(lab, "stopStreamButton")->isEnabled());
+}
+
+TEST(LabWindow, TypedAddressCountsForSendFrame) {
+    Lab lab;
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+    endpointEdit(lab)->setText(QStringLiteral("tcp://127.0.0.1:7141"));
+
+    button(lab, "sendFrameButton")->click();
+    lab.pump();
+
+    EXPECT_EQ(lab.linkEndpoints.back(), "tcp://127.0.0.1:7141");
+    EXPECT_TRUE(logHas(lab.linkLog, "image lab frame 1"));
+}
+
 TEST(LabWindow, EmptyEndpointDisablesSending) {
     Lab lab;
     lab.replay(framesOf(test_support::cardFrame()));
