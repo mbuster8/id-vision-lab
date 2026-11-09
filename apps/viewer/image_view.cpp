@@ -104,6 +104,14 @@ double ImageView::deviceScaleFor(QSize imageSize, KeepView keep) const {
 
 const QImage& ImageView::picture() const { return m_image; }
 
+QRect ImageView::visibleArea() const {
+    if (m_image.isNull()) {
+        return {};
+    }
+    const cv::Rect pixels = m_viewport.visiblePixels();
+    return {pixels.x, pixels.y, pixels.width, pixels.height};
+}
+
 std::optional<QRect> ImageView::region() const { return m_region; }
 
 // Emits only when there was a region to clear.

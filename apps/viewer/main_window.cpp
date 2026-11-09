@@ -36,6 +36,7 @@
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -95,6 +96,29 @@ bool isTextField(const QWidget* widget) {
            qobject_cast<const QPlainTextEdit*>(widget) != nullptr;
 }
 
+// Adds the time from construction to destruction to `total`, for MainWindowMeasurement; a nested one, such as
+// an immediate result applied inside the take that made it, adds nothing of its own.
+class LiveUiTiming {
+public:
+    LiveUiTiming(std::chrono::nanoseconds& total, int& depth) : m_total(total), m_depth(depth) {
+        if (m_depth++ == 0) {
+            m_timer.start();
+        }
+    }
+    ~LiveUiTiming() {
+        if (--m_depth == 0) {
+            m_total += std::chrono::nanoseconds(m_timer.nsecsElapsed());
+        }
+    }
+    LiveUiTiming(const LiveUiTiming&) = delete;
+    LiveUiTiming& operator=(const LiveUiTiming&) = delete;
+
+private:
+    std::chrono::nanoseconds& m_total;
+    int& m_depth;
+    QElapsedTimer m_timer;
+};
+
 } // namespace
 
 QString viewerWindowTitle(const QString& imageName, const QString& endpoint) {
@@ -110,11 +134,14 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     : MainWindow(std::move(serverOptions), dataRoot, &Clock::now, parent) {}
 
 MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString& dataRoot,
-                       std::function<Clock::time_point()> clock, QWidget* parent)
+                       std::function<Clock::time_point()> clock, QWidget* parent, LiveConversion conversion)
     : QMainWindow(parent), m_ui(std::make_unique<Ui::MainWindow>()), m_clock(std::move(clock)),
       m_sink(m_clock), m_server(m_sink, serverOptions),
-      m_endpoint(QString::fromStdString(serverOptions.endpoint)), m_allowRemote(serverOptions.allowRemote) {
+      m_endpoint(QString::fromStdString(serverOptions.endpoint)), m_allowRemote(serverOptions.allowRemote),
+      m_liveConversion(conversion) {
     m_ui->setupUi(this);
+    setLiveConversionForTests(convertLiveFrame);
+    setSnapshotConversionForTests(convertSnapshot);
     setWindowTitle(viewerWindowTitle(QString(), m_endpoint));
 
     DataFolder::Problem dataProblem = DataFolder::Problem::None;
@@ -548,6 +575,8 @@ void MainWindow::setLogOpen(bool open) {
 // Child widgets outlive this window's members, and destroying them moves focus and ends a rename: stop them,
 // and the focus signal, reaching into a destroyed history.
 MainWindow::~MainWindow() {
+    m_converter.reset(); // waits for a frame being converted; no result arrives after this
+    m_snapshots.reset(); // the same for a snapshot; those still waiting are dropped
     qApp->removeEventFilter(this);
     disconnect(qApp, &QApplication::focusChanged, this, nullptr);
     m_sidebar->liveChannels()->disconnect(this);
@@ -603,31 +632,62 @@ bool MainWindow::addImage(std::string name, cv::Mat image, viewer_core::ImageOri
         log(LogKind::Error, tr("Cannot show image: %1").arg(error.what()));
         return false;
     }
+    listAdded(added, origin, std::nullopt);
+    return true;
+}
+
+// Its picture was made on the snapshot converter's thread.
+void MainWindow::addSnapshot(SnapshotResult result) {
+    SnapshotJob& job = result.job;
+    const QString name = singleLine(QString::fromStdString(job.name));
+    viewer_core::ImageHistory::AddResult added;
+    try {
+        if (result.display.empty()) {
+            throw std::runtime_error("its picture could not be made");
+        }
+        added = m_history.add(std::move(job.name), std::move(job.original), std::move(result.display),
+                              job.origin);
+    } catch (const std::exception& error) {
+        log(LogKind::Error,
+            tr("Could not take snapshot [%1]: %2").arg(name, QString::fromUtf8(error.what())));
+        return;
+    }
+    listAdded(added, job.origin, job.area);
+}
+
+void MainWindow::listAdded(const viewer_core::ImageHistory::AddResult& added,
+                           const viewer_core::ImageOrigin& origin, std::optional<cv::Rect> cutFrom) {
     // Timed when it arrived: for a received image, when the server thread finished decoding it. A snapshot is
-    // logged when it is taken; its entry keeps its frame's receive time.
+    // logged when it reaches the history; its entry keeps its frame's receive time.
     const auto& entry = *m_history.find(added.id);
-    QString what = tr("Received [%1] (%2)");
+    const QString name = singleLine(QString::fromStdString(entry.name));
+    const QString details = imageDetails(entry);
+    // Each in one pass of arg(), so a name holding "%3" is never filled in itself.
+    QString text = tr("Received [%1] (%2)").arg(name, details);
     if (origin.source == viewer_core::ImageSource::OpenedFile) {
-        what = tr("Opened [%1] (%2)");
+        text = tr("Opened [%1] (%2)").arg(name, details);
+    } else if (origin.source == viewer_core::ImageSource::LiveSnapshot && cutFrom) {
+        text = tr("Snapshot [%1] (%2), cut from the frame at %3, %4")
+                   .arg(name, details, QString::number(cutFrom->x), QString::number(cutFrom->y));
     } else if (origin.source == viewer_core::ImageSource::LiveSnapshot) {
-        what = tr("Snapshot [%1] (%2)");
+        text = tr("Snapshot [%1] (%2)").arg(name, details);
     }
     const bool timed = origin.arrivedAt != std::chrono::system_clock::time_point{} &&
                        origin.source != viewer_core::ImageSource::LiveSnapshot;
-    m_log->append({timed ? origin.arrivedAt : std::chrono::system_clock::now(), LogKind::Info,
-                   what.arg(singleLine(QString::fromStdString(entry.name)), imageDetails(entry))});
+    m_log->append({timed ? origin.arrivedAt : std::chrono::system_clock::now(), LogKind::Info, text});
     // While a rename is open, arrivals do not take the selection, so a burst cannot move the edit; while a
-    // live channel is shown, they do not take the view. One the search hides arrives quietly: it is listed
-    // later, if ever.
+    // live channel is shown, they do not take the view. A snapshot never does: it reaches the history a
+    // moment after it was taken, when something else may be in view. One the search hides arrives quietly: it
+    // is listed later, if ever.
     m_thumbnails->addImage(entry, false);
-    if (!m_infoBar->isRenaming() && !m_liveChannel && m_thumbnails->isListed(added.id)) {
+    if (!m_infoBar->isRenaming() && !m_liveChannel &&
+        origin.source != viewer_core::ImageSource::LiveSnapshot && m_thumbnails->isListed(added.id)) {
         m_thumbnails->selectImage(added.id);
     }
     m_storage->store(entry);
     removeEvicted(added.evicted);
     m_storage->sync(m_history.entries());
     updateEditActions();
-    return true;
 }
 
 std::optional<viewer_core::ImageId> MainWindow::shownImageId() const { return m_currentId; }
@@ -754,6 +814,7 @@ void MainWindow::showImage(viewer_core::ImageId id) {
         return;
     }
     m_histogramStrip->cancelDrag(); // a range dragged for the image before must not reach this one's name
+    viewChanged();
     if (m_liveChannel) {
         m_liveChannel.reset();
         m_sink.protectLiveChannel(std::nullopt);
@@ -763,6 +824,7 @@ void MainWindow::showImage(viewer_core::ImageId id) {
     m_lastHistoryId = id;
     showPicture(shownPicture(*entry, m_showClipping), ImageView::KeepView::No, sizeOf(entry->original),
                 entry->origin.tags);
+    updateHistogram();
     m_infoBar->displayControl()->setState(settingsFor(entry->name, entry->origin.tags),
                                           entry->original.channels() == 1, entry->origin.tags.isHdr());
     showImageText(*entry);
@@ -774,40 +836,41 @@ void MainWindow::showPicture(const QImage& picture, ImageView::KeepView keep, QS
                              const viewer_core::ImageTags& tags) {
     m_imageView->setImage(picture, keep, imageSize, tags.overlays);
     m_infoBar->setOverlayCount(static_cast<int>(tags.overlayList().size()));
-    updateHistogram();
 }
 
-// Of the original in view, with the settings it is drawn with; only while the strip is shown, so a hidden
-// strip costs a live frame nothing. On the UI thread, beside the conversion, from pure functions of the
-// frame: quick win 7 can move both off it together.
+// Of the still in view, with the settings it is drawn with; only while the strip is shown. A live channel's
+// histogram is counted on the converter's thread with its picture, and set when that arrives.
 void MainWindow::updateHistogram() {
-    const cv::Mat* original = nullptr;
-    const viewer_core::ImageTags* tags = nullptr;
-    const std::string* name = nullptr;
-    if (const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr) {
-        original = &channel->shown;
-        tags = &channel->shownTags;
-        name = &channel->name;
-    } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
-        original = &entry->original;
-        tags = &entry->origin.tags;
-        name = &entry->name;
+    if (m_liveChannel) {
+        return;
     }
-    if (!m_ui->actionShowHistogram->isChecked() || original == nullptr || original->empty()) {
+    const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr;
+    if (!m_ui->actionShowHistogram->isChecked() || entry == nullptr || entry->original.empty()) {
         m_histogramStrip->clear();
         m_histogramStrip->hide();
         return;
     }
-    const viewer_core::ValueExtent extent = viewer_core::valueExtent(*original);
-    const std::optional<viewer_core::RangeMarkers> markers = viewer_core::rangeMarkers(
-        original->depth(), original->channels(), settingsFor(*name, *tags), *tags, extent);
-    m_histogramStrip->setHistogram(viewer_core::histogramOf(*original, extent, markers), markers);
+    const cv::Mat& original = entry->original;
+    const viewer_core::ValueExtent extent = viewer_core::valueExtent(original);
+    const std::optional<viewer_core::RangeMarkers> markers =
+        viewer_core::rangeMarkers(original.depth(), original.channels(),
+                                  settingsFor(entry->name, entry->origin.tags), entry->origin.tags, extent);
+    m_histogramStrip->setHistogram(viewer_core::histogramOf(original, extent, markers), markers);
     m_histogramStrip->show();
 }
 
+// Turned on over a live channel, its frame is converted again with the histogram; turned off, the strip goes
+// at once, and a histogram still on its way is not shown.
 void MainWindow::setHistogramShown(bool shown) {
     QSettings().setValue(kHistogramShownKey, shown);
-    updateHistogram();
+    if (!m_liveChannel) {
+        updateHistogram();
+    } else if (shown) {
+        submitLiveFrame(ImageView::KeepView::IfSameSize);
+    } else {
+        m_histogramStrip->clear();
+        m_histogramStrip->hide();
+    }
 }
 
 // The strip says whether its drag began on HDR's markers; it keeps those markers for the whole drag, so a
@@ -872,7 +935,7 @@ void MainWindow::showRegionStatistics() {
 void MainWindow::setShowClipping(bool show) {
     m_showClipping = show;
     if (m_liveChannel) {
-        paintLiveFrame(ImageView::KeepView::IfSameSize);
+        submitLiveFrame(ImageView::KeepView::IfSameSize);
     } else if (const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr) {
         showPicture(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize,
                     sizeOf(entry->original), entry->origin.tags);
@@ -889,7 +952,7 @@ viewer_core::DisplaySettings MainWindow::settingsFor(const std::string& name,
 void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& settings) {
     if (m_liveChannel) {
         setDisplaySettings(*m_liveChannel, settings);
-        drawLiveFrame(ImageView::KeepView::IfSameSize);
+        submitLiveFrame(ImageView::KeepView::IfSameSize);
         return;
     }
     const auto* entry = m_currentId ? m_history.find(*m_currentId) : nullptr;
@@ -899,6 +962,7 @@ void MainWindow::changeDisplaySettings(const viewer_core::DisplaySettings& setti
     setDisplaySettings(entry->name, settings);
     showPicture(shownPicture(*entry, m_showClipping), ImageView::KeepView::IfSameSize,
                 sizeOf(entry->original), entry->origin.tags);
+    updateHistogram(); // its markers follow the range
 }
 
 // Also forgets what was drawn with the name's old settings: its thumbnails, made again when next painted, and
@@ -937,6 +1001,7 @@ cv::Mat MainWindow::thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) 
 // and the idle ones it closed to make room. Only the shown channel's frame is converted and drawn; the rest
 // waits for the tick.
 void MainWindow::takeLiveFrames() {
+    const LiveUiTiming timing(m_liveUiTime, m_liveUiDepth);
     QtImageSink::LiveBatch batch = m_sink.takeLiveFrames();
     const Clock::time_point now = m_clock();
     LiveChannelPanel* panel = m_sidebar->liveChannels();
@@ -960,8 +1025,9 @@ void MainWindow::takeLiveFrames() {
         const std::string name = frame.message.name;
         const viewer_core::LiveChannel* before = m_live.find(name);
         const std::pair<std::uint64_t, std::uint64_t> countsBefore =
-            before != nullptr ? std::pair{before->received + before->dropped, before->dropped}
-                              : std::pair<std::uint64_t, std::uint64_t>{};
+            before != nullptr
+                ? std::pair{before->received + before->dropped, before->dropped + before->skipped}
+                : std::pair<std::uint64_t, std::uint64_t>{};
         const viewer_core::LiveChannels::ReceiveResult result =
             m_live.receive({.channel = name,
                             .image = std::move(frame.message.image),
@@ -988,7 +1054,7 @@ void MainWindow::takeLiveFrames() {
         if (!m_currentId && !m_liveChannel) {
             showLiveChannel(name); // the first channel, when nothing else is shown
         } else if (m_liveChannel == name && result.shownChanged) {
-            drawLiveFrame(ImageView::KeepView::IfSameSize);
+            submitLiveFrame(ImageView::KeepView::IfSameSize);
         }
     }
 
@@ -1021,6 +1087,7 @@ void MainWindow::showLiveChannel(const std::string& name) {
         return;
     }
     m_histogramStrip->cancelDrag();
+    viewChanged();
     m_currentId.reset();
     m_liveChannel = name;
     m_sink.protectLiveChannel(name); // never closed to make room while in view
@@ -1030,61 +1097,112 @@ void MainWindow::showLiveChannel(const std::string& name) {
                                           channel->shown.channels() == 1, channel->shownTags.isHdr());
     m_ui->actionFreeze->setChecked(channel->frozen); // each channel is frozen or not by itself
     m_pixelLabel->clear();
-    drawLiveFrame(ImageView::KeepView::No);
+    submitLiveFrame(ImageView::KeepView::No);
     showLiveText(m_clock());
     showRegionStatistics();
     setWindowTitle(viewerWindowTitle(QString::fromStdString(name), m_endpoint));
     updateEditActions();
 }
 
-void MainWindow::drawLiveFrame(ImageView::KeepView keep) {
-    if (paintLiveFrame(keep)) {
-        m_live.markDrawn(*m_liveChannel, m_clock());
-    }
-}
+void MainWindow::viewChanged() { ++m_viewCounter; }
 
 // Converted at the size it will be drawn when that is smaller than the frame: a 4K frame in a window costs no
-// more than the window's pixels. At 1:1 or closer, the whole frame. Without a copy: the view holds the
-// converted frame until the next one replaces it.
-bool MainWindow::paintLiveFrame(ImageView::KeepView keep) {
+// more than the window's pixels. At 1:1 or closer, the whole frame. The job shares the frame's pixels and
+// copies the rest, so the converter's thread reads nothing of the window's.
+void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
-        return false;
+        return;
     }
     const cv::Mat& frame = channel->shown;
     // Frames may change their channel count, or their tags.
     m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
-    showPicture(qt_common::wrapAsQImage(
-                    viewer_core::toDisplayImage(frame, settingsFor(channel->name, channel->shownTags),
-                                                {.size = liveDrawnSize(frame, keep),
-                                                 .tags = channel->shownTags,
-                                                 .showClipping = m_showClipping})),
-                keep, sizeOf(frame), channel->shownTags);
-    return true;
+    const std::uint64_t frameNumber = channel->shownNumber;
+    std::optional<LiveJob> replaced =
+        m_converter->submit({.viewCounter = m_viewCounter,
+                             .channel = channel->name,
+                             .frameNumber = frameNumber,
+                             .frame = frame,
+                             .settings = settingsFor(channel->name, channel->shownTags),
+                             .tags = channel->shownTags,
+                             .drawnSize = liveDrawnSize(frame.size(), keep),
+                             .showClipping = m_showClipping,
+                             .histogram = m_ui->actionShowHistogram->isChecked(),
+                             .keep = keep});
+    // Another frame of this channel replaced a frame not drawn yet. A job for it may still be converting, so
+    // it is settled when a newer frame's picture is applied. A redraw of the same frame replacing its earlier
+    // job loses nothing.
+    channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr; // an immediate result may have redrawn
+    if (replaced && channel != nullptr && replaced->channel == channel->name &&
+        replaced->frameNumber != frameNumber && replaced->frameNumber > channel->drawnNumber) {
+        m_replacedFrames[channel->name].insert(replaced->frameNumber);
+    }
+}
+
+void MainWindow::applyLiveResult(LiveResult result) {
+    const LiveUiTiming timing(m_liveUiTime, m_liveUiDepth);
+    ++m_liveResultCounts.received;
+    const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
+    if (channel == nullptr || channel->name != result.job.channel ||
+        result.job.viewCounter != m_viewCounter) {
+        return; // made for what was in view before
+    }
+    ++m_liveResultCounts.applied;
+    const ImageView::KeepView keep = result.job.keep;
+    showPicture(result.picture, keep, result.imageSize, result.job.tags);
+    // Off since the job was made: a histogram on its way stays hidden.
+    if (result.histogram && m_ui->actionShowHistogram->isChecked()) {
+        m_histogramStrip->setHistogram(*result.histogram, result.markers);
+        m_histogramStrip->show();
+    }
+    const std::uint64_t frameNumber = result.job.frameNumber;
+    m_live.markDrawn(channel->name, frameNumber, m_clock());
+    // Results come in the order they were submitted, and a channel's frame numbers never go down: a replaced
+    // frame below this one can no longer be drawn, so it was skipped, unless it is this one.
+    if (const auto replaced = m_replacedFrames.find(channel->name); replaced != m_replacedFrames.end()) {
+        std::set<std::uint64_t>& numbers = replaced->second;
+        for (auto number = numbers.begin(); number != numbers.end() && *number <= frameNumber;
+             number = numbers.erase(number)) {
+            if (*number < frameNumber) {
+                m_live.markSkipped(channel->name);
+            }
+        }
+    }
+    // The view fits only now: if the fitted view draws the frame at another size than the job assumed (the
+    // window was resized meanwhile), draw it again at that size.
+    if (keep == ImageView::KeepView::No) {
+        const cv::Size fitted = liveDrawnSize(cv::Size(result.imageSize.width(), result.imageSize.height()),
+                                              ImageView::KeepView::IfSameSize);
+        if (QSize(fitted.width, fitted.height) != result.picture.size()) {
+            submitLiveFrame(ImageView::KeepView::IfSameSize);
+        }
+    }
 }
 
 // The size a live frame is converted at for a draw with `keep`: the drawn size when that is smaller than the
 // frame, else the frame's own.
-cv::Size MainWindow::liveDrawnSize(const cv::Mat& frame, ImageView::KeepView keep) const {
-    const double scale = m_imageView->deviceScaleFor(QSize(frame.cols, frame.rows), keep);
+cv::Size MainWindow::liveDrawnSize(cv::Size frameSize, ImageView::KeepView keep) const {
+    const double scale = m_imageView->deviceScaleFor(QSize(frameSize.width, frameSize.height), keep);
     if (scale >= 1.0) {
-        return frame.size();
+        return frameSize;
     }
-    return viewer_core::sizeWithin(frame.size(), cv::Size(static_cast<int>(std::ceil(frame.cols * scale)),
-                                                          static_cast<int>(std::ceil(frame.rows * scale))));
+    return viewer_core::sizeWithin(frameSize,
+                                   cv::Size(static_cast<int>(std::ceil(frameSize.width * scale)),
+                                            static_cast<int>(std::ceil(frameSize.height * scale))));
 }
 
 // After a zoom, a fit or a resize: a frame converted for the old scale, a frozen one above all, would stay
 // blurred or coarse. Only when the size it is converted at changes, though: past 1:1 that is the whole frame
-// at every step, and converting it again for each step of a trackpad zoom would only cost.
+// at every step, and converting it again for each step of a trackpad zoom would only cost. Compared with the
+// newest job's size, not the picture on screen, which a job still converting is about to replace.
 void MainWindow::redrawLiveFrameForScale() {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
         return;
     }
-    const cv::Size drawn = liveDrawnSize(channel->shown, ImageView::KeepView::IfSameSize);
-    if (QSize(drawn.width, drawn.height) != m_imageView->picture().size()) {
-        paintLiveFrame(ImageView::KeepView::IfSameSize);
+    const cv::Size drawn = liveDrawnSize(channel->shown.size(), ImageView::KeepView::IfSameSize);
+    if (m_converter->newestSize() != std::optional<cv::Size>(drawn)) {
+        submitLiveFrame(ImageView::KeepView::IfSameSize);
     }
 }
 
@@ -1104,11 +1222,12 @@ void MainWindow::tick(Clock::time_point now) {
             continue;
         }
         const viewer_core::LiveChannel* channel = m_live.find(name);
-        const auto [arrivedBefore, droppedBefore] = m_startCounts[name];
+        const auto [arrivedBefore, lostBefore] = m_startCounts[name];
+        // Dropped: the frames that never reached the screen, replaced in the sink or before conversion.
         log(LogKind::Info, tr("Live channel [%1] idle after %2 frames (%3 dropped)")
                                .arg(singleLine(QString::fromStdString(name)))
                                .arg(channel->received + channel->dropped - arrivedBefore)
-                               .arg(channel->dropped - droppedBefore));
+                               .arg(channel->dropped + channel->skipped - lostBefore));
     }
     for (const viewer_core::LiveChannel& channel : m_live.channels()) {
         updateLiveRow(channel, now);
@@ -1157,6 +1276,7 @@ void MainWindow::forgetLiveChannel(const std::string& name) {
     m_live.close(name);
     m_rowPictures.erase(name);
     m_startCounts.erase(name);
+    m_replacedFrames.erase(name); // a channel started again numbers its frames afresh
     m_sidebar->liveChannels()->removeChannel(QString::fromStdString(name));
     if (m_liveChannel == name) {
         leaveLiveChannel();
@@ -1164,6 +1284,7 @@ void MainWindow::forgetLiveChannel(const std::string& name) {
 }
 
 void MainWindow::leaveLiveChannel() {
+    viewChanged();
     m_liveChannel.reset();
     m_sink.protectLiveChannel(std::nullopt);
     m_sidebar->liveChannels()->setSelected(std::nullopt);
@@ -1204,15 +1325,18 @@ void MainWindow::setLiveFrozen(bool frozen) {
         return;
     }
     if (m_live.setFrozen(*m_liveChannel, frozen)) {
-        drawLiveFrame(ImageView::KeepView::IfSameSize);
+        submitLiveFrame(ImageView::KeepView::IfSameSize);
     }
     const Clock::time_point now = m_clock();
     updateLiveRow(*m_live.find(*m_liveChannel), now);
     showLiveText(now);
 }
 
-// The frame in view, frozen or not, into the history under "<channel> <its receive time>", with the channel's
-// display settings, so it looks as it did on screen. The channel stays in view.
+// What is in view of the frame, frozen or not, into the history under "<channel> <its receive time>", with
+// the channel's display settings, so it looks as it did on screen: zoomed in, the visible pixels cut from the
+// original at full resolution, the shapes over them moved with the cut; fitted, the whole frame. Its picture
+// is made on the snapshot converter's thread, so the stream in view never waits for it. The channel stays in
+// view.
 void MainWindow::takeSnapshot() {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
@@ -1231,11 +1355,22 @@ void MainWindow::takeSnapshot() {
     }
     const std::string snapshot = name.toStdString();
     setDisplaySettings(snapshot, m_displaySettings.find(channel->name));
-    addImage(snapshot, channel->shown,
-             {.source = viewer_core::ImageSource::LiveSnapshot,
-              .fileBytes = std::nullopt,
-              .arrivedAt = channel->shownReceivedAt,
-              .tags = channel->shownTags});
+    SnapshotJob job{.name = snapshot,
+                    .original = channel->shown,
+                    .origin = {.source = viewer_core::ImageSource::LiveSnapshot,
+                               .fileBytes = std::nullopt,
+                               .arrivedAt = channel->shownReceivedAt,
+                               .tags = channel->shownTags}};
+    const QRect visible = m_imageView->visibleArea();
+    const cv::Rect frame(0, 0, channel->shown.cols, channel->shown.rows);
+    const cv::Rect area = cv::Rect(visible.x(), visible.y(), visible.width(), visible.height()) & frame;
+    if (!area.empty() && area != frame) {
+        // Copied, so a small snapshot does not keep the whole frame alive.
+        job.original = channel->shown(area).clone();
+        job.origin.tags = viewer_core::tagsForCrop(channel->shownTags, area.tl());
+        job.area = area;
+    }
+    m_snapshots->submit(std::move(job));
 }
 
 QImage MainWindow::livePicture() const {
@@ -1285,6 +1420,7 @@ void MainWindow::showImageText(const viewer_core::ReceivedImage& entry) {
 }
 
 void MainWindow::clearView() {
+    viewChanged();
     m_currentId.reset();
     m_liveChannel.reset();
     m_sink.protectLiveChannel(std::nullopt);
@@ -1424,6 +1560,28 @@ void MainWindow::openFile() {
 }
 
 // --- Keeping images between sessions ----------------------------------------------------------------------
+
+// Also how the constructor makes the converter: replacing it waits for the old one's thread.
+void MainWindow::setLiveConversionForTests(LiveConverter::Conversion conversion) {
+    m_converter.reset();
+    m_converter = std::make_unique<LiveConverter>(
+        m_liveConversion == LiveConversion::Threaded ? LiveConverter::Mode::Threaded
+                                                     : LiveConverter::Mode::Immediate,
+        [this](LiveResult result) { applyLiveResult(std::move(result)); }, std::move(conversion));
+}
+
+// The same for snapshots: one converter for the window's lifetime, made in the live converter's mode.
+void MainWindow::setSnapshotConversionForTests(SnapshotConverter::Conversion conversion) {
+    m_snapshots.reset();
+    m_snapshots = std::make_unique<SnapshotConverter>(
+        m_liveConversion == LiveConversion::Threaded ? SnapshotConverter::Mode::Threaded
+                                                     : SnapshotConverter::Mode::Immediate,
+        [this](SnapshotResult result) { addSnapshot(std::move(result)); }, std::move(conversion));
+}
+
+MainWindow::LiveResultCounts MainWindow::liveResultCountsForTests() const { return m_liveResultCounts; }
+
+std::chrono::nanoseconds MainWindow::liveUiTimeForTests() const { return m_liveUiTime; }
 
 void MainWindow::setConfirmationForTests(std::function<bool(const QString&)> confirm) {
     m_confirm = std::move(confirm);

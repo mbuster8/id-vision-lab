@@ -150,6 +150,32 @@ TEST(Viewport, HandlesOnePixelImage) {
     EXPECT_TRUE(isFinite(viewport.visibleImageRect()));
 }
 
+// Every image pixel at least partly in view, as whole pixels: what a snapshot of the view cuts.
+TEST(Viewport, VisiblePixelsRoundOutwardsWithinTheImage) {
+    auto viewport = squareViewport();
+    EXPECT_EQ(viewport.visiblePixels(), cv::Rect(0, 0, 400, 400)); // fitted: the whole image
+
+    viewport.zoomAt(kViewCentre, 3); // 1.25³ the fit: 204.8 image pixels across the view, centred on 200
+    const cv::Rect2d visible = viewport.visibleImageRect();
+    const cv::Rect pixels = viewport.visiblePixels();
+
+    EXPECT_EQ(pixels.x, static_cast<int>(std::floor(visible.x)));
+    EXPECT_EQ(pixels.y, static_cast<int>(std::floor(visible.y)));
+    EXPECT_EQ(pixels.br().x, static_cast<int>(std::ceil(visible.br().x)));
+    EXPECT_EQ(pixels.br().y, static_cast<int>(std::ceil(visible.br().y)));
+    EXPECT_EQ(pixels, cv::Rect(97, 97, 206, 206)); // 97.6 to 302.4, rounded outwards
+}
+
+TEST(Viewport, VisiblePixelsOfNothingAreEmpty) {
+    Viewport noImage;
+    noImage.setViewSize({200, 200});
+    Viewport noView;
+    noView.setImageSize({400, 400});
+
+    EXPECT_TRUE(noImage.visiblePixels().empty());
+    EXPECT_TRUE(noView.visiblePixels().empty());
+}
+
 TEST(Viewport, HandlesNoImage) {
     Viewport viewport;
     viewport.setViewSize({200, 200});

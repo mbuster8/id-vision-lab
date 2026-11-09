@@ -22,11 +22,15 @@ id_vision_lab_add_test_executable(visual_debug_tests
         visual_debug/client_server_test.cpp
         visual_debug/send_image_test.cpp
         visual_debug/image_sender_test.cpp
+        visual_debug/header_cases_test.cpp
     LIBRARIES
         visual_debug::visual_debug
         cppzmq
         nlohmann_json::nlohmann_json
         GTest::gtest_main)
+# The golden headers the C++ and the Python encoders must both write (python/tests/test_golden_headers.py).
+target_compile_definitions(visual_debug_tests
+    PRIVATE ID_VISION_LAB_HEADER_CASES="${PROJECT_SOURCE_DIR}/tests/wire/header_cases.json")
 
 id_vision_lab_add_test_executable(viewer_core_tests
     SOURCES
@@ -129,11 +133,13 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_tags_conversion_test.cpp
             viewer/image_view_test.cpp
             viewer/live_channel_panel_test.cpp
+            viewer/live_converter_test.cpp
             viewer/main_window_test.cpp
             viewer/owner_only.cpp
             viewer/owner_only_test.cpp
             viewer/qt_image_sink_test.cpp
             viewer/server_controls_test.cpp
+            viewer/snapshot_converter_test.cpp
             viewer/storage_worker_test.cpp
             viewer/thumbnail_panel_test.cpp
         LIBRARIES

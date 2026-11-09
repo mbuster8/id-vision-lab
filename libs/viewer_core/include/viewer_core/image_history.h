@@ -53,6 +53,11 @@ std::string describeImage(const cv::Mat& image);
 // What an entry for this image counts towards the byte budget: its pixels and its display copy's.
 std::size_t entryBytes(const cv::Mat& original);
 
+// The picture an entry keeps: toDisplayImage with the default settings for its tags. It keeps no state, so it
+// may be made on another thread, then handed to add() with the original. Throws std::invalid_argument for an
+// image toDisplayImage cannot show.
+cv::Mat historyDisplay(const cv::Mat& original, const ImageTags& tags);
+
 // The viewer's list of images, newest first, bounded by a count and by the bytes of pixels it holds. Every
 // operation that adds an entry evicts the oldest entries until both limits hold, but never evicts the entries
 // that operation protects: the entry it placed and, for a duplicate, the original too.
@@ -75,6 +80,10 @@ public:
     // Keeps a reference to `original`. Throws std::invalid_argument, leaving the history unchanged, for an
     // image toDisplayImage cannot show. A modifiedAt left at the epoch becomes arrivedAt.
     AddResult add(std::string name, cv::Mat original, ImageOrigin origin = {});
+    // The same with the picture made beforehand by historyDisplay(original, origin.tags), on another thread
+    // say, so adding costs no conversion. Throws std::invalid_argument, leaving the history unchanged, for a
+    // picture that is not 8-bit RGBA of the original's size.
+    AddResult add(std::string name, cv::Mat original, cv::Mat display, ImageOrigin origin = {});
 
     // Sets the name as given (the caller trims and cuts it) and the modified time. False for an unknown id.
     bool rename(ImageId id, std::string name, Clock::time_point now = Clock::now());
@@ -119,7 +128,8 @@ private:
         std::size_t index;
     };
 
-    ReceivedImage makeEntry(std::string name, cv::Mat original, ImageOrigin origin);
+    ReceivedImage makeEntry(std::string name, cv::Mat original, cv::Mat display, ImageOrigin origin);
+    AddResult addEntry(ReceivedImage entry);
     void evictUnprotected(std::initializer_list<ImageId> protectedIds, AddResult& result);
     void dropOldestUndoEntry(AddResult* result);
 

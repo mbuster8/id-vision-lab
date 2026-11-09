@@ -7,6 +7,8 @@
 #include "storage_controller.h"
 
 #include "image_view.h"
+#include "live_converter.h"
+#include "snapshot_converter.h"
 
 #include "viewer_core/display_settings.h"
 #include "viewer_core/image_history.h"
@@ -47,6 +49,10 @@ class MainWindow;
 // "tcp://", and is always there so that several viewers can be told apart in the Dock and the Window menu.
 QString viewerWindowTitle(const QString& imageName, const QString& endpoint);
 
+// Where the live channel in view is converted: on the converter's thread, or on the UI thread before the
+// frame's draw returns, for tests that must not wait.
+enum class LiveConversion { Threaded, Immediate };
+
 // The viewer: received and opened images go into one history, shown as thumbnails and in a zoomable view,
 // with the original value of the pixel under the cursor in the status bar. Live channels update in place
 // beside the history; the view shows either a history image or a channel, never both.
@@ -58,9 +64,11 @@ public:
 
     // dataRoot holds one data folder per endpoint; tests pass a temporary one.
     MainWindow(visual_debug::ServerOptions serverOptions, const QString& dataRoot, QWidget* parent = nullptr);
-    // The clock times live channels: their rates, and when they go idle. Tests pass one they move.
+    // The clock times live channels: their rates, and when they go idle. Tests pass one they move, and most
+    // convert live frames immediately.
     MainWindow(visual_debug::ServerOptions serverOptions, const QString& dataRoot,
-               std::function<Clock::time_point()> clock, QWidget* parent = nullptr);
+               std::function<Clock::time_point()> clock, QWidget* parent = nullptr,
+               LiveConversion conversion = LiveConversion::Threaded);
     ~MainWindow() override;
 
     // The one path for received and opened images: into the history, onto the panel, and out with whatever
@@ -86,6 +94,18 @@ public:
 
     // Answers the questions before deleting stored images or the history, instead of a dialog.
     void setConfirmationForTests(std::function<bool(const QString&)> confirm);
+    // Converts live frames with `conversion` from now on, in the same mode; before any frame is converted.
+    void setLiveConversionForTests(LiveConverter::Conversion conversion);
+    // The same for snapshots' pictures; before any snapshot is taken.
+    void setSnapshotConversionForTests(SnapshotConverter::Conversion conversion);
+    // Live results that reached the window, and those it showed rather than dropped as stale.
+    struct LiveResultCounts {
+        std::uint64_t received = 0;
+        std::uint64_t applied = 0;
+    };
+    LiveResultCounts liveResultCountsForTests() const;
+    // The UI thread's time spent on live frames so far: taking them and applying their results.
+    std::chrono::nanoseconds liveUiTimeForTests() const;
 
 signals:
     void restoreFinished(); // the stored images are back, or there were none to restore
@@ -107,6 +127,11 @@ private:
     void showLatestEntry();
     void setLogOpen(bool open);
     void onImageReceived(const visual_debug::ImageMessage& message);
+    void addSnapshot(SnapshotResult result);
+    // An entry just added: logged, listed, stored if kept, and whatever it evicted dropped. `cutFrom` is
+    // where a snapshot was cut from its frame, for the log.
+    void listAdded(const viewer_core::ImageHistory::AddResult& added, const viewer_core::ImageOrigin& origin,
+                   std::optional<cv::Rect> cutFrom);
     std::optional<viewer_core::ImageId> adoptRestored(const StoredImage& image);
     void onRestoreFinished(int restored, int skipped, int dropped);
     void setKeepImages(bool keep);
@@ -123,7 +148,8 @@ private:
     void showPicture(const QImage& picture, ImageView::KeepView keep, QSize imageSize,
                      const viewer_core::ImageTags& tags);
     void setShowClipping(bool show);
-    // The histogram strip: of the original in view, only while Show Histogram is on.
+    // The histogram strip for the still in view, only while Show Histogram is on; nothing in view hides it. A
+    // live channel's comes with each converted frame instead.
     void updateHistogram();
     void setHistogramShown(bool shown);
     void applyDraggedRange(viewer_core::DisplayRange range, bool hdr);
@@ -139,9 +165,16 @@ private:
     cv::Mat thumbnailPicture(viewer_core::ImageId id, QSize deviceSize) const; // for the thumbnails' maker
     void takeLiveFrames();
     void showLiveChannel(const std::string& name);
-    void drawLiveFrame(ImageView::KeepView keep);  // the shown channel's frame, counted as drawn
-    bool paintLiveFrame(ImageView::KeepView keep); // the same, not counted: for a zoom or resize
-    cv::Size liveDrawnSize(const cv::Mat& frame, ImageView::KeepView keep) const;
+    // Every change of what the view shows goes through here first, so a live result made for what was in view
+    // before is recognised as stale and dropped.
+    void viewChanged();
+    // The shown channel's frame to the converter, at the size it will be drawn; a frame whose job a newer
+    // frame's replaced before any of its pictures was drawn counts as skipped.
+    void submitLiveFrame(ImageView::KeepView keep);
+    // A converted frame onto the view and the histogram strip, counted as drawn once per frame; dropped
+    // unless its channel is still in view and nothing else took the view meanwhile.
+    void applyLiveResult(LiveResult result);
+    cv::Size liveDrawnSize(cv::Size frameSize, ImageView::KeepView keep) const;
     void redrawLiveFrameForScale();
     void showLiveText(Clock::time_point now); // the shown channel's info strip
     void updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now);
@@ -198,14 +231,26 @@ private:
     std::optional<viewer_core::ImageId> m_lastHistoryId; // shown again when the channel in its place closes
     viewer_core::LiveChannels m_live;
     std::optional<std::string> m_liveChannel; // shown instead of m_currentId
-    bool m_showClipping = false;              // for the view only, for this session
+    LiveConversion m_liveConversion;
+    // Reset first when closing: their threads may still be converting.
+    std::unique_ptr<LiveConverter> m_converter;
+    std::unique_ptr<SnapshotConverter> m_snapshots;
+    std::uint64_t m_viewCounter = 0; // bumped by viewChanged
+    // Per channel, frames whose job a newer frame's replaced, not yet drawn: a job for one of them may still
+    // be converting, so whether it was skipped is known only when a newer frame's picture is applied.
+    std::map<std::string, std::set<std::uint64_t>> m_replacedFrames;
+    LiveResultCounts m_liveResultCounts;
+    std::chrono::nanoseconds m_liveUiTime{0};
+    int m_liveUiDepth = 0;       // an immediate result is applied inside the take: counted once
+    bool m_showClipping = false; // for the view only, for this session
     // The rows' pictures, by channel, with the frame count each was made at: a picture is made again only
     // for a newer frame.
     std::map<std::string, std::pair<std::uint64_t, QImage>> m_rowPictures;
     std::set<std::string> m_mutedChannels;   // by name, for this session: closed and back, still muted
     std::set<std::string> m_refusedChannels; // logged once each, until the name starts a channel
     bool m_unnamedRefusals = false;          // refused beyond those, so the next rejection line counts them
-    // Each channel's arrived and dropped totals when it last started, so its idle line counts that stretch.
+    // Each channel's arrived and lost (dropped and skipped) totals when it last started, so its idle line
+    // counts that stretch.
     std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> m_startCounts;
     QTimer* m_liveTimer = nullptr;
     QTimer* m_rejectionTimer = nullptr; // running for a second after a rejection line

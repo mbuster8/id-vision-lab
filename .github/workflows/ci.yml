@@ -53,6 +53,15 @@ jobs:
 
       - uses: ./.github/actions/install-ubuntu-deps
 
+      # Ubuntu's own numpy, pyzmq, pytest and black, installed with the other packages; the versions are printed
+      # because they are the ones the sender is tested with.
+      - name: Python sender, format and tests
+        run: |
+          python3 -c 'import sys, numpy, zmq, pytest; print("Python", sys.version.split()[0], "numpy", numpy.__version__, "pyzmq", zmq.__version__, "pytest", pytest.__version__)'
+          black --version
+          black --check python
+          python3 -m pytest python/tests -q
+
       - name: Configure, build and test (debug)
         run: |
           cmake --preset debug

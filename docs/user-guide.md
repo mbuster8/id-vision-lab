@@ -18,7 +18,8 @@ programs are `.exe` files under `build\windows-debug`, and take the same options
 | `live_sender` | Streams a camera, a video file or a moving test pattern to the viewer as two live channels, the frames and their Canny edges, named after the source (`camera 0`, the video file's name) or as you name them. With `--hdr`, a phone's HDR video goes as 16-bit frames with its HDR tags; with `--outline`, each frame carries the outline of a card held to the camera as an overlay. It has no window of its own: the viewer shows the stream (see [Running live_sender](#running-live_sender) and the [tour of live channels](live-channels-tour.md)). |
 
 All senders reach the viewer through the `visual_debug` library, over ZeroMQ on `tcp://127.0.0.1:7139` by
-default. Start the viewer first.
+default; from Python, `python/visual_debug.py` does the same (see [Sending from Python](#sending-from-python)).
+Start the viewer first.
 
 ## Running the viewer
 
@@ -213,7 +214,7 @@ build\windows-debug\apps\visual_debug_viewer.exe --endpoint tcp://127.0.0.1:7140
 | **Image → Show Overlays** (⇧⌘O, or O) | Draw the shapes a sender attached to the image or frame over it, or hide them; on at every start (see [Overlays](#overlays)). O works from anywhere but a text field. Also the info strip's **◩ overlays** button. |
 | **Image → Show Histogram** (⇧⌘H) | Show or hide a strip under the info strip with a histogram of the image or frame in view and the range in use drawn on it, whose ends you can drag (see [Display range and colours](#display-range-and-colours)). Off at the first start; the choice is kept. |
 | **Image → Freeze** (⇧⌘T, or Space) | Keep a live channel's frame in view while frames go on arriving; again to show the newest. Space freezes from anywhere but a text field or a button that has the keyboard focus, which Space presses instead. Only while a live channel is shown (see [Live channels](#live-channels)). |
-| **Image → Snapshot** (⌘T) | Copy the live frame in view into the history, as `camera 14:03:22.517`. Only while a live channel is shown. |
+| **Image → Snapshot** (⌘T) | Copy what is in view of the live frame into the history, as `camera 14:03:22.517`: zoomed in, the visible area; fitted, the whole frame. Only while a live channel is shown. |
 | **View → Appearance** | **System** (the default) follows the system's light or dark appearance; **Light** and **Dark** keep one whatever the system does. The choice is kept, and the example sender shares it (see [Running the example sender](#running-the-example-sender)). Needs Qt 6.8 or newer: built with older Qt, the menu is absent and both programs follow the system. |
 | **History → Keep Images Between Sessions** | Store the history on disk, for every viewer (see [Keeping images between sessions](#keeping-images-between-sessions)). |
 | **History → Clear History…** | Delete every image in this viewer, in memory and on disk, after asking. |
@@ -315,17 +316,22 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
 - **The info strip** shows, for example,
   `camera  live · 1920×1080 · 3 ch · 8U · 30 fps in · 30 drawn · 12 dropped · 18 ms`: the state, the frame's
   size and type (and its description, if the sender gave one: see [The info strip](#the-info-strip)), the
-  frames that arrived and the frames the view drew in the last second, the frames dropped
-  since the channel's row appeared, idle spells included (a newer frame arrived before the view could take
-  the older one), and the frame's
+  frames that arrived and the frames the view drew in the last second (a frame drawn again for a new range or
+  a zoom counts once), the frames dropped since the channel's row appeared, idle spells included (frames that
+  never reached the screen: a newer frame arrived before the viewer could take the older one, or before it
+  had converted it for the screen), and the frame's
   age: the time it arrived minus the time the sender stamped on it. The age compares two clocks, so it means
   something only when sender and viewer run on one computer; a frame without a stamp shows none. The counters
   refresh twice a second.
 - **Freeze** (**Image → Freeze**, ⇧⌘T, Space, or the strip's **Freeze** button) keeps the frame in view while
   frames go on arriving and being counted; freezing again shows the newest. Each channel is frozen on its own.
-- **Snapshot** (**Image → Snapshot**, ⌘T, or the strip's **Snapshot** button) copies the frame in view, frozen
-  or not, into the history as `camera 14:03:22.517`, its arrival time to the millisecond, with the channel's
-  range and colours. The channel stays in view. Snapshots stay in memory, even with Keep Images Between
+- **Snapshot** (**Image → Snapshot**, ⌘T, or the strip's **Snapshot** button) copies what is in view of the
+  frame, frozen or not, into the history as `camera 14:03:22.517`, its arrival time to the millisecond, with the
+  channel's range and colours. Zoomed in, that is the area in view, every pixel at least partly visible, cut from
+  the original at full resolution with the shapes over it, and the log says where it was cut (`cut from the
+  frame at 812, 400`); its readout counts from the cut's corner. Fitted, it is the whole frame. The snapshot
+  is prepared beside the window, so the stream goes on meanwhile and the snapshot is listed a moment later,
+  without taking the view. The channel stays in view. Snapshots stay in memory, even with Keep Images Between
   Sessions on.
 - **Muting.** A channel you do not want to see, such as a second camera, can be muted: hover its row and
   click the eye with a stroke through it (it also shows on the row in view), or right-click the row and
@@ -351,6 +357,11 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
   shrunk to the drawn size before it is coloured and drawn, instead of being converted whole and scaled on
   screen; zooming or resizing the window redraws it at the new size. Zoomed in to 1:1 or closer, the whole
   frame is converted. The readout, Copy Image, Save As and Snapshot always use the full frame.
+- **Converted beside the window.** The channel in view is converted for the screen, and its histogram
+  counted, on a thread of its own, so the window stays free to draw and to answer the mouse while frames
+  stream. When frames come faster than they can be converted, the newest waits and older ones are skipped,
+  counted as dropped. The readout, region statistics and Freeze use the newest frame taken, which can be a
+  frame ahead of the picture for the few milliseconds its conversion takes.
 
 ### The info strip
 
@@ -687,10 +698,71 @@ with no viewer listening and 21 with one).
 
 To try every live feature in turn, follow the [tour of live channels](live-channels-tour.md).
 
+## Sending from Python
+
+`python/visual_debug.py` is the same sender in pure Python, for notebooks and scripts: one module that sends
+numpy arrays in the same wire format, with the same optional fields and overlays and the same results as the
+C++ library. It needs Python 3.10 or newer, numpy and pyzmq. Install it into an environment of your own, or copy
+the file next to your notebook:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e python          # from the repository root; brings numpy and pyzmq
+```
+
+```python
+import numpy as np
+import visual_debug as vd
+
+ramp = (np.arange(480 * 640) % 1024).reshape(480, 640).astype(np.uint16)  # 10-bit values in 16 bits
+found = [
+    vd.Rectangle(40, 30, 200, 120, label="box"),
+    vd.Polygon([(300, 50), (420, 80), (360, 200)], label="region", colour=vd.OVERLAY_RED),
+]
+print(vd.send_image(ramp, "ramp", value_range=(0, 1023), overlays=found))
+print(vd.send_image(ramp > 512, "mask"))  # bool: sent as 0 and 255
+print(vd.send_live(np.zeros((240, 320, 3), np.uint8), "camera"))
+print(vd.send_image(np.arange(12, dtype=np.int64).reshape(3, 4), "int64"))
+```
+
+```text
+Delivered
+Delivered
+Delivered
+Invalid image
+```
+
+- **Arrays**: `(rows, cols)` or `(rows, cols, channels)` with 1 to 4 channels, any strides or byte order.
+  `uint8`, `int8`, `uint16`, `int16`, `int32`, `float32` and `float64` go as 8U to 64F; `bool` as 8U with
+  `True` as 255; `float16` as 32F. `int64`, which `np.arange` gives by default on most platforms, and the
+  other types return `Invalid image` rather than being narrowed silently: convert with `astype(np.int32)` or
+  `astype(np.float32)` when the values fit.
+- **Colour order**: BGR(A), as OpenCV holds images. An array in RGB(A) order, as Pillow, imageio and
+  matplotlib give, needs `rgb=True`, which swaps red and blue for three and four channels.
+- **Keywords**, as in C++: `value_range=(0, 1023)`, `transfer="sdr"`, `"hlg"` or `"pq"`,
+  `primaries="bt709"` or `"bt2020"`, and `overlays`: `vd.Polygon(points)` (pairs, an (N, 2) array, or an
+  OpenCV contour from `cv2.findContours`), `vd.Rectangle(x, y, width, height)`, `vd.Circle(x, y, radius)` and
+  `vd.Point(x, y)`, each with an optional `label` and a `colour` of `"#RRGGBB"` (`vd.OVERLAY_GREEN` by default,
+  `vd.OVERLAY_RED`, `vd.OVERLAY_AMBER`). Overlays the viewer would refuse are left out, as in C++.
+- **Results**: every send returns a `vd.SendResult` (`DELIVERED`, `VIEWER_UNAVAILABLE`, `REJECTED`,
+  `INVALID_IMAGE`, `TIMEOUT`, `INVALID_ENDPOINT`), meaning what [Send results](#send-results) says; `str()`
+  gives the text shown above. The image and the viewer never raise; an argument of the wrong kind (a
+  `transfer` of `"hdr"`, a colour of `"red"`) raises `ValueError` or `TypeError` at once, as a programming
+  error.
+- **Clients**: `send_image` and `send_live` share one client, made on first use with the endpoint of
+  `VISUAL_DEBUG_ENDPOINT`, and are safe from any thread. For other options,
+  `vd.Client(endpoint, reply_timeout=0.5, retry_interval=1.0)` (in seconds) has `send` and `send_live` and
+  closes as a context manager; use one per thread. Pressing Ctrl+C during a send interrupts it, and the next
+  send starts afresh.
+
+`python/examples/demo.py` sends a gradient, the ramp above, a card with overlays and a short live sequence:
+`python3 python/examples/demo.py`, with `--endpoint` for a viewer on another port.
+
 ## Configuration
 
 `VISUAL_DEBUG_ENDPOINT` sets the endpoint for `sendImage()`, `sendLive()`, the example sender,
-`pipeline_demo`, `live_sender` and the viewer alike, so they find each other without configuration. An empty
+`pipeline_demo`, `live_sender`, the Python sender's `send_image()` and `send_live()`, and the viewer alike, so
+they find each other without configuration. An empty
 value counts as unset. An app started with
 `open` does not see your shell's variables: use `open --env VISUAL_DEBUG_ENDPOINT=… <app>`, or the
 viewer's `--endpoint` option.

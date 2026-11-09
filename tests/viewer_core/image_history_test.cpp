@@ -47,6 +47,45 @@ TEST(ImageHistory, DisplayPictureUsesTheTags) {
     EXPECT_EQ(entry->origin.tags.valueRange, (viewer_core::DisplayRange{0, 65535}));
 }
 
+// The picture an entry keeps is historyDisplay's, so it can be made beforehand on another thread.
+TEST(ImageHistory, HistoryDisplayIsThePictureAnEntryKeeps) {
+    ImageHistory history;
+    cv::Mat image(3, 4, CV_16UC3);
+    cv::randu(image, cv::Scalar::all(0), cv::Scalar::all(65536));
+
+    const auto id = history.add("phone", image, {.tags = kHlgTags}).id;
+
+    const cv::Mat made = viewer_core::historyDisplay(image, kHlgTags);
+    ASSERT_EQ(made.type(), CV_8UC4);
+    EXPECT_EQ(cv::norm(made, history.find(id)->display, cv::NORM_INF), 0.0);
+}
+
+TEST(ImageHistory, AddTakesAPictureMadeBeforehand) {
+    ImageHistory history;
+    const cv::Mat image = greyImage(3, 4);
+    const cv::Mat display = viewer_core::historyDisplay(image, {});
+
+    const auto added = history.add("still", image, display, {.arrivedAt = at(5)});
+
+    const auto* entry = history.find(added.id);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->display.data, display.data); // kept, not made again
+    EXPECT_EQ(entry->summary, viewer_core::describeImage(image));
+    EXPECT_EQ(entry->origin.modifiedAt, at(5));
+    EXPECT_EQ(history.totalBytes(), viewer_core::entryBytes(image));
+}
+
+TEST(ImageHistory, AddRefusesAPictureOfAnotherImage) {
+    ImageHistory history;
+    const cv::Mat image = greyImage(3, 4);
+
+    EXPECT_THROW(history.add("a", image, viewer_core::historyDisplay(greyImage(4, 3), {})),
+                 std::invalid_argument);
+    EXPECT_THROW(history.add("b", image, cv::Mat(3, 4, CV_8UC3)), std::invalid_argument);
+    EXPECT_EQ(history.size(), 0U);
+    EXPECT_EQ(history.totalBytes(), 0U);
+}
+
 TEST(ImageHistory, DuplicateKeepsTheTags) {
     ImageHistory history;
     const auto id = history.add("phone", greyImage(), {.tags = kHlgTags}).id;

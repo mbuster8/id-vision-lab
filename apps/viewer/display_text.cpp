@@ -61,7 +61,7 @@ QString liveDetails(const QString& summary, const viewer_core::LiveChannel& chan
                        .arg(state, withTags(summary, channel.shownTags))
                        .arg(stats.arrivedPerSecond)
                        .arg(stats.drawnPerSecond)
-                       .arg(channel.dropped);
+                       .arg(channel.dropped + channel.skipped);
     if (stats.age) {
         text += QCoreApplication::translate("ImageInfoBar", " · %1 ms").arg(stats.age->count());
     }

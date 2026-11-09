@@ -2,7 +2,15 @@
 
 This is the authoritative description of what `visual_debug` sends to the viewer. A sender written in any
 language can talk to the viewer from this page alone. The C++ implementation is
-`libs/visual_debug/src/wire_format.cpp`; its tests are `tests/visual_debug/wire_format_test.cpp`.
+`libs/visual_debug/src/wire_format.cpp`; its tests are `tests/visual_debug/wire_format_test.cpp`. The Python
+implementation is `python/visual_debug.py` (see [Sending from Python](user-guide.md#sending-from-python)).
+
+Both write the headers of `tests/wire/header_cases.json` byte for byte: a GoogleTest
+(`tests/visual_debug/header_cases_test.cpp`) and a pytest (`python/tests/test_golden_headers.py`) check every
+case, so the two senders stay in step; the cases include this page's examples. For other inputs the two write
+headers that read back as the same values, not always the same bytes: nlohmann::json writes a double with
+Grisu2, which is not always its shortest form, and Python writes the shortest, so a rare 17-digit value may
+differ in its last digit while both parse to the same double.
 
 ## Transport
 
@@ -223,9 +231,10 @@ hostile header cannot make the reply itself fail to encode.
 | `viewer paused` | The viewer is paused: it keeps its port but takes no images until resumed. Sent for every request while paused, before any other check. |
 | `internal error` | An unexpected failure in the viewer; it keeps running. |
 
-The C++ client reports any error reply as `SendResult::Rejected`.
+The C++ client reports any error reply as `SendResult::Rejected`, and the Python one as
+`SendResult.REJECTED`.
 
-A reply may be at most 64 KiB; the C++ client refuses anything larger, so whatever answers on the port
+A reply may be at most 64 KiB; both clients refuse anything larger, so whatever answers on the port
 cannot push a large message into the host application.
 
 ## Versioning rule

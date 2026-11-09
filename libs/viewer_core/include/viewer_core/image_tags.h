@@ -35,6 +35,10 @@ struct ImageTags {
 // The list as ImageTags holds it: null for an empty one.
 ImageTags::Overlays makeOverlays(std::vector<Overlay> overlays);
 
+// The tags of a part of an image whose top-left corner is at `origin`: the shapes moved by -origin, so they
+// stay over the same pixels; everything else as it was.
+ImageTags tagsForCrop(const ImageTags& tags, cv::Point origin);
+
 // The settings an image is shown with until the user picks others.
 DisplaySettings defaultSettings(const ImageTags& tags);
 

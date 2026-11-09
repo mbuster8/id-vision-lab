@@ -6,8 +6,9 @@ description: Run ID Vision Lab's CI pipeline on this machine before anything is 
 # Local CI
 
 `scripts/check.sh` runs what `.github/workflows/ci.yml` runs, so a push meets no surprises. CI has four jobs:
-macOS (debug and asan), Ubuntu 24.04 (debug, the build without Qt, and a coverage report built with Clang),
-Windows (windows-debug) and clang-format. The script runs macOS and clang-format natively and the Ubuntu job in a container built from
+macOS (debug and asan), Ubuntu 24.04 (the Python sender's black check and pytest with Ubuntu's own packages,
+then debug, the build without Qt, and a coverage report built with Clang), Windows (windows-debug) and
+clang-format. The script runs macOS and clang-format natively and the Ubuntu job in a container built from
 `docker/ubuntu-24.04.Dockerfile`. The Windows job and CodeQL are not reproduced here.
 
 | Command | What it runs |
@@ -22,6 +23,8 @@ Windows (windows-debug) and clang-format. The script runs macOS and clang-format
   failures so far have come from Linux only (a locale) and from load only (a race), which a quick run misses.
 - While iterating on one change: `--quick`, then the full run before handing the work back.
 - Reproducing a failure seen only on CI's Ubuntu job: `--linux`.
+- A change to `python/` only: `python/.venv/bin/black --check python` and `python/.venv/bin/python -m pytest
+  python/tests` here, then `--linux`, which runs them with Ubuntu's older numpy, pyzmq and pytest.
 - A change to Markdown only needs no run; say so rather than spending minutes on it.
 
 ## Running it
