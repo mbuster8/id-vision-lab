@@ -9,19 +9,23 @@ add_library(frame_io STATIC
     include/frame_io/image_folder.h
     include/frame_io/read_ahead.h
     include/frame_io/recording.h
+    include/frame_io/replay_pacer.h
     include/frame_io/replay_source.h
     include/frame_io/video_file.h
     include/frame_io/video_source.h
+    include/frame_io/yuv.h
     src/capture.cpp
     src/file_sequence.h
     src/frame.cpp
     src/image_folder.cpp
     src/recording_source.cpp
     src/recording_writer.cpp
+    src/replay_pacer.cpp
     src/tags_json.cpp
     src/tags_json.h
     src/video_file.cpp
-    src/video_source.cpp)
+    src/video_source.cpp
+    src/yuv.cpp)
 add_library(frame_io::frame_io ALIAS frame_io)
 
 target_include_directories(frame_io PUBLIC

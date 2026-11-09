@@ -66,9 +66,11 @@ id_vision_lab_add_test_executable(frame_io_tests
         frame_io/image_folder_test.cpp
         frame_io/read_ahead_test.cpp
         frame_io/recording_test.cpp
+        frame_io/replay_pacer_test.cpp
         frame_io/scratch_folder.h
         frame_io/video_file_test.cpp
         frame_io/video_source_test.cpp
+        frame_io/yuv_test.cpp
         ${frame_io_ffmpeg_tests}
     LIBRARIES
         frame_io::frame_io
