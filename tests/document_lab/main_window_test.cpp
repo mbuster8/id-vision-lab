@@ -19,6 +19,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSettings>
+#include <QSlider>
 #include <QSplitter>
 #include <QTest>
 #include <QTreeWidget>
@@ -929,6 +930,143 @@ TEST(LabWindow, ReplayControlsFollowTheSource) {
 #endif
     EXPECT_TRUE(button(lab, "restartButton")->isEnabled());
     EXPECT_TRUE(lab.status().contains(QStringLiteral("clip.avi"))) << lab.status().toStdString();
+}
+
+// --- Seeking
+// ------------------------------------------------------------------------------------------------
+
+TEST(LabPosition, Formats) {
+    using std::chrono::seconds;
+    EXPECT_EQ(document_lab::formatPosition(seconds(16), seconds(25)), QStringLiteral("0:16 / 0:25"));
+    EXPECT_EQ(document_lab::formatPosition(seconds(3723), seconds(4200)),
+              QStringLiteral("1:02:03 / 1:10:00"));
+    EXPECT_EQ(document_lab::formatPosition(seconds(300), seconds(4200)), QStringLiteral("0:05:00 / 1:10:00"));
+    EXPECT_EQ(document_lab::formatPosition(16900ms, seconds(25)), QStringLiteral("0:16 / 0:25")); // truncated
+}
+
+// `count` 4×3 frames at 30 a second.
+std::vector<frame_io::ReadResult> thirtyASecond(int count) {
+    return test_support::framesApart(count, std::chrono::nanoseconds(1'000'000'000 / 30));
+}
+
+QSlider* slider(const Lab& lab) { return lab.window->findChild<QSlider*>("positionSlider"); }
+QString position(const Lab& lab) { return lab.window->findChild<QLabel*>("positionLabel")->text(); }
+
+// A replay that can seek and has frames to seek in, paused on its first frame.
+void pausedReplay(Lab& lab, int frames, test_support::ListSource::Counters* counters) {
+    lab.window->startReplay(test_support::openerOf(thirtyASecond(frames), true, counters));
+    lab.pump();
+    button(lab, "playPauseButton")->click();
+    lab.pump();
+}
+
+// Dragging moves only the time; letting go seeks there.
+TEST(LabWindow, SliderFollowsAndSeeksOnRelease) {
+    Lab lab;
+    test_support::ListSource::Counters counters;
+    pausedReplay(lab, 300, &counters);
+    ASSERT_NE(slider(lab), nullptr);
+    EXPECT_TRUE(slider(lab)->isVisible());
+    EXPECT_EQ(slider(lab)->minimum(), 0);
+    EXPECT_EQ(slider(lab)->maximum(), 299);
+    EXPECT_EQ(position(lab), QStringLiteral("0:00 / 0:10"));
+
+    slider(lab)->setSliderDown(true);
+    slider(lab)->setValue(150);
+    lab.pump();
+    EXPECT_EQ(position(lab), QStringLiteral("0:05 / 0:10"));
+    EXPECT_EQ(counters.seeks, 0);
+
+    slider(lab)->setSliderDown(false);
+    lab.pump();
+
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(150));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("frame 151 of 300"))) << lab.status().toStdString();
+    EXPECT_EQ(slider(lab)->value(), 150);
+}
+
+// Ten seconds are ten seconds of the replay's own rate, within its first and last frame.
+TEST(LabWindow, TenSecondsBackAndForward) {
+    Lab lab;
+    test_support::ListSource::Counters counters;
+    pausedReplay(lab, 600, &counters);
+    slider(lab)->setValue(150); // not dragged: a click or a key seeks at once
+    lab.pump();
+    ASSERT_EQ(counters.lastSeek, std::optional<std::uint64_t>(150));
+
+    button(lab, "forward10Button")->click();
+    lab.pump();
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(450));
+
+    button(lab, "back10Button")->click();
+    lab.pump();
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(150));
+
+    slider(lab)->setValue(590);
+    lab.pump();
+    button(lab, "forward10Button")->click();
+    lab.pump();
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(599));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("frame 600 of 600"))) << lab.status().toStdString();
+}
+
+#if defined(FRAME_IO_HAS_FFMPEG)
+// A video read through FFmpeg steps back to the frame before, found by its time.
+TEST(LabWindow, StepBackForAVideo) {
+    const test_support::ScratchFolder files;
+    const std::filesystem::path video = videoFile(files);
+    Lab lab([&video](LabDependencies& dependencies) {
+        dependencies.chooseFile = [&video] { return qtPath(video); };
+    });
+    button(lab, "openFileButton")->click();
+    ASSERT_TRUE(pumpUntilShown(lab, 1));
+    button(lab, "playPauseButton")->click();
+    button(lab, "stepButton")->click();
+    ASSERT_TRUE(pumpUntilShown(lab, 2));
+    button(lab, "stepButton")->click();
+    ASSERT_TRUE(pumpUntilShown(lab, 3));
+    ASSERT_TRUE(lab.status().contains(QStringLiteral("frame 3 of 5"))) << lab.status().toStdString();
+
+    button(lab, "stepBackButton")->click();
+
+    ASSERT_TRUE(pumpUntilShown(lab, 4));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("frame 2 of 5"))) << lab.status().toStdString();
+}
+#endif
+
+// A video's seek can take a second at 4K: the status says so, and the handle waits on the target.
+TEST(LabWindow, SeekingShowsInTheStatus) {
+    Lab lab;
+    bool ready = true;
+    lab.window->startReplay([&ready](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<test_support::ListSource>(thirtyASecond(300), true, nullptr);
+        source->readyWhen = [&ready] { return ready; };
+        return source;
+    });
+    lab.pump();
+    button(lab, "playPauseButton")->click();
+    lab.pump();
+
+    ready = false;
+    slider(lab)->setValue(200);
+    lab.pump();
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("seeking…"))) << lab.status().toStdString();
+    EXPECT_EQ(slider(lab)->value(), 200);
+
+    ready = true;
+    lab.pump();
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("seeking…"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, SliderHiddenForACamera) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    lab.backend->deliver(cameraFrame(120));
+    lab.pump();
+
+    EXPECT_FALSE(slider(lab)->isVisible());
+    EXPECT_FALSE(button(lab, "back10Button")->isEnabled());
+    EXPECT_FALSE(button(lab, "forward10Button")->isEnabled());
 }
 
 // Space plays and pauses, unless a button has the focus: then it presses that button.

@@ -34,6 +34,7 @@ class QEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSlider;
 class QSplitter;
 class QTimer;
 class QTreeWidget;
@@ -41,6 +42,9 @@ class QTreeWidget;
 namespace document_lab {
 
 using Clock = std::chrono::steady_clock;
+
+// "0:16 / 0:25", or "1:02:03 / 1:10:00" from an hour: a replay's position and its length, seconds truncated.
+QString formatPosition(std::chrono::nanoseconds at, std::chrono::nanoseconds length);
 
 // Everything the window would otherwise make or ask for itself, so that its tests can run it without cameras,
 // threads, dialogs or a disk that fills up.
@@ -134,7 +138,10 @@ private:
     void openFolder();
     void openReplay(const QString& path);
     void togglePlay();
+    void seekSeconds(int seconds); // back when negative, at the replay's own rate
+    void sliderChanged(int value);
     void updateReplayControls(const lab_core::EngineStatus& status);
+    void updatePosition(const lab_core::EngineStatus& status);
 
     // Recording and capture.
     QString labFolder() const;
@@ -172,9 +179,15 @@ private:
     QPushButton* m_restart = nullptr;
     QPushButton* m_loop = nullptr;
     QPushButton* m_asFast = nullptr;
+    QPushButton* m_back10 = nullptr;
+    QPushButton* m_forward10 = nullptr;
+    QSlider* m_slider = nullptr;
+    QLabel* m_position = nullptr;
     QAction* m_playPauseAction = nullptr;
     QAction* m_stepAction = nullptr;
     QAction* m_stepBackAction = nullptr;
+    QAction* m_back10Action = nullptr;
+    QAction* m_forward10Action = nullptr;
     QPushButton* m_record = nullptr;
     QPushButton* m_capture = nullptr;
     QPushButton* m_openLabFolder = nullptr;

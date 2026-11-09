@@ -35,8 +35,10 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPointer>
+#include <QProxyStyle>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -105,6 +107,18 @@ QString processorLabel(lab_core::ProcessorKind kind) {
     return qtString(lab_core::nameOf(kind));
 }
 
+// A click beside a slider's handle jumps there, rather than a page at a time.
+class JumpingSliderStyle : public QProxyStyle {
+public:
+    int styleHint(StyleHint hint, const QStyleOption* option, const QWidget* widget,
+                  QStyleHintReturn* returnData) const override {
+        if (hint == QStyle::SH_Slider_AbsoluteSetButtons) {
+            return Qt::LeftButton;
+        }
+        return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+};
+
 // A checkable button whose icon shows whether it is on (the accent colour), whatever the style draws.
 QPushButton* makeToggle(const QString& text, qt_common::OutlineIcon icon, const QString& toolTip,
                         const char* name, QWidget* parent) {
@@ -142,6 +156,22 @@ QString stateText(lab_core::EngineState state) {
 }
 
 } // namespace
+
+QString formatPosition(std::chrono::nanoseconds at, std::chrono::nanoseconds length) {
+    const bool hours = length >= std::chrono::hours(1);
+    const auto text = [hours](std::chrono::nanoseconds time) {
+        const long long seconds =
+            std::max<long long>(0, std::chrono::duration_cast<std::chrono::seconds>(time).count());
+        if (hours) {
+            return QStringLiteral("%1:%2:%3")
+                .arg(seconds / 3600)
+                .arg(seconds / 60 % 60, 2, 10, QLatin1Char('0'))
+                .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+        }
+        return QStringLiteral("%1:%2").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    };
+    return text(at) + QStringLiteral(" / ") + text(length);
+}
 
 LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     : QMainWindow(parent), m_dependencies(std::move(dependencies)) {
@@ -275,20 +305,39 @@ void LabWindow::buildUi() {
     m_asFast = makeToggle(tr("As fast as possible"), OutlineIcon::Fast,
                           tr("Process every frame as soon as the last is done, not at the video's pace"),
                           "asFastCheck", central);
-    for (QWidget* control :
-         std::initializer_list<QWidget*>{m_playPause, m_stepBack, m_step, m_restart, m_loop, m_asFast}) {
+    m_back10 = makeButton(tr("10 s"), qt_common::makeOutlineIcon(OutlineIcon::Back10),
+                          tr("Ten seconds back (Shift+←)"), "back10Button", central);
+    m_forward10 = makeButton(tr("10 s"), qt_common::makeOutlineIcon(OutlineIcon::Forward10),
+                             tr("Ten seconds forward (Shift+→)"), "forward10Button", central);
+    for (QWidget* control : std::initializer_list<QWidget*>{m_playPause, m_stepBack, m_step, m_back10,
+                                                            m_forward10, m_restart, m_loop, m_asFast}) {
         replayRow->addWidget(control);
     }
-    replayRow->addStretch();
+    // Where the replay is: a click beside the handle jumps there, as a video player's does.
+    m_slider = new QSlider(Qt::Horizontal, central);
+    m_slider->setObjectName(QStringLiteral("positionSlider"));
+    m_slider->setStyle(new JumpingSliderStyle);
+    m_slider->style()->setParent(m_slider);
+    m_slider->setToolTip(tr("Drag, or click, to go to another frame"));
+    m_slider->hide();
+    replayRow->addWidget(m_slider, 1);
+    m_position = new QLabel(central);
+    m_position->setObjectName(QStringLiteral("positionLabel"));
+    replayRow->addWidget(m_position);
     layout->addLayout(replayRow);
-    // Keys for the replay: Space, → and ←, from anywhere in the window but a focused button (eventFilter).
+    // Keys for the replay: Space, → and ←, Shift+→ and Shift+←, from anywhere in the window but a focused
+    // button (eventFilter).
     m_playPauseAction = new QAction(tr("Play or Pause"), this);
     m_playPauseAction->setShortcut(QKeySequence(Qt::Key_Space));
     m_stepAction = new QAction(tr("Step"), this);
     m_stepAction->setShortcut(QKeySequence(Qt::Key_Right));
     m_stepBackAction = new QAction(tr("Step Back"), this);
     m_stepBackAction->setShortcut(QKeySequence(Qt::Key_Left));
-    addActions({m_playPauseAction, m_stepAction, m_stepBackAction});
+    m_back10Action = new QAction(tr("Ten Seconds Back"), this);
+    m_back10Action->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Left));
+    m_forward10Action = new QAction(tr("Ten Seconds Forward"), this);
+    m_forward10Action->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Right));
+    addActions({m_playPauseAction, m_stepAction, m_stepBackAction, m_back10Action, m_forward10Action});
 
     auto* processingRow = new QHBoxLayout;
     processingRow->addWidget(new QLabel(tr("Processor:"), central));
@@ -425,6 +474,13 @@ void LabWindow::buildUi() {
     connect(m_stepBack, &QPushButton::clicked, this, [this] { m_engine->stepBack(); });
     connect(m_stepBackAction, &QAction::triggered, this, [this] { m_engine->stepBack(); });
     connect(m_restart, &QPushButton::clicked, this, [this] { m_engine->restart(); });
+    connect(m_back10, &QPushButton::clicked, this, [this] { seekSeconds(-10); });
+    connect(m_back10Action, &QAction::triggered, this, [this] { seekSeconds(-10); });
+    connect(m_forward10, &QPushButton::clicked, this, [this] { seekSeconds(10); });
+    connect(m_forward10Action, &QAction::triggered, this, [this] { seekSeconds(10); });
+    // While dragged, only the time follows; let go, or a click or a key, and it seeks.
+    connect(m_slider, &QSlider::valueChanged, this, &LabWindow::sliderChanged);
+    connect(m_slider, &QSlider::sliderReleased, this, [this] { sliderChanged(m_slider->value()); });
     connect(m_loop, &QPushButton::toggled, this, [this](bool on) { m_engine->setLoop(on); });
     connect(m_asFast, &QPushButton::toggled, this, [this](bool on) { m_engine->setAsFastAsPossible(on); });
     connect(m_resultsAction, &QAction::toggled, this, &LabWindow::showResultsPanel);
@@ -943,6 +999,9 @@ void LabWindow::refreshStatus() {
                             .arg(QString::fromStdString(link.lastStillName),
                                  qtString(visual_debug::toString(*link.lastStill))));
     }
+    if (status.seeking) {
+        parts << tr("seeking…");
+    }
     if (status.busyFrame && status.busySince && at - *status.busySince >= kBusyShownAfter) {
         parts << tr("processing frame %1 for %2 s")
                      .arg(*status.busyFrame + 1)
@@ -1041,8 +1100,72 @@ void LabWindow::togglePlay() {
     }
 }
 
+void LabWindow::seekSeconds(int seconds) {
+    const lab_core::EngineStatus status = m_engine->status();
+    if (!m_running || m_cameraRunning || !status.canSeek || !status.frameRate) {
+        return;
+    }
+    m_engine->seekBy(std::llround(seconds * *status.frameRate));
+}
+
+// Set from the status with its signals blocked, so only the user's moves arrive here.
+void LabWindow::sliderChanged(int value) {
+    if (m_slider->isSliderDown()) {
+        updatePosition(m_engine->status()); // the time follows the drag
+        return;
+    }
+    if (m_running && !m_cameraRunning && value >= 0) {
+        m_engine->seek(static_cast<std::uint64_t>(value));
+    }
+}
+
+// The slider for a replay that can seek and has frames to seek in; the handle on the frame on screen, or on a
+// seek's target until its frame comes; the time of either, or of the frame dragged to, and the length.
+void LabWindow::updatePosition(const lab_core::EngineStatus& status) {
+    const bool replay = m_running && !m_cameraRunning;
+    const bool seekable = replay && status.canSeek && status.frameRate && *status.frameRate > 0.0 &&
+                          status.frameCount && *status.frameCount > 1;
+    m_slider->setVisible(seekable);
+    if (!seekable) {
+        m_position->clear();
+        return;
+    }
+    const double rate = *status.frameRate;
+    const auto timeOf = [rate](double frames) {
+        return std::chrono::nanoseconds(std::llround(frames * 1e9 / rate));
+    };
+    const std::chrono::nanoseconds length = timeOf(static_cast<double>(*status.frameCount));
+    if (m_slider->isSliderDown()) {
+        m_position->setText(formatPosition(timeOf(m_slider->value()), length));
+        return;
+    }
+    const std::optional<std::uint64_t> shown = status.seeking ? status.seekTarget : status.frameNumber;
+    {
+        const QSignalBlocker blocker(m_slider);
+        m_slider->setRange(0, static_cast<int>(std::min<std::uint64_t>(*status.frameCount - 1,
+                                                                       std::numeric_limits<int>::max())));
+        if (shown) {
+            m_slider->setValue(
+                static_cast<int>(std::min<std::uint64_t>(*shown, std::numeric_limits<int>::max())));
+        }
+    }
+    std::chrono::nanoseconds at{};
+    if (status.seeking && status.seekTarget) {
+        at = timeOf(static_cast<double>(*status.seekTarget));
+    } else if (m_current) {
+        at = m_current->frame.at;
+    }
+    m_position->setText(formatPosition(at, length));
+}
+
 void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
     const bool replay = m_running && !m_cameraRunning;
+    const bool jumps = replay && status.canSeek && status.frameRate.has_value();
+    m_back10->setEnabled(jumps);
+    m_forward10->setEnabled(jumps);
+    m_back10Action->setEnabled(jumps);
+    m_forward10Action->setEnabled(jumps);
+    updatePosition(status);
     const bool playing = status.state == lab_core::EngineState::Playing;
     m_playPause->setEnabled(replay);
     if (playing != (m_playPause->text() == tr("Pause"))) {
