@@ -3770,6 +3770,36 @@ TEST(MainWindowTest, FirstFrameOfAChannelIsFitted) {
                      view->deviceScaleFor(size, ImageView::KeepView::No));
 }
 
+// A frame arriving while a channel's first picture converts is drawn for the fitted view that picture brings,
+// not for the zoom of the picture still on screen: otherwise the fitted view would show only the part that
+// zoom had in view, with the background around it, until something drew again.
+TEST(MainWindowTest, AFrameArrivingWhileAFitConvertsIsDrawnForTheFit) {
+    test_support::Latch latch;
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    window.setLiveConversionForTests(holdingWhen(
+        latch, [](const LiveJob& job) { return job.channel == "b" && job.keep == ImageView::KeepView::No; }));
+    showSized(window);
+    feedLive(window, "a", fourK());
+    feedLive(window, "b", fourK()); // the same size
+    QApplication::processEvents();
+    ASSERT_TRUE(waitForLiveResults(window, 1));
+    auto* view = window.findChild<ImageView*>();
+    const std::uint64_t before = window.liveResultCountsForTests().received;
+    zoomIn(*view, QRectF(view->rect()).center());
+    ASSERT_TRUE(waitForLiveResults(window, before + 1));
+    ASSERT_NE(view->pictureArea(), QRect(0, 0, 4000, 3000)); // a's zoomed-in cut
+
+    chooseLiveRow(window, QStringLiteral("b")); // b's first job, to be fitted, is held converting
+    ASSERT_TRUE(latch.waitUntilEntered());
+    feedLive(window, "b", fourK());
+    QApplication::processEvents(); // b's next frame's job waits behind it
+    latch.release();
+    ASSERT_TRUE(waitForLiveResults(window, before + 3));
+
+    EXPECT_TRUE(view->pictureArea().contains(view->visibleArea()));
+}
+
 // A zoom whose job is still running, then a fit back: the picture ends at the fitted size, not the zoom's.
 TEST(MainWindowTest, ZoomBackWhileAJobRunsEndsAtTheRightSize) {
     test_support::Latch latch;
@@ -3978,21 +4008,30 @@ TEST(MainWindowMeasurement, DISABLED_LiveFrameCost) {
 }
 
 // How long a live frame takes from arrival to its picture in the view when zoomed in, which is the
-// conversion's time: 4K 16UC3 frames into a threaded window, HLG (shown as HDR) and untagged (Auto, which
-// takes the whole frame's range), each waited for until drawn, zoomed once (four wheel notches, below 1:1)
-// and past 1:1, the strip off and on; median of 60 frames each, and the area and picture converted. Run by
-// hand in a release build: --gtest_also_run_disabled_tests --gtest_filter=*ZoomedLiveFrameCost*
+// conversion's time: 4K frames into a threaded window, 16UC3 HLG (shown as HDR), 16UC3 untagged and 32FC3
+// untagged (Auto, which takes the whole frame's range), each waited for until drawn, zoomed once (four wheel
+// notches, below 1:1) and past 1:1, the strip off and on; median of 60 frames each, and the area and picture
+// converted. Run by hand in a release build: --gtest_also_run_disabled_tests
+// --gtest_filter=*ZoomedLiveFrameCost*
 TEST(MainWindowMeasurement, DISABLED_ZoomedLiveFrameCost) {
-    cv::Mat frame(2160, 3840, CV_16UC3);
-    cv::randu(frame, cv::Scalar::all(0), cv::Scalar::all(65536));
+    cv::Mat sixteenBit(2160, 3840, CV_16UC3);
+    cv::randu(sixteenBit, cv::Scalar::all(0), cv::Scalar::all(65536));
+    cv::Mat floats(2160, 3840, CV_32FC3);
+    cv::randu(floats, cv::Scalar::all(0.0), cv::Scalar::all(1.0));
     const QSize frameSize(3840, 2160);
     const auto median = [](std::vector<double> values) {
         std::sort(values.begin(), values.end());
         return values[values.size() / 2];
     };
-    for (const bool hlg : {true, false}) {
-        const visual_debug::ImageDescription description =
-            hlg ? kHlgDescription : visual_debug::ImageDescription{};
+    struct Kind {
+        const char* name;
+        cv::Mat frame;
+        visual_debug::ImageDescription description;
+    };
+    for (const Kind& kind : {Kind{"16UC3 HLG", sixteenBit, kHlgDescription},
+                             Kind{"16UC3 untagged", sixteenBit, {}}, Kind{"32FC3 untagged", floats, {}}}) {
+        const cv::Mat& frame = kind.frame;
+        const visual_debug::ImageDescription& description = kind.description;
         for (const bool pastOneToOne : {false, true}) {
             for (const bool strip : {false, true}) {
                 const auto window =
@@ -4022,7 +4061,7 @@ TEST(MainWindowMeasurement, DISABLED_ZoomedLiveFrameCost) {
                     ASSERT_TRUE(waitForNextResult(*window));
                     toView.push_back(static_cast<double>(timer.nsecsElapsed()) / 1e6);
                 }
-                std::cout << "[ zoomed live frame ] 4K 16UC3 " << (hlg ? "HLG" : "untagged") << ", threaded, "
+                std::cout << "[ zoomed live frame ] 4K " << kind.name << ", threaded, "
                           << (pastOneToOne ? "zoomed past 1:1" : "zoomed once") << " ("
                           << view->deviceScaleFor(frameSize, ImageView::KeepView::IfSameSize)
                           << " device pixels per frame pixel), strip " << (strip ? "on" : "off") << ": area "

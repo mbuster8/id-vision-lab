@@ -562,6 +562,24 @@ TEST(DisplayConverter, ClippingColoursStandOutFromTheMaps) {
     EXPECT_GE(distance(viewer_core::kClippedAbove, viewer_core::kClippedBelowMapped), 100.0);
 }
 
+// Auto's range is the extremes of the finite values across every channel, alpha included, in a frame large
+// enough to be split across threads; with nothing finite, 0 to 0.
+TEST(DisplayConverter, AutoRangeIsTheFiniteExtremesOfEveryChannel) {
+    constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
+    constexpr float kInfinity = std::numeric_limits<float>::infinity();
+    cv::Mat image(300, 400, CV_32FC4);
+    cv::randu(image, cv::Scalar::all(-2.0), cv::Scalar::all(3.0));
+    image.at<cv::Vec4f>(10, 10) = {kNan, kInfinity, -kInfinity, 1.0F};
+    image.at<cv::Vec4f>(250, 20)[3] = 7.5F;    // the highest is an alpha
+    image.at<cv::Vec4f>(120, 390)[1] = -4.25F; // the lowest a colour
+
+    EXPECT_EQ(viewer_core::autoRange(image), (viewer_core::DisplayRange{-4.25, 7.5}));
+    EXPECT_EQ(viewer_core::autoRange(cv::Mat(2, 3, CV_64FC1, cv::Scalar(kNan))),
+              (viewer_core::DisplayRange{0.0, 0.0}));
+    EXPECT_EQ(viewer_core::autoRange(cv::Mat(2, 3, CV_16UC4, cv::Scalar(100, 200, 300, 9))),
+              (viewer_core::DisplayRange{9.0, 300.0}));
+}
+
 // A part of a larger image, converted with the whole's Auto range, looks exactly as that part of the whole's
 // picture: what the viewer converts when only part of a live frame is in view.
 TEST(DisplayConverter, APartWithTheWholesAutoRangeLooksLikeThatPartOfTheWhole) {

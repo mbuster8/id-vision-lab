@@ -205,8 +205,8 @@ build/release/examples/live_sender/live_sender --pattern --size 3840x2160 --fps 
 
 Run one at a time. `drawn` in the info strip should keep up with `fps in`, with `dropped` growing slowly if
 at all; Activity Monitor shows the viewer's CPU. While a frame is drawn smaller than its own pixels, the
-viewer shrinks it to the drawn size before colouring and drawing it; zoomed in to 1:1 or closer, it converts
-the whole frame.
+viewer shrinks it to the drawn size before colouring and drawing it; zoomed in, it converts only the part in
+view and a margin around it.
 
 ## 9. HDR video
 

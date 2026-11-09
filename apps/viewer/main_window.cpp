@@ -1105,7 +1105,11 @@ void MainWindow::showLiveChannel(const std::string& name) {
     updateEditActions();
 }
 
-void MainWindow::viewChanged() { ++m_viewCounter; }
+// A fit still converting was for what was in view before; its result will be dropped.
+void MainWindow::viewChanged() {
+    ++m_viewCounter;
+    m_fitPending = false;
+}
 
 // Converted at the size it will be drawn when that is smaller than the frame: a 4K frame in a window costs no
 // more than the window's pixels. Zoomed in, only the part in view and a margin. The job shares the frame's
@@ -1119,6 +1123,12 @@ void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
     // Frames may change their channel count, or their tags.
     m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
     const std::uint64_t frameNumber = channel->shownNumber;
+    // While a fit converts, the zoom on screen is about to go: a picture cut for it would show only that part
+    // of the fitted view. Fitting again as well covers a fit whose conversion fails.
+    if (m_fitPending) {
+        keep = ImageView::KeepView::No;
+    }
+    m_fitPending = keep == ImageView::KeepView::No;
     const LiveDrawing drawing = liveDrawing(frame.size(), keep);
     std::optional<LiveJob> replaced =
         m_converter->submit({.viewCounter = m_viewCounter,
@@ -1173,9 +1183,10 @@ void MainWindow::applyLiveResult(LiveResult result) {
             }
         }
     }
-    // The view fits only now: if the fitted view draws the frame at another size than the job assumed (the
-    // window was resized meanwhile), draw it again at that size.
+    // The view fits only now: if the fitted view draws another area or size than the job assumed (the window
+    // was resized meanwhile), draw it again for that.
     if (keep == ImageView::KeepView::No) {
+        m_fitPending = false;
         const LiveDrawing fitted = liveDrawing(cv::Size(result.imageSize.width(), result.imageSize.height()),
                                                ImageView::KeepView::IfSameSize);
         if (fitted != LiveDrawing{area, cv::Size(result.picture.width(), result.picture.height())}) {

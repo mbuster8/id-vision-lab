@@ -238,6 +238,9 @@ private:
     std::unique_ptr<LiveConverter> m_converter;
     std::unique_ptr<SnapshotConverter> m_snapshots;
     std::uint64_t m_viewCounter = 0; // bumped by viewChanged
+    // A job that fits the view (KeepView::No) was submitted and no fitted picture applied yet: the view still
+    // shows the zoom it will lose, so jobs made meanwhile are made for the fit, and fit too.
+    bool m_fitPending = false;
     // Per channel, frames whose job a newer frame's replaced, not yet drawn: a job for one of them may still
     // be converting, so whether it was skipped is known only when a newer frame's picture is applied.
     std::map<std::string, std::set<std::uint64_t>> m_replacedFrames;

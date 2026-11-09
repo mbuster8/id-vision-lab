@@ -255,7 +255,8 @@ needs (settings, tags, area, drawn size, Show Clipping, whether the histogram is
 zoom) and shares the
 frame's pixels, which nothing changes in place, so the converter's thread reads nothing of the window's. One
 job waits at a time: a newer one replaces it, and a fit the replaced job asked for carries into its
-replacement. Results are posted back with `QMetaObject::invokeMethod` to the converter, which lives on the UI
+replacement. Until a fitted picture is applied, every job is made for the fit and fits too, as the zoom on
+screen is about to go and a cut for it would leave the fitted view mostly empty. Results are posted back with `QMetaObject::invokeMethod` to the converter, which lives on the UI
 thread, and applied in order. A result is dropped unless its channel is still in view and the window's view
 counter, bumped by every change of what the view shows, is the one the job was made with, so a late picture
 never shows a channel or still no longer in view. Each job carries its frame's number: a frame counts as drawn

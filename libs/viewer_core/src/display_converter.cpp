@@ -1,6 +1,7 @@
 #include "viewer_core/display_converter.h"
 
 #include "viewer_core/hdr_tone_map.h"
+#include "viewer_core/histogram.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/core/utility.hpp>
@@ -391,7 +392,9 @@ DisplayRange autoRange(const cv::Mat& image, const ImageTags& tags) {
     if (image.depth() == CV_8U) {
         return {0.0, 255.0};
     }
-    return finiteRange(planeOf(image));
+    // valueExtent's one threaded pass, without the frame-sized copies and mask a plane takes: a zoomed-in
+    // live frame asks for it every frame. Nothing finite gives 0 to 0, as minMaxIdx with an empty mask does.
+    return valueExtent(image).all.value_or(DisplayRange{0.0, 0.0});
 }
 
 std::size_t displayBytes(const cv::Mat& image) { return image.total() * 4; } // 8-bit RGBA
