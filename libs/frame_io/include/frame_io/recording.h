@@ -49,7 +49,9 @@ public:
     enum class Mode { Threaded, Immediate };
     struct Options {
         Mode mode = Mode::Threaded;
-        int threads = 4;
+        // Six beat four at a camera's 1920×1440 by half again on the Mac mini M4 Pro (the measurement in
+        // recording_measurement_test.cpp), headroom for 60 fps.
+        int threads = 6;
         // The frames queued and being written may take this many bytes; a push past it finds the queue full.
         std::size_t queueBytes = std::size_t{1} << 30;
         std::uintmax_t minimumFreeBytes = 5'000'000'000; // below it, a push reports LowDisk

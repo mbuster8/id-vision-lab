@@ -65,6 +65,7 @@ id_vision_lab_add_test_executable(frame_io_tests
         frame_io/frame_test.cpp
         frame_io/image_folder_test.cpp
         frame_io/read_ahead_test.cpp
+        frame_io/recording_measurement_test.cpp
         frame_io/recording_test.cpp
         frame_io/replay_pacer_test.cpp
         frame_io/scratch_folder.h
@@ -79,10 +80,13 @@ id_vision_lab_add_test_executable(frame_io_tests
         opencv_imgcodecs
         opencv_imgproc
         nlohmann_json::nlohmann_json
+        cppzmq
         GTest::gtest_main)
 id_vision_lab_use_utf8_code_page(frame_io_tests)
-# latch.h: holding a reader's thread without timing (Qt-free, kept with the other test helpers).
-target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
+# latch.h: holding a reader's thread without timing (Qt-free, kept with the other test helpers);
+# test_support.h: the measurements' environment variables.
+target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
 
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
@@ -212,9 +216,12 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             document_lab/camera_frame_test.cpp
             document_lab/fake_camera_backend.h
             document_lab/main_window_test.cpp
+            document_lab/measurement_test.cpp
         LIBRARIES
             document_lab_ui
             opencv_imgproc
+            cppzmq
+            nlohmann_json::nlohmann_json
             Qt6::Test
             GTest::gtest)
     id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
@@ -225,7 +232,8 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
     # The lab's also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
     target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
                                                              ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
-                                                             ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
+                                                             ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
+                                                             ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
     # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of its
     # own so that it also runs from the installed Windows package.
     add_test(NAME media_smoke COMMAND media_smoke)
