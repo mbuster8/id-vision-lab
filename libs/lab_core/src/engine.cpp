@@ -330,30 +330,82 @@ void Engine::run() {
     closeDown();
 }
 
-// The commands waiting, then at most one frame; the hooks after, with no lock held.
+// The commands waiting, then at most one frame; the hooks after, with no lock held. Nothing thrown leaves:
+// on the processing thread it would end the program.
 Engine::Turn Engine::turn() {
     Turn turn;
-    for (;;) {
-        std::function<void()> command;
-        {
-            const std::lock_guard lock(m_mutex);
-            if (m_commands.empty()) {
-                break;
+    try {
+        for (;;) {
+            std::function<void()> command;
+            {
+                const std::lock_guard lock(m_mutex);
+                if (m_commands.empty()) {
+                    break;
+                }
+                command = std::move(m_commands.front());
+                m_commands.pop_front();
             }
-            command = std::move(m_commands.front());
-            m_commands.pop_front();
+            command();
+            turn.did = true;
         }
-        command();
-        turn.did = true;
-    }
-    pruneFinished();
-    if (m_live) {
-        liveWork(turn);
-    } else if (m_source) {
-        replayWork(turn);
+        pruneFinished();
+        stopFailedRecording();
+        if (m_live) {
+            liveWork(turn);
+        } else if (m_source) {
+            replayWork(turn);
+        }
+    } catch (const std::exception& exception) {
+        turn = {.did = true, .wakeAt = {}, .waitForRecorder = false};
+        stopAfterThrow(exception.what());
+    } catch (...) {
+        turn = {.did = true, .wakeAt = {}, .waitForRecorder = false};
+        stopAfterThrow("unknown exception");
     }
     notify();
     return turn;
+}
+
+// A recording whose writer failed in the background stops now, not at the next frame it is given.
+void Engine::stopFailedRecording() {
+    if (!m_recorder) {
+        return;
+    }
+    const std::string failure = m_recorder->progress().failure;
+    if (!failure.empty()) {
+        stopRecordingNow(kRecordingStopped + failure);
+    }
+}
+
+// Everything that was going on stops, as cleanly as it can: whatever threw may have left a frame half-done.
+void Engine::stopAfterThrow(const std::string& what) {
+    std::optional<Pending> pending; // destroyed without the lock
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.busyFrame.reset();
+        m_status.busySince.reset();
+        m_seekRequest.reset();
+        pending = std::move(m_pending);
+        m_pending.reset();
+        m_acceptLive = false;
+    }
+    m_held.reset();
+    m_waitingToRecord.reset();
+    try {
+        stopRecordingNow();
+    } catch (...) {
+        // It could not be finished in the background: its destructor writes its queue here instead.
+        std::unique_ptr<frame_io::RecordingWriter> dropped;
+        {
+            const std::lock_guard lock(m_mutex);
+            dropped = std::move(m_recorder);
+            m_status.recording = false;
+        }
+    }
+    closeSource();
+    m_live = false;
+    setMessage("stopped: internal error (" + what + ")");
+    setState(EngineState::Stopped);
 }
 
 void Engine::liveWork(Turn& turn) {

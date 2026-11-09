@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,8 +50,13 @@ public:
 
     // Whether a frame is there yet, as a video's reading thread would say during a seek; always by default.
     std::function<bool()> readyWhen{};
+    // next() throws std::runtime_error("disk gone") when it would read the frame at this index.
+    std::optional<std::uint64_t> throwAtNext{};
 
     frame_io::ReadResult next() override {
+        if (throwAtNext && m_index == *throwAtNext) {
+            throw std::runtime_error("disk gone");
+        }
         if (m_index >= m_reads.size()) {
             return {.status = frame_io::ReadStatus::End, .frame = {}, .error = {}};
         }

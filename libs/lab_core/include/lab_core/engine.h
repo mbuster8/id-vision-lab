@@ -191,6 +191,8 @@ private:
 
     void newGeneration();
     void clearSeeking();
+    void stopFailedRecording();
+    void stopAfterThrow(const std::string& what);
     void stopRecordingNow(const std::string& message = {});
     void stopWithError(const std::string& message);
     void setState(EngineState state);

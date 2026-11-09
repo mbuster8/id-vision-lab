@@ -547,6 +547,61 @@ TEST(Engine, ReaderErrorStopsWithItsFrame) {
     EXPECT_GT(h.statusChanges, changes);
 }
 
+// Whatever a source throws stops the run with the reason; it never leaves the processing thread, which would
+// end the program.
+TEST(Engine, ThrowingSourceStopsTheRun) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay([](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<ListSource>(framesApart(5, 40ms), true, nullptr);
+        source->throwAtNext = 2;
+        return source;
+    });
+    EXPECT_EQ(h.nextNumber(), 0U);
+    EXPECT_EQ(h.nextNumber(), 1U);
+
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+    EXPECT_NE(h.engine.status().message.find("internal error (disk gone)"), std::string::npos)
+        << h.engine.status().message;
+    EXPECT_FALSE(h.engine.status().busyFrame);
+    EXPECT_TRUE(h.engine.shutDown());
+}
+
+// A command that throws, here something that is not even a std::exception, stops the run too.
+TEST(Engine, ThrowingCommandStopsTheRun) {
+    Harness h;
+    h.engine.startReplay([](std::string&) -> std::unique_ptr<frame_io::ReplaySource> { throw 42; });
+
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+    EXPECT_NE(h.engine.status().message.find("internal error"), std::string::npos)
+        << h.engine.status().message;
+    EXPECT_TRUE(h.engine.shutDown());
+}
+
+// A recording whose writer failed in the background stops at once, also while nothing is pushed to it.
+TEST(Engine, FailureNoticedWhilePaused) {
+    const test_support::ScratchFolder folder;
+    Harness h;
+    std::unique_ptr<RecordingWriter> recorder = recorderIn(folder.path());
+    RecordingWriter* writer = recorder.get();
+    h.engine.startReplay(openerOf(framesApart(5, 40ms)));
+    h.engine.startRecording(std::move(recorder));
+    pausedAt(h, 1);
+    ASSERT_TRUE(h.engine.status().recording);
+    std::filesystem::create_directory(folder.path() / "000001.png"); // where frame 1's file would go
+
+    writer->pump();
+    writer->pump();
+    h.engine.pump();
+
+    EXPECT_FALSE(h.engine.status().recording);
+    EXPECT_EQ(h.engine.status().message.rfind("recording stopped:", 0), 0U) << h.engine.status().message;
+}
+
 TEST(Engine, SourceThatCannotOpenStops) {
     Harness h;
     h.engine.startReplay([](std::string& error) -> std::unique_ptr<frame_io::ReplaySource> {
