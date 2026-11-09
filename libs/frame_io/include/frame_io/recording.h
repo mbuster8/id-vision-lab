@@ -73,8 +73,9 @@ public:
     // Queues the frame without waiting or copying its pixels. Its time is kept from the first frame pushed.
     // Full: the queue has no room; the frame is not recorded. LowDisk: the volume has too little room left.
     Push push(const Frame& frame);
-    // Waits until the queue has room or `timeout` passes; whether it has.
-    bool waitForSpace(std::chrono::milliseconds timeout);
+    // Waits until the queue has room for a frame of `bytes` (any room at all when 0), so that a push of it
+    // would be queued, or until `timeout` passes; whether it has.
+    bool waitForSpace(std::chrono::milliseconds timeout, std::size_t bytes = 0);
     // Immediate mode: writes every queued frame now. Whether there were any.
     bool pump();
     void countNotRecorded(); // a frame left out because the queue was full

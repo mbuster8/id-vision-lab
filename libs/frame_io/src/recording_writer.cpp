@@ -105,9 +105,13 @@ RecordingWriter::Push RecordingWriter::push(const Frame& frame) {
     return Push::Queued;
 }
 
-bool RecordingWriter::waitForSpace(std::chrono::milliseconds timeout) {
+bool RecordingWriter::waitForSpace(std::chrono::milliseconds timeout, std::size_t bytes) {
+    // push()'s test, so a wait that ends with room is followed by a push that finds it. At least one byte,
+    // so that with no size given a queue filled to the bar has no room.
+    const std::size_t needed = std::max<std::size_t>(bytes, 1);
     std::unique_lock lock(m_mutex);
-    return m_changed.wait_for(lock, timeout, [this] { return m_bytes < m_options.queueBytes; });
+    return m_changed.wait_for(lock, timeout,
+                              [&] { return m_bytes == 0 || m_bytes + needed <= m_options.queueBytes; });
 }
 
 bool RecordingWriter::pump() {

@@ -202,6 +202,28 @@ TEST(Recording, FullQueueSaysFull) {
     EXPECT_EQ(writer->progress().written, 2U);
 }
 
+// Room for the next frame, not merely bytes under the bar: a queue of one and a half frames holding one has
+// room left, but not for another, so a replay that waits for it would otherwise wake at once and push in
+// vain.
+TEST(Recording, WaitForSpaceWaitsForRoomForTheFrame) {
+    const ScratchFolder folder;
+    test_support::Latch latch;
+    RecordingWriter::Options options = threaded();
+    options.threads = 1;
+    options.queueBytes = kGreyBytes * 3 / 2;
+    options.beforeWrite = [&latch](std::uint64_t) { latch.hold(); };
+    auto writer = startIn(folder.path(), options);
+
+    ASSERT_EQ(writer->push(grey(10, 0, 0ms)), RecordingWriter::Push::Queued);
+    ASSERT_TRUE(latch.waitUntilEntered());
+    ASSERT_EQ(writer->push(grey(20, 1, 40ms)), RecordingWriter::Push::Full);
+
+    EXPECT_FALSE(writer->waitForSpace(0ms, kGreyBytes));
+    latch.release();
+    EXPECT_TRUE(writer->waitForSpace(10s, kGreyBytes));
+    EXPECT_EQ(writer->push(grey(20, 1, 40ms)), RecordingWriter::Push::Queued);
+}
+
 TEST(Recording, ImmediateQueuesUntilPumped) {
     const ScratchFolder folder;
     RecordingWriter::Options options = immediate();
