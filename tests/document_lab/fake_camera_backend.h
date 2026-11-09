@@ -27,10 +27,10 @@ public:
         }
     }
 
-    void start(const QByteArray& id, const document_lab::CameraFormat& format) override {
+    quint64 start(const QByteArray& id, const document_lab::CameraFormat& format) override {
         starts.push_back({id, format});
-        ++session;
         running = true;
+        return ++session;
     }
 
     void stop() override {

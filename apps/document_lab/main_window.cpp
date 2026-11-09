@@ -1,5 +1,6 @@
 #include "main_window.h"
 
+#include "camera_formats.h"
 #include "image_tags_conversion.h"
 #include "live_drawing.h"
 
@@ -12,7 +13,9 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStringList>
@@ -92,11 +95,22 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     m_engine = std::make_unique<lab_core::Engine>(m_dependencies.engineMode, std::move(hooks));
 
     chooseProcessor(m_processorCombo->currentIndex());
+
+    // The window is the context: frames reach it on its own thread, and none after it is gone.
+    CameraBackend* cameras = m_dependencies.cameras.get();
+    connect(cameras, &CameraBackend::camerasChanged, this, &LabWindow::fillCameras);
+    connect(cameras, &CameraBackend::frameArrived, this, &LabWindow::cameraFrame);
+    connect(cameras, &CameraBackend::failed, this, &LabWindow::cameraFailed);
+    fillCameras();
+
     refreshStatus();
     m_statusTimer->start(kStatusRefreshMs);
 }
 
 LabWindow::~LabWindow() {
+    // The camera first: no frame reaches a window whose engine is gone.
+    m_dependencies.cameras->disconnect(this);
+    m_dependencies.cameras->stop();
     m_statusTimer->stop();
     m_engine.reset();    // joins: no hook comes after
     m_converter.reset(); // waits for a conversion in progress
@@ -108,6 +122,15 @@ void LabWindow::buildUi() {
     auto* layout = new QVBoxLayout(central);
 
     auto* sourceRow = new QHBoxLayout;
+    sourceRow->addWidget(new QLabel(tr("Camera:"), central));
+    m_cameraCombo = new QComboBox(central);
+    m_cameraCombo->setObjectName(QStringLiteral("cameraCombo"));
+    m_cameraCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    sourceRow->addWidget(m_cameraCombo);
+    m_formatCombo = new QComboBox(central);
+    m_formatCombo->setObjectName(QStringLiteral("formatCombo"));
+    m_formatCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    sourceRow->addWidget(m_formatCombo);
     m_startStop = new QPushButton(tr("Start"), central);
     m_startStop->setObjectName(QStringLiteral("startStopButton"));
     m_startStop->setEnabled(false);
@@ -169,7 +192,9 @@ void LabWindow::buildUi() {
     statusBar()->addWidget(m_status, 1);
     m_statusTimer = new QTimer(this);
 
-    connect(m_startStop, &QPushButton::clicked, this, &LabWindow::stop);
+    connect(m_startStop, &QPushButton::clicked, this, &LabWindow::startOrStop);
+    connect(m_cameraCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseCamera);
+    connect(m_formatCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseFormat);
     connect(m_processorCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseProcessor);
     connect(m_showCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseShow);
     connect(m_overlaysCheck, &QCheckBox::toggled, this, [this](bool shown) {
@@ -182,6 +207,7 @@ void LabWindow::buildUi() {
 }
 
 void LabWindow::startReplay(lab_core::ReplayOpener open) {
+    stop(); // a camera running stops first
     beginRun();
     m_engine->startReplay(std::move(open));
 }
@@ -189,10 +215,10 @@ void LabWindow::startReplay(lab_core::ReplayOpener open) {
 // Results of an earlier run are dropped from here on: a new run's generation is at least one more.
 void LabWindow::beginRun() {
     m_running = true;
+    m_message.clear();
     m_minimumGeneration = m_engine->status().generation + 1;
     m_fitNext = true;
-    m_startStop->setText(tr("Stop"));
-    m_startStop->setEnabled(true);
+    updateStartStop();
 }
 
 void LabWindow::stop() {
@@ -200,6 +226,11 @@ void LabWindow::stop() {
         return;
     }
     m_running = false;
+    if (m_cameraRunning) {
+        m_cameraRunning = false;
+        m_session = 0;
+        m_dependencies.cameras->stop();
+    }
     m_engine->stop();
     viewChanged();
     m_current.reset();
@@ -207,9 +238,172 @@ void LabWindow::stop() {
     m_placeholder->hide();
     m_results->clear();
     m_fitNext = true;
-    m_startStop->setText(tr("Start"));
-    m_startStop->setEnabled(false);
+    updateStartStop();
     refreshStatus();
+}
+
+// Start while nothing runs and there is a camera; Stop while anything runs.
+void LabWindow::updateStartStop() {
+    m_startStop->setText(m_running ? tr("Stop") : tr("Start"));
+    m_startStop->setEnabled(m_running || currentCamera() != nullptr);
+}
+
+// --- Cameras
+// ------------------------------------------------------------------------------------------------
+
+void LabWindow::fillCameras() {
+    const CameraInfo* shown = currentCamera();
+    const QByteArray wanted = shown ? shown->id : m_settings.cameraId();
+    m_cameras = m_dependencies.cameras->cameras();
+    {
+        const QSignalBlocker blocker(m_cameraCombo);
+        m_cameraCombo->clear();
+        int index = 0;
+        for (std::size_t i = 0; i < m_cameras.size(); ++i) {
+            m_cameraCombo->addItem(m_cameras[i].name);
+            if (m_cameras[i].id == wanted) {
+                index = static_cast<int>(i);
+            }
+        }
+        m_cameraCombo->setCurrentIndex(m_cameras.empty() ? -1 : index);
+    }
+    fillFormats();
+    updateStartStop();
+}
+
+// The chosen camera's formats, once each, with the one chosen last time for it, else its default.
+void LabWindow::fillFormats() {
+    const QSignalBlocker blocker(m_formatCombo);
+    m_formatCombo->clear();
+    m_formats.clear();
+    const CameraInfo* camera = currentCamera();
+    if (camera == nullptr) {
+        return;
+    }
+    m_formats = distinctFormats(camera->formats);
+    for (const CameraFormat& format : m_formats) {
+        m_formatCombo->addItem(format.label());
+    }
+    int index = m_formatCombo->findText(m_settings.formatFor(camera->id));
+    if (index < 0) {
+        const std::optional<CameraFormat> preferred = defaultFormat(m_formats);
+        index = preferred ? m_formatCombo->findText(preferred->label()) : 0;
+    }
+    m_formatCombo->setCurrentIndex(std::max(index, 0));
+}
+
+void LabWindow::chooseCamera(int index) {
+    if (index < 0) {
+        return;
+    }
+    m_settings.setCameraId(currentCamera()->id);
+    fillFormats();
+    if (m_cameraRunning) {
+        restartCamera();
+    }
+}
+
+void LabWindow::chooseFormat(int index) {
+    const CameraInfo* camera = currentCamera();
+    if (index < 0 || camera == nullptr) {
+        return;
+    }
+    m_settings.setFormatFor(camera->id, m_formatCombo->itemText(index));
+    if (m_cameraRunning) {
+        restartCamera();
+    }
+}
+
+void LabWindow::startOrStop() {
+    if (m_running) {
+        stop();
+    } else {
+        startCamera();
+    }
+}
+
+// Camera access first; the answer may come later, by when the window may be gone.
+void LabWindow::startCamera() {
+    if (currentCamera() == nullptr || !currentFormat()) {
+        return;
+    }
+    m_message.clear();
+    m_dependencies.cameras->requestPermission([window = QPointer<LabWindow>(this)](bool granted) {
+        if (!window) {
+            return;
+        }
+        if (granted) {
+            window->startCameraGranted();
+            return;
+        }
+#if defined(Q_OS_MACOS)
+        window->m_message =
+            tr("Camera access is off for the Document Lab: allow it in System Settings → Privacy & "
+               "Security → Camera.");
+#elif defined(Q_OS_WIN)
+        window->m_message = tr("Camera access is off: allow it in Settings → Privacy & security → Camera.");
+#else
+        window->m_message = tr("Camera access was refused: allow it in the system's privacy settings.");
+#endif
+        window->refreshStatus();
+    });
+}
+
+void LabWindow::startCameraGranted() {
+    const CameraInfo* camera = currentCamera();
+    const std::optional<CameraFormat> format = currentFormat();
+    if (camera == nullptr || !format) {
+        return;
+    }
+    stop(); // a replay running stops first
+    beginRun();
+    m_cameraRunning = true;
+    m_geometry = {.frontCamera = camera->front};
+    m_engine->startLive((camera->name + QStringLiteral(" · ") + format->label()).toStdString());
+    m_session = m_dependencies.cameras->start(camera->id, *format);
+    refreshStatus();
+}
+
+// Another camera or format: a new run, and a new recording if one is wanted.
+void LabWindow::restartCamera() {
+    stop();
+    startCamera();
+}
+
+// On the window's thread: only the frame's buffer is handed over; the processing thread converts it.
+void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
+    if (!m_cameraRunning || session != m_session) {
+        return; // a frame of a camera or session that is over
+    }
+    const std::chrono::nanoseconds at = now().time_since_epoch();
+    m_engine->offer({[frame, geometry = m_geometry, at](std::string& error) {
+        return toFrame(frame, geometry, at, error);
+    }});
+}
+
+void LabWindow::cameraFailed(const QString& reason) {
+    if (!m_cameraRunning) {
+        return;
+    }
+    stop();
+    m_message = reason;
+    refreshStatus();
+}
+
+const CameraInfo* LabWindow::currentCamera() const {
+    const int index = m_cameraCombo->currentIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= m_cameras.size()) {
+        return nullptr;
+    }
+    return &m_cameras[static_cast<std::size_t>(index)];
+}
+
+std::optional<CameraFormat> LabWindow::currentFormat() const {
+    const int index = m_formatCombo->currentIndex();
+    if (index < 0 || static_cast<std::size_t>(index) >= m_formats.size()) {
+        return std::nullopt;
+    }
+    return m_formats[static_cast<std::size_t>(index)];
 }
 
 void LabWindow::pumpForTests() {
@@ -402,6 +596,9 @@ void LabWindow::refreshStatus() {
     }
     if (!status.message.empty()) {
         parts << QString::fromStdString(status.message);
+    }
+    if (!m_message.isEmpty()) {
+        parts << m_message;
     }
     m_status->setText(parts.join(QStringLiteral(" · ")));
 }

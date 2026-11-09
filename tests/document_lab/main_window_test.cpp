@@ -414,4 +414,177 @@ TEST(LabWindow, PanOutOfTheMarginResubmits) {
     EXPECT_TRUE(lab.canvas()->pictureArea().contains(lab.canvas()->visibleArea()));
 }
 
+// --- Cameras
+// ------------------------------------------------------------------------------------------------
+
+test_support::FakeCameraBackend& fakeOf(LabDependencies& dependencies) {
+    return static_cast<test_support::FakeCameraBackend&>(*dependencies.cameras);
+}
+
+document_lab::CameraFormat nv12(int width, int height, float fps = 30) {
+    return {.size = QSize(width, height), .maxFps = fps, .pixelFormat = QVideoFrameFormat::Format_NV12};
+}
+
+document_lab::CameraInfo camera(const QByteArray& id, const QString& name) {
+    return {.id = id, .name = name, .front = false, .formats = {nv12(640, 480), nv12(1280, 720)}};
+}
+
+// Two cameras: "a", the FaceTime camera, and "b", a C920.
+void twoCameras(LabDependencies& dependencies) {
+    fakeOf(dependencies).list = {camera("a", QStringLiteral("FaceTime HD Camera")),
+                                 camera("b", QStringLiteral("C920"))};
+}
+
+// A 64×48 BGRA frame of one grey.
+QVideoFrame cameraFrame(int grey) {
+    QVideoFrame frame(QVideoFrameFormat(QSize(64, 48), QVideoFrameFormat::Format_BGRA8888));
+    EXPECT_TRUE(frame.map(QVideoFrame::WriteOnly));
+    for (int row = 0; row < 48; ++row) {
+        std::memset(frame.bits(0) + static_cast<std::ptrdiff_t>(row) * frame.bytesPerLine(0), grey, 64 * 4);
+    }
+    frame.unmap();
+    return frame;
+}
+
+QPushButton* startStop(const Lab& lab) { return lab.window->findChild<QPushButton*>("startStopButton"); }
+
+TEST(LabWindow, ListsCamerasAndFollowsChanges) {
+    Lab lab(twoCameras);
+
+    EXPECT_EQ(lab.entries("cameraCombo"),
+              (QStringList{QStringLiteral("FaceTime HD Camera"), QStringLiteral("C920")}));
+    EXPECT_EQ(lab.entries("formatCombo"), (QStringList{QStringLiteral("1280×720, 30 fps, NV12"),
+                                                       QStringLiteral("640×480, 30 fps, NV12")}));
+
+    lab.backend->changeCameras({camera("b", QStringLiteral("C920"))});
+
+    EXPECT_EQ(lab.entries("cameraCombo"), QStringList{QStringLiteral("C920")});
+}
+
+TEST(LabWindow, NeverStartsAtLaunch) {
+    Lab lab(twoCameras);
+
+    EXPECT_TRUE(lab.backend->starts.empty());
+    EXPECT_EQ(lab.backend->permissionRequests, 0);
+    EXPECT_EQ(startStop(lab)->text(), QStringLiteral("Start"));
+    EXPECT_TRUE(startStop(lab)->isEnabled());
+}
+
+// Start asks for camera access first, and starts only once it is granted, with the camera's default format.
+TEST(LabWindow, StartAsksPermissionFirst) {
+    Lab lab([](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        fakeOf(dependencies).permission.reset();
+    });
+
+    startStop(lab)->click();
+    EXPECT_EQ(lab.backend->permissionRequests, 1);
+    EXPECT_TRUE(lab.backend->starts.empty());
+    lab.backend->pendingAnswer(true);
+
+    ASSERT_EQ(lab.backend->starts.size(), 1U);
+    EXPECT_EQ(lab.backend->starts[0].first, QByteArray("a"));
+    EXPECT_EQ(lab.backend->starts[0].second, nv12(1280, 720));
+}
+
+TEST(LabWindow, PermissionRefusedSaysHow) {
+    Lab lab([](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        fakeOf(dependencies).permission = false;
+    });
+
+    startStop(lab)->click();
+
+    EXPECT_TRUE(lab.backend->starts.empty());
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("privacy"), Qt::CaseInsensitive))
+        << lab.status().toStdString();
+    EXPECT_EQ(startStop(lab)->text(), QStringLiteral("Start"));
+}
+
+TEST(LabWindow, StartShowsFramesOnTheCanvas) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+
+    lab.backend->deliver(cameraFrame(120));
+    lab.pump();
+
+    ASSERT_TRUE(lab.canvas()->hasImage());
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 64, 48));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Live"))) << lab.status().toStdString();
+    EXPECT_EQ(startStop(lab)->text(), QStringLiteral("Stop"));
+}
+
+TEST(LabWindow, SwitchingCamerasStopsTheFirst) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+
+    lab.choose("cameraCombo", QStringLiteral("C920"));
+
+    EXPECT_EQ(lab.backend->stops, 1);
+    ASSERT_EQ(lab.backend->starts.size(), 2U);
+    EXPECT_EQ(lab.backend->starts[1].first, QByteArray("b"));
+    EXPECT_TRUE(lab.backend->running);
+}
+
+TEST(LabWindow, FormatChangeRestartsTheCamera) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+
+    lab.choose("formatCombo", QStringLiteral("640×480, 30 fps, NV12"));
+
+    ASSERT_EQ(lab.backend->starts.size(), 2U);
+    EXPECT_EQ(lab.backend->starts[1].second, nv12(640, 480));
+}
+
+TEST(LabWindow, CameraGoneStopsTheRun) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+
+    lab.backend->fail(QStringLiteral("The camera is gone."));
+
+    EXPECT_FALSE(lab.backend->running);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("The camera is gone."))) << lab.status().toStdString();
+    EXPECT_EQ(startStop(lab)->text(), QStringLiteral("Start"));
+}
+
+TEST(LabWindow, NoFrameAfterStop) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    startStop(lab)->click();
+
+    lab.backend->deliver(cameraFrame(120));
+    lab.pump();
+
+    EXPECT_FALSE(lab.canvas()->hasImage());
+    EXPECT_FALSE(lab.backend->running);
+}
+
+// A frame the old camera had on its way when the user switched belongs to no run: it is dropped.
+TEST(LabWindow, OldCamerasFrameNeverReachesTheNewRun) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    const quint64 first = lab.backend->session;
+    lab.choose("cameraCombo", QStringLiteral("C920"));
+
+    lab.backend->deliver(cameraFrame(120), first);
+    lab.pump();
+    EXPECT_FALSE(lab.canvas()->hasImage());
+
+    lab.backend->deliver(cameraFrame(130));
+    lab.pump();
+    EXPECT_TRUE(lab.canvas()->hasImage());
+}
+
+TEST(LabWindow, RemembersTheCameraAndItsFormat) {
+    {
+        Lab lab(twoCameras);
+        lab.choose("cameraCombo", QStringLiteral("C920"));
+        lab.choose("formatCombo", QStringLiteral("640×480, 30 fps, NV12"));
+    }
+    Lab lab(twoCameras);
+
+    EXPECT_EQ(lab.combo("cameraCombo")->currentText(), QStringLiteral("C920"));
+    EXPECT_EQ(lab.combo("formatCombo")->currentText(), QStringLiteral("640×480, 30 fps, NV12"));
+}
+
 } // namespace

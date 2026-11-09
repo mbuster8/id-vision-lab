@@ -13,7 +13,10 @@ id_vision_lab_copy_ffmpeg_dlls(media_smoke)
 
 # The lab's window and its parts, a library so that the tests can use them.
 add_library(document_lab_ui STATIC
+    camera_backend.cpp
     camera_backend.h
+    camera_formats.cpp
+    camera_formats.h
     camera_frame.cpp
     camera_frame.h
     lab_settings.cpp

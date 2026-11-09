@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QSettings>
 #include <QString>
 
@@ -14,6 +15,10 @@ public:
     void setShow(const QString& entry);
     bool overlays() const; // on unless turned off
     void setOverlays(bool shown);
+    QByteArray cameraId() const; // the camera used last
+    void setCameraId(const QByteArray& id);
+    QString formatFor(const QByteArray& cameraId) const; // the format label chosen for a camera
+    void setFormatFor(const QByteArray& cameraId, const QString& label);
 
 private:
     QSettings m_settings;

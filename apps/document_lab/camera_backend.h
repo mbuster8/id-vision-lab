@@ -43,7 +43,8 @@ public:
     // The answer comes once, at once when the platform asks nobody.
     virtual void requestPermission(std::function<void(bool granted)> answer) = 0;
     // A new session each time, with a number of its own: frames of an earlier start never belong to it.
-    virtual void start(const QByteArray& id, const CameraFormat& format) = 0;
+    // Returns the session's number, which its frames carry.
+    virtual quint64 start(const QByteArray& id, const CameraFormat& format) = 0;
     virtual void stop() = 0;
 
 signals:
@@ -53,5 +54,9 @@ signals:
     // The camera failed or went away; its session is over.
     void failed(const QString& reason);
 };
+
+// Qt Multimedia's cameras: QMediaDevices' list, a new QCamera, capture session and QVideoSink per start(),
+// and the platform's camera permission from Qt 6.5.
+std::unique_ptr<CameraBackend> makeQtCameraBackend();
 
 } // namespace document_lab

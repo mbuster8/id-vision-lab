@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera_backend.h"
+#include "camera_frame.h"
 #include "image_view.h"
 #include "lab_settings.h"
 #include "live_converter.h"
@@ -22,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 class QCheckBox;
 class QCloseEvent;
@@ -96,10 +98,27 @@ private:
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
+    void updateStartStop();
+
+    // Cameras.
+    void fillCameras();
+    void fillFormats();
+    void chooseCamera(int index);
+    void chooseFormat(int index);
+    void startOrStop();
+    void startCamera();
+    void startCameraGranted();
+    void restartCamera();
+    void cameraFrame(const QVideoFrame& frame, quint64 session);
+    void cameraFailed(const QString& reason);
+    const CameraInfo* currentCamera() const;
+    std::optional<CameraFormat> currentFormat() const;
 
     LabDependencies m_dependencies;
     LabSettings m_settings;
 
+    QComboBox* m_cameraCombo = nullptr;
+    QComboBox* m_formatCombo = nullptr;
     QPushButton* m_startStop = nullptr;
     QComboBox* m_processorCombo = nullptr;
     QComboBox* m_showCombo = nullptr;
@@ -111,6 +130,13 @@ private:
     QTimer* m_statusTimer = nullptr;
 
     QString m_wantedShow; // the Show entry chosen last, selected again when a frame has it
+    QString m_message;    // the window's own: a refused permission, a camera gone
+
+    std::vector<CameraInfo> m_cameras;   // as the camera picker lists them
+    std::vector<CameraFormat> m_formats; // the chosen camera's, as the format picker lists them
+    bool m_cameraRunning = false;
+    quint64 m_session = 0; // the camera session whose frames are taken
+    CameraGeometry m_geometry;
 
     bool m_running = false;                       // a camera or a replay runs: its results are taken
     std::uint64_t m_minimumGeneration = 0;        // the run's: results of earlier ones are dropped

@@ -208,6 +208,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
         SOURCES
             qt_common/test_main.cpp
             qt_common/owner_only.cpp
+            document_lab/camera_formats_test.cpp
             document_lab/camera_frame_test.cpp
             document_lab/fake_camera_backend.h
             document_lab/main_window_test.cpp
