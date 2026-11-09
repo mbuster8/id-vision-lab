@@ -75,6 +75,16 @@ TEST(ImageFolder, FramesThirtyAFrameApart) {
     EXPECT_EQ(source->next().status, ReadStatus::End);
 }
 
+TEST(ImageFolder, RateIsThirty) {
+    const ScratchFolder folder;
+    writePng(folder, "a.png", 0);
+    std::string error;
+    const auto source = frame_io::openImageFolder(folder.path(), error);
+    ASSERT_NE(source, nullptr) << error;
+
+    EXPECT_EQ(source->frameRate(), std::optional<double>(30.0));
+}
+
 TEST(ImageFolder, SeekRestartAndCount) {
     const ScratchFolder folder;
     writePng(folder, "1.png", 10);
@@ -172,6 +182,17 @@ TEST(ImageFileSource, OneFrameThenEnd) {
     EXPECT_EQ(source->next().status, ReadStatus::End);
     ASSERT_TRUE(source->restart(error));
     EXPECT_EQ(source->next().status, ReadStatus::Frame);
+}
+
+// One picture has no rate: the window shows no position for it.
+TEST(ImageFileSource, HasNoRate) {
+    const ScratchFolder folder;
+    writePng(folder, "one.png", 7);
+    std::string error;
+    const auto source = frame_io::openImageFile(folder.path() / "one.png", error);
+    ASSERT_NE(source, nullptr) << error;
+
+    EXPECT_EQ(source->frameRate(), std::nullopt);
 }
 
 TEST(ImageFileSource, SixteenBitGetsANominalRange) {

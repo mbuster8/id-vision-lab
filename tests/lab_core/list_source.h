@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -39,10 +40,15 @@ class ListSource : public frame_io::ReplaySource {
 public:
     struct Counters {
         int restarts = 0;
+        int seeks = 0;
+        std::optional<std::uint64_t> lastSeek{};
     };
 
     ListSource(std::vector<frame_io::ReadResult> reads, bool seekable, Counters* counters)
         : m_reads(std::move(reads)), m_seekable(seekable), m_counters(counters) {}
+
+    // Whether a frame is there yet, as a video's reading thread would say during a seek; always by default.
+    std::function<bool()> readyWhen{};
 
     frame_io::ReadResult next() override {
         if (m_index >= m_reads.size()) {
@@ -50,7 +56,7 @@ public:
         }
         return m_reads[m_index++];
     }
-    bool ready() const override { return true; }
+    bool ready() const override { return !readyWhen || readyWhen(); }
     void setWake(std::function<void()>) override {}
     bool restart(std::string&) override {
         m_index = 0;
@@ -60,7 +66,13 @@ public:
         return true;
     }
     bool canSeek() const override { return m_seekable; }
-    void seek(std::uint64_t index) override { m_index = static_cast<std::size_t>(index); }
+    void seek(std::uint64_t index) override {
+        m_index = static_cast<std::size_t>(index);
+        if (m_counters) {
+            ++m_counters->seeks;
+            m_counters->lastSeek = index;
+        }
+    }
     std::optional<std::uint64_t> frameCount() const override {
         std::uint64_t frames = 0;
         for (const frame_io::ReadResult& read : m_reads) {
@@ -68,6 +80,7 @@ public:
         }
         return frames;
     }
+    std::optional<double> frameRate() const override { return 30.0; }
     std::string describe() const override { return "list"; }
 
 private:

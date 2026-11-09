@@ -137,6 +137,25 @@ TEST(Recording, JsonMarksIncompleteUntilFinished) {
     EXPECT_EQ(finished["counts"]["notRecorded"], 4);
 }
 
+// A recording's rate is its frames' own: five 40 ms apart are 25 a second.
+TEST(Recording, RateFromItsTimes) {
+    const ScratchFolder folder;
+    {
+        auto writer = startIn(folder.path(), immediate());
+        for (int index = 0; index < 5; ++index) {
+            ASSERT_EQ(writer->push(grey(10, static_cast<std::uint64_t>(index), 40ms * index)),
+                      RecordingWriter::Push::Queued);
+            writer->pump();
+        }
+        writer->finish();
+    }
+    std::string error;
+    const auto source = frame_io::openRecording(folder.path(), error);
+    ASSERT_NE(source, nullptr) << error;
+
+    EXPECT_EQ(source->frameRate(), std::optional<double>(25.0));
+}
+
 // A recording cut short by a crash still replays: the frames its JSON lists, then any PNGs it does not, in
 // name order, each a thirtieth of a second after the one before.
 TEST(Recording, IncompleteReplaysListedAndLaterFrames) {

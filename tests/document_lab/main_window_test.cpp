@@ -685,7 +685,8 @@ bool pumpUntilShown(Lab& lab, std::uint64_t pictures) {
     });
 }
 
-// Folders can step back; a video file cannot, only start again.
+// Folders can step back; so can a video read through FFmpeg, while one read through OpenCV can only start
+// again.
 TEST(LabWindow, ReplayControlsFollowTheSource) {
     const test_support::ScratchFolder files;
     const std::filesystem::path folder = imageFolder(files);
@@ -709,7 +710,11 @@ TEST(LabWindow, ReplayControlsFollowTheSource) {
     lab.advance(40ms);
     ASSERT_TRUE(pumpUntilShown(lab, 4));
     EXPECT_TRUE(button(lab, "playPauseButton")->isEnabled());
+#if defined(FRAME_IO_HAS_FFMPEG)
+    EXPECT_TRUE(button(lab, "stepBackButton")->isEnabled()); // FFmpeg seeks in a video with timestamps
+#else
     EXPECT_FALSE(button(lab, "stepBackButton")->isEnabled());
+#endif
     EXPECT_TRUE(button(lab, "restartButton")->isEnabled());
     EXPECT_TRUE(lab.status().contains(QStringLiteral("clip.avi"))) << lab.status().toStdString();
 }
