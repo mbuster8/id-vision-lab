@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QIcon>
 
 namespace qt_common {
@@ -25,12 +26,31 @@ enum class OutlineIcon {
     Folder,
     Send,
     Camera,
-    EyeOff
+    EyeOff,
+    StepBack,
+    StepForward,
+    Back10,
+    Forward10,
+    Restart,
+    Loop,
+    Fast,
+    Record,
+    Overlays,
+    Tick,
+    Cross
 };
 
+// Go and halt, as macOS's own green and red, readable on a light window and a dark one.
+inline const QColor kGo{0x34, 0xC7, 0x59};
+inline const QColor kHalt{0xFF, 0x3B, 0x30};
+
 // Strokes the shape at any size, in the application palette's colour at paint time, so the icon follows a
-// switch between dark and light: WindowText normally, HighlightedText when selected, PlaceholderText when
-// disabled.
+// switch between dark and light: WindowText normally, Highlight when on (a checked toggle), HighlightedText
+// when selected, PlaceholderText when disabled.
 QIcon makeOutlineIcon(OutlineIcon shape);
+
+// The shape in a colour of its own, whatever the palette: Play, Stop and Record filled, the others stroked;
+// PlaceholderText when disabled, as every disabled icon.
+QIcon makeColouredIcon(OutlineIcon shape, QColor colour);
 
 } // namespace qt_common

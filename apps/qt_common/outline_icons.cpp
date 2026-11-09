@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <initializer_list>
+#include <optional>
 
 namespace qt_common {
 namespace {
@@ -151,39 +152,105 @@ QPainterPath shapePath(OutlineIcon shape) {
         path.addEllipse(QPointF(12.0, 12.0), 3.0, 3.0);
         addPolyline(path, {{4.5, 4.5}, {19.5, 19.5}});
         break;
+    case OutlineIcon::StepBack:
+        // A bar, and a triangle pointing at it: one frame back.
+        addPolyline(path, {{6.5, 6.0}, {6.5, 18.0}});
+        addPolyline(path, {{18.0, 6.0}, {9.5, 12.0}, {18.0, 18.0}}, true);
+        break;
+    case OutlineIcon::StepForward:
+        addPolyline(path, {{6.0, 6.0}, {14.5, 12.0}, {6.0, 18.0}}, true);
+        addPolyline(path, {{17.5, 6.0}, {17.5, 18.0}});
+        break;
+    case OutlineIcon::Back10:
+        // Two triangles pointing back: a jump, not a step.
+        addPolyline(path, {{12.0, 6.5}, {4.0, 12.0}, {12.0, 17.5}}, true);
+        addPolyline(path, {{20.0, 6.5}, {12.0, 12.0}, {20.0, 17.5}}, true);
+        break;
+    case OutlineIcon::Forward10:
+        addPolyline(path, {{4.0, 6.5}, {12.0, 12.0}, {4.0, 17.5}}, true);
+        addPolyline(path, {{12.0, 6.5}, {20.0, 12.0}, {12.0, 17.5}}, true);
+        break;
+    case OutlineIcon::Restart: {
+        // A circle almost closed, the arrow at its end turning back to the start.
+        const QRectF circle(5.0, 5.0, 14.0, 14.0);
+        path.arcMoveTo(circle, 90.0);
+        path.arcTo(circle, 90.0, 270.0);
+        addPolyline(path, {{16.5, 14.0}, {19.0, 11.5}, {21.5, 14.0}});
+        break;
+    }
+    case OutlineIcon::Loop:
+        // A rounded loop, its arrow going round.
+        path.addRoundedRect(QRectF(3.5, 7.5, 17.0, 10.0), 4.0, 4.0);
+        addPolyline(path, {{12.0, 5.0}, {14.5, 7.5}, {12.0, 10.0}});
+        break;
+    case OutlineIcon::Fast:
+        // A lightning bolt: as fast as possible.
+        addPolyline(path, {{13.5, 3.0}, {5.5, 13.5}, {11.5, 13.5}, {10.5, 21.0}, {18.5, 10.5}, {12.5, 10.5}},
+                    true);
+        break;
+    case OutlineIcon::Record:
+        path.addEllipse(QPointF(12.0, 12.0), 6.0, 6.0);
+        break;
+    case OutlineIcon::Overlays:
+        // A document's outline, seen at an angle, with its corners marked: what the processor found.
+        addPolyline(path, {{5.0, 7.0}, {18.0, 5.0}, {19.0, 17.5}, {6.0, 19.0}}, true);
+        addDot(path, {5.0, 7.0});
+        addDot(path, {18.0, 5.0});
+        addDot(path, {19.0, 17.5});
+        addDot(path, {6.0, 19.0});
+        break;
+    case OutlineIcon::Tick:
+        addPolyline(path, {{5.0, 12.5}, {10.0, 17.5}, {19.0, 7.0}});
+        break;
+    case OutlineIcon::Cross:
+        addPolyline(path, {{6.5, 6.5}, {17.5, 17.5}});
+        addPolyline(path, {{17.5, 6.5}, {6.5, 17.5}});
+        break;
     }
     return path;
 }
 
-QColor penColour(QIcon::Mode mode) {
+bool isFilled(OutlineIcon shape) {
+    return shape == OutlineIcon::Play || shape == OutlineIcon::Stop || shape == OutlineIcon::Record;
+}
+
+// The palette's colour at paint time, or the icon's own colour when it has one; disabled is always grey.
+QColor penColour(QIcon::Mode mode, QIcon::State state, const std::optional<QColor>& own) {
     const QPalette palette = QGuiApplication::palette();
     switch (mode) {
     case QIcon::Disabled:
         return palette.color(QPalette::PlaceholderText);
     case QIcon::Selected:
-        return palette.color(QPalette::HighlightedText);
+        return own ? *own : palette.color(QPalette::HighlightedText);
     case QIcon::Normal:
     case QIcon::Active:
         break;
     }
-    return palette.color(QPalette::WindowText);
+    if (own) {
+        return *own;
+    }
+    return palette.color(state == QIcon::On ? QPalette::Highlight : QPalette::WindowText);
 }
 
 class OutlineIconEngine : public QIconEngine {
 public:
-    explicit OutlineIconEngine(OutlineIcon shape) : m_shape(shape) {}
+    OutlineIconEngine(OutlineIcon shape, std::optional<QColor> colour) : m_shape(shape), m_colour(colour) {}
 
-    void paint(QPainter* painter, const QRect& rect, QIcon::Mode mode, QIcon::State /*state*/) override {
+    void paint(QPainter* painter, const QRect& rect, QIcon::Mode mode, QIcon::State state) override {
         const qreal side = std::min(rect.width(), rect.height());
         if (side <= 0) {
             return;
         }
+        const QColor colour = penColour(mode, state, m_colour);
+        const QPainterPath path = shapePath(m_shape);
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
         painter->translate(rect.x() + (rect.width() - side) / 2.0, rect.y() + (rect.height() - side) / 2.0);
         painter->scale(side / kGrid, side / kGrid);
-        painter->strokePath(shapePath(m_shape),
-                            QPen(penColour(mode), kStroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        if (m_colour && isFilled(m_shape)) {
+            painter->fillPath(path, colour);
+        }
+        painter->strokePath(path, QPen(colour, kStroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter->restore();
     }
 
@@ -195,14 +262,19 @@ public:
         return pixmap;
     }
 
-    QIconEngine* clone() const override { return new OutlineIconEngine(m_shape); }
+    QIconEngine* clone() const override { return new OutlineIconEngine(m_shape, m_colour); }
 
 private:
     OutlineIcon m_shape;
+    std::optional<QColor> m_colour;
 };
 
 } // namespace
 
-QIcon makeOutlineIcon(OutlineIcon shape) { return QIcon(new OutlineIconEngine(shape)); }
+QIcon makeOutlineIcon(OutlineIcon shape) { return QIcon(new OutlineIconEngine(shape, std::nullopt)); }
+
+QIcon makeColouredIcon(OutlineIcon shape, QColor colour) {
+    return QIcon(new OutlineIconEngine(shape, colour));
+}
 
 } // namespace qt_common
