@@ -337,8 +337,11 @@ cv::Mat toDisplayImage(const cv::Mat& image, const DisplaySettings& settings, co
             eightBit = image;
         } else {
             const Plane plane = planeOf(image);
-            const DisplayRange range =
-                hinted ? options.tags.valueRange : (automatic ? finiteRange(plane) : settings.range);
+            // A part given the whole's range skips its own pass over the values.
+            const DisplayRange range = hinted ? options.tags.valueRange
+                                       : automatic
+                                           ? (options.autoRange ? *options.autoRange : finiteRange(plane))
+                                           : settings.range;
             eightBit = toEightBit(plane, range, image.channels());
             finite = plane.finite;
         }

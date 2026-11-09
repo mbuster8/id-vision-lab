@@ -562,6 +562,48 @@ TEST(DisplayConverter, ClippingColoursStandOutFromTheMaps) {
     EXPECT_GE(distance(viewer_core::kClippedAbove, viewer_core::kClippedBelowMapped), 100.0);
 }
 
+// A part of a larger image, converted with the whole's Auto range, looks exactly as that part of the whole's
+// picture: what the viewer converts when only part of a live frame is in view.
+TEST(DisplayConverter, APartWithTheWholesAutoRangeLooksLikeThatPartOfTheWhole) {
+    cv::Mat whole(40, 60, CV_32FC1);
+    cv::randu(whole, cv::Scalar(-5), cv::Scalar(100));
+    whole.at<float>(0, 0) = -1000.0F; // outside the part: the whole's range is wider than the part's
+    whole.at<float>(39, 59) = 5000.0F;
+    whole.at<float>(10, 15) = std::numeric_limits<float>::quiet_NaN(); // inside it
+    whole.at<float>(12, 20) = std::numeric_limits<float>::infinity();
+    const cv::Rect part(10, 5, 25, 20);
+    const viewer_core::DisplayRange range = viewer_core::autoRange(whole);
+
+    for (const auto colours : {viewer_core::ColourMap::Grey, viewer_core::ColourMap::Turbo}) {
+        for (const bool clipping : {false, true}) {
+            const DisplaySettings automatic{.mode = RangeMode::Auto, .colours = colours};
+            const cv::Mat expected = toDisplayImage(whole, automatic, {.showClipping = clipping})(part);
+            const cv::Mat drawn =
+                toDisplayImage(whole(part), automatic, {.showClipping = clipping, .autoRange = range});
+            EXPECT_EQ(cv::norm(drawn, expected, cv::NORM_INF), 0.0) << "clipping " << clipping;
+        }
+    }
+    // Without it, the part is stretched by its own extremes.
+    EXPECT_GT(cv::norm(toDisplayImage(whole(part)), toDisplayImage(whole)(part), cv::NORM_INF), 0.0);
+}
+
+// Other settings never look beyond the pixels they convert, so a part needs no range from the whole.
+TEST(DisplayConverter, APartLooksLikeThatPartOfTheWholeUnderOtherSettings) {
+    const cv::Mat whole = hdrSignal(40, 60);
+    const cv::Rect part(10, 5, 25, 20);
+    const viewer_core::ImageTags hinted{.valueRange = {0, 65535}};
+
+    EXPECT_EQ(cv::norm(toDisplayImage(whole(part), kHdr, {.tags = kHlg, .showClipping = true}),
+                       toDisplayImage(whole, kHdr, {.tags = kHlg, .showClipping = true})(part), cv::NORM_INF),
+              0.0);
+    const DisplaySettings fixed{.mode = RangeMode::Fixed, .range = {1000, 50000}};
+    EXPECT_EQ(cv::norm(toDisplayImage(whole(part), fixed), toDisplayImage(whole, fixed)(part), cv::NORM_INF),
+              0.0);
+    EXPECT_EQ(cv::norm(toDisplayImage(whole(part), DisplaySettings{}, {.tags = hinted}),
+                       toDisplayImage(whole, DisplaySettings{}, {.tags = hinted})(part), cv::NORM_INF),
+              0.0);
+}
+
 TEST(SizeWithin, KeepsTheAspect) {
     EXPECT_EQ(sizeWithin({4000, 3000}, {1024, 1024}), cv::Size(1024, 768));
     EXPECT_EQ(sizeWithin({3000, 4000}, {1024, 1024}), cv::Size(768, 1024));
