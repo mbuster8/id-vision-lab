@@ -708,8 +708,16 @@ std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, bool all
 
 // H.264 at 4K on Apple silicon: FFmpeg's own decoder read a 60 fps clip about four times as fast as
 // VideoToolbox through FFmpeg did, and sought in well under half the time (A2.1's measurements). HEVC went
-// the other way, so it keeps the hardware.
-bool codecPrefersSoftware(std::string_view decoderName) { return decoderName == "h264"; }
+// the other way, so it keeps the hardware. D3D11VA has not been measured: Windows keeps the hardware for
+// both.
+bool codecPrefersSoftware(std::string_view decoderName) {
+#if defined(__APPLE__)
+    return decoderName == "h264";
+#else
+    static_cast<void>(decoderName);
+    return false;
+#endif
+}
 
 FfmpegVideo::FfmpegVideo(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
 

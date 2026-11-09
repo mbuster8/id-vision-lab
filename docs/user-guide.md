@@ -645,8 +645,8 @@ if the replay was playing and paused on the frame otherwise.
 Videos are read through FFmpeg's libraries where the lab has them (every build the
 [build guide](build-guide.md) describes does): a video lands on the exact frame asked for, decoded forward from
 the keyframe before it, which in a 4K video takes a moment; holding ← makes one seek, not one per key press.
-HEVC decodes on the graphics hardware (VideoToolbox on a Mac, D3D11VA on Windows, the processor on Linux);
-H.264, which FFmpeg's own decoder reads faster, on the processor everywhere. A video whose frames
+Videos decode on the graphics hardware where it can (VideoToolbox on a Mac, D3D11VA on Windows; the processor
+on Linux), except H.264 on a Mac, which FFmpeg's own decoder reads and seeks in faster than VideoToolbox does. A video whose frames
 carry no times (a raw `.h264` stream) can only start again. In a video of varying frame rate, such as an
 iPhone's, frame numbers are counted at its average rate, and a seek lands on the first frame at or after that
 time. A video that is damaged part-way stops with `stopped at frame N:` and the reason, never as its end. 10-bit
