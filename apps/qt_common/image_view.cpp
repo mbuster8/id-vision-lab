@@ -35,7 +35,10 @@ QBrush checkerboard(const QPalette& palette) {
 
 } // namespace
 
-ImageView::ImageView(QWidget* parent) : QWidget(parent) {
+ImageView::ImageView(QWidget* parent)
+    : QWidget(parent),
+      m_emptyText(tr("No image yet.\nSend one with visual_debug::sendImage(), stream frames with "
+                     "visual_debug::sendLive(), or use File → Open…")) {
     setMouseTracking(true); // pixel readout while hovering, not only while dragging
     setMinimumSize(200, 200);
 }
@@ -90,6 +93,13 @@ void ImageView::setOverlaysShown(bool shown) {
 }
 
 bool ImageView::overlaysShown() const { return m_overlaysShown; }
+
+void ImageView::setEmptyText(const QString& text) {
+    m_emptyText = text;
+    update();
+}
+
+QString ImageView::emptyText() const { return m_emptyText; }
 
 double ImageView::deviceScaleFor(QSize imageSize, KeepView keep) const {
     // The viewport learns the view's size from the first resize, which comes as the view is shown.
@@ -199,9 +209,7 @@ void ImageView::paintEvent(QPaintEvent*) {
     painter.fillRect(rect(), palette().color(QPalette::Window));
     if (m_image.isNull()) {
         painter.setPen(palette().color(QPalette::WindowText));
-        painter.drawText(rect(), Qt::AlignCenter,
-                         tr("No image yet.\nSend one with visual_debug::sendImage(), stream frames with "
-                            "visual_debug::sendLive(), or use File → Open…"));
+        painter.drawText(rect(), Qt::AlignCenter, m_emptyText);
         return;
     }
     // Only the part of the picture's area in view. Outside the area (a zoomed-in live frame panned past what

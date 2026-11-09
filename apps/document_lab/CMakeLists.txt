@@ -13,8 +13,13 @@ id_vision_lab_copy_ffmpeg_dlls(media_smoke)
 
 # The lab's window and its parts, a library so that the tests can use them.
 add_library(document_lab_ui STATIC
+    camera_backend.h
     camera_frame.cpp
-    camera_frame.h)
+    camera_frame.h
+    lab_settings.cpp
+    lab_settings.h
+    main_window.cpp
+    main_window.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(document_lab_ui
     PUBLIC

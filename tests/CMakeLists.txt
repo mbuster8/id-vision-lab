@@ -90,6 +90,7 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/document_outline_test.cpp
         lab_core/engine_test.cpp
         lab_core/fake_sender.h
+        lab_core/list_source.h
         lab_core/processors_test.cpp
         lab_core/result_sender_test.cpp
     LIBRARIES
@@ -208,8 +209,11 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/test_main.cpp
             qt_common/owner_only.cpp
             document_lab/camera_frame_test.cpp
+            document_lab/fake_camera_backend.h
+            document_lab/main_window_test.cpp
         LIBRARIES
             document_lab_ui
+            opencv_imgproc
             Qt6::Test
             GTest::gtest)
     id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
@@ -217,7 +221,10 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
     # The shared Qt test helpers, such as palette_support.h and control_checks.h.
     target_include_directories(viewer_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
     target_include_directories(example_sender_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
-    target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
+    # The lab's also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
+    target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
+                                                             ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
+                                                             ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
     # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of its
     # own so that it also runs from the installed Windows package.
     add_test(NAME media_smoke COMMAND media_smoke)

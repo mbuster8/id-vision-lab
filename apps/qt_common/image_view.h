@@ -55,6 +55,9 @@ public:
     // Shown at construction. Hiding them only repaints; the picture is not made again.
     void setOverlaysShown(bool shown);
     bool overlaysShown() const;
+    // What the view says while it has no picture: by default, how to send one to the viewer.
+    void setEmptyText(const QString& text);
+    QString emptyText() const;
 
     // A region of the image drawn with Shift + drag, in image pixels, clipped to the image. A new picture of
     // the same image size keeps it; another size, or a left click without a drag, clears it.
@@ -105,4 +108,5 @@ private:
     qt_common::OverlayPainter m_overlayPainter; // keeps the labels laid out between paints
     bool m_overlaysShown = true;
     bool m_regionsEnabled = true;
+    QString m_emptyText;
 };

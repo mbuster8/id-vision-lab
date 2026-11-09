@@ -2,6 +2,7 @@
 
 #include "fake_sender.h"
 #include "latch.h"
+#include "list_source.h"
 #include "scratch_folder.h"
 
 #include <frame_io/recording.h>
@@ -33,74 +34,16 @@ using lab_core::Clock;
 using lab_core::Engine;
 using lab_core::EngineState;
 
+using test_support::framesApart;
+using test_support::ListSource;
+using test_support::openerOf;
+
 // A 4×3 picture of the frame's number.
 frame_io::Frame frameOf(std::uint64_t number, std::chrono::nanoseconds at) {
-    return {.image = cv::Mat(3, 4, CV_8UC3, cv::Scalar::all(static_cast<double>(number % 256))),
-            .number = number,
-            .at = at,
-            .tags = {}};
+    return test_support::listFrame(number, at);
 }
 
 constexpr std::size_t kFrameBytes = 4 * 3 * 3;
-
-std::vector<ReadResult> framesApart(int count, std::chrono::nanoseconds gap) {
-    std::vector<ReadResult> reads;
-    for (int i = 0; i < count; ++i) {
-        const auto number = static_cast<std::uint64_t>(i);
-        reads.push_back({.status = ReadStatus::Frame, .frame = frameOf(number, i * gap), .error = {}});
-    }
-    return reads;
-}
-
-// A replay over a list of reads, always ready. A video file cannot seek; its restart() opens it again.
-class ListSource : public frame_io::ReplaySource {
-public:
-    struct Counters {
-        int restarts = 0;
-    };
-
-    ListSource(std::vector<ReadResult> reads, bool seekable, Counters* counters)
-        : m_reads(std::move(reads)), m_seekable(seekable), m_counters(counters) {}
-
-    ReadResult next() override {
-        if (m_index >= m_reads.size()) {
-            return {.status = ReadStatus::End, .frame = {}, .error = {}};
-        }
-        return m_reads[m_index++];
-    }
-    bool ready() const override { return true; }
-    void setWake(std::function<void()>) override {}
-    bool restart(std::string&) override {
-        m_index = 0;
-        if (m_counters) {
-            ++m_counters->restarts;
-        }
-        return true;
-    }
-    bool canSeek() const override { return m_seekable; }
-    void seek(std::uint64_t index) override { m_index = static_cast<std::size_t>(index); }
-    std::optional<std::uint64_t> frameCount() const override {
-        std::uint64_t frames = 0;
-        for (const ReadResult& read : m_reads) {
-            frames += read.status == ReadStatus::Frame ? 1 : 0;
-        }
-        return frames;
-    }
-    std::string describe() const override { return "list"; }
-
-private:
-    std::vector<ReadResult> m_reads;
-    std::size_t m_index = 0;
-    bool m_seekable;
-    Counters* m_counters;
-};
-
-lab_core::ReplayOpener openerOf(std::vector<ReadResult> reads, bool seekable = true,
-                                ListSource::Counters* counters = nullptr) {
-    return [reads = std::move(reads), seekable, counters](std::string&) {
-        return std::make_unique<ListSource>(reads, seekable, counters);
-    };
-}
 
 // Counts its calls; may throw at a frame or write into its input. Each result's finding is its name.
 class CountingProcessor : public lab_core::FrameProcessor {

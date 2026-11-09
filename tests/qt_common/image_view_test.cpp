@@ -292,6 +292,16 @@ TEST_F(ImageViewTest, BackgroundIsTheWindowColour) {
     EXPECT_EQ(pixelOf(m_view, 100, 10).rgb(), m_view.palette().color(QPalette::Window).rgb());
 }
 
+// The viewer says how to send an image; another program says what fits it.
+TEST_F(ImageViewTest, EmptyTextCanBeChanged) {
+    ImageView view;
+    EXPECT_TRUE(view.emptyText().contains(QStringLiteral("visual_debug::sendImage()")));
+
+    view.setEmptyText(QStringLiteral("Start a camera."));
+
+    EXPECT_EQ(view.emptyText(), QStringLiteral("Start a camera."));
+}
+
 TEST_F(ImageViewTest, TransparentPixelsShowACheckerboard) {
     QImage transparent(100, 100, QImage::Format_RGBA8888);
     transparent.fill(Qt::transparent);
