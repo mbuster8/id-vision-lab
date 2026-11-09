@@ -109,6 +109,9 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/about_test.cpp
             qt_common/appearance_test.cpp
             qt_common/image_file_test.cpp
+            qt_common/image_tags_conversion_test.cpp
+            qt_common/image_view_test.cpp
+            qt_common/live_converter_test.cpp
             qt_common/outline_icons_test.cpp
             qt_common/overlay_painter_test.cpp
             qt_common/qimage_conversion_test.cpp
@@ -116,7 +119,9 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
         LIBRARIES
             qt_common
             viewer_core::viewer_core
+            visual_debug::visual_debug
             opencv_imgcodecs
+            opencv_imgproc
             Qt6::Test
             GTest::gtest)
     id_vision_lab_add_test_executable(viewer_ui_tests
@@ -130,10 +135,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_info_bar_test.cpp
             viewer/image_sidebar_test.cpp
             viewer/image_store_test.cpp
-            viewer/image_tags_conversion_test.cpp
-            viewer/image_view_test.cpp
             viewer/live_channel_panel_test.cpp
-            viewer/live_converter_test.cpp
             viewer/main_window_test.cpp
             viewer/owner_only.cpp
             viewer/owner_only_test.cpp
