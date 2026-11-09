@@ -355,8 +355,12 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
   keeps one waiting frame per channel, the newest, and counts the older ones it replaces as dropped.
 - **Large frames.** A frame drawn smaller than its own pixels, such as a 4K frame fitted to the window, is
   shrunk to the drawn size before it is coloured and drawn, instead of being converted whole and scaled on
-  screen; zooming or resizing the window redraws it at the new size. Zoomed in to 1:1 or closer, the whole
-  frame is converted. The readout, Copy Image, Save As and Snapshot always use the full frame.
+  screen; zooming or resizing the window redraws it at the new size. Zoomed in, only the part in view is
+  converted, with a quarter of the view's width and height around it, so a short pan shows pixels at once; a
+  longer pan shows the window's background at the edge until the next picture, converted at once even for a
+  frozen frame, fills it. Under Auto the part is stretched with the whole frame's range, so it looks as it
+  does fitted. The readout, Copy Image, Save As and the histogram always use the full frame; Snapshot takes
+  what is in view.
 - **Converted beside the window.** The channel in view is converted for the screen, and its histogram
   counted, on a thread of its own, so the window stays free to draw and to answer the mouse while frames
   stream. When frames come faster than they can be converted, the newest waits and older ones are skipped,

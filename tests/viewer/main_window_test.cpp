@@ -2596,8 +2596,15 @@ TEST(MainWindowTest, CopyAndSnapshotTakeTheWholeFrame) {
     EXPECT_EQ(model->index(0).data(ThumbnailModel::ImageSizeRole).toSize(), QSize(4000, 3000));
 }
 
-// Zoomed in to 1:1 or closer, the whole frame is converted, so every pixel shows.
-TEST(MainWindowTest, ZoomingInDrawsTheWholeFrame) {
+// Zooms in at the view's centre until a frame of `frameSize` is drawn at 1:1 or closer.
+void zoomPastOneToOne(ImageView& view, QSize frameSize) {
+    for (int i = 0; i < 20 && view.deviceScaleFor(frameSize, ImageView::KeepView::IfSameSize) < 1.0; ++i) {
+        zoomIn(view, QRectF(view.rect()).center());
+    }
+}
+
+// Zoomed in to 1:1 or closer, the frame's pixels in view are converted at full size, so every pixel shows.
+TEST(MainWindowTest, ZoomedToOneToOneDrawsEveryPixelInView) {
     const auto window = makeTestWindow();
     showSized(*window);
     feedLive(*window, "camera", fourK());
@@ -2605,15 +2612,93 @@ TEST(MainWindowTest, ZoomingInDrawsTheWholeFrame) {
     action(*window, "actionFreeze")->trigger();
     auto* view = window->findChild<ImageView*>();
 
-    for (int i = 0; i < 20 && view->picture().size() != QSize(4000, 3000); ++i) {
-        zoomIn(*view, QRectF(view->rect()).center());
-    }
+    zoomPastOneToOne(*view, QSize(4000, 3000));
 
-    EXPECT_EQ(view->picture().size(), QSize(4000, 3000));
+    EXPECT_TRUE(view->pictureArea().contains(view->visibleArea()));
+    EXPECT_EQ(view->picture().size(), view->pictureArea().size());
 }
 
-// Past 1:1 the picture is the whole frame already, so zooming further, or a resize, converts nothing again:
-// each step of a trackpad zoom would otherwise convert the whole frame.
+// Zoomed in, only the part of the frame in view is converted, with a quarter of the view's width and height
+// around it, so a pan within that shows pixels at once; fitted, the whole frame.
+TEST(MainWindowTest, ZoomedInConvertsOnlyTheAreaInView) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+    ASSERT_EQ(view->pictureArea(), QRect(0, 0, 4000, 3000));
+
+    zoomIn(*view, QRectF(view->rect()).center());
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+
+    const QRect visible = view->visibleArea();
+    const QRect area = view->pictureArea();
+    EXPECT_TRUE(area.contains(visible));
+    EXPECT_NEAR(area.left(), visible.left() - visible.width() / 4, 2);
+    EXPECT_NEAR(area.right(), visible.right() + visible.width() / 4, 2);
+    EXPECT_NEAR(area.top(), visible.top() - visible.height() / 4, 2);
+    EXPECT_NEAR(area.bottom(), visible.bottom() + visible.height() / 4, 2);
+    // Below 1:1, at the size it is drawn.
+    const double scale = view->deviceScaleFor(QSize(4000, 3000), ImageView::KeepView::IfSameSize);
+    ASSERT_LT(scale, 1.0);
+    EXPECT_NEAR(view->picture().width(), area.width() * scale, 2);
+
+    sendMouse(*view, QEvent::MouseButtonDblClick, QRectF(view->rect()).center(), Qt::NoModifier);
+    EXPECT_EQ(view->pictureArea(), QRect(0, 0, 4000, 3000));
+}
+
+// A left-button drag in the view from `from` to `to`: a pan.
+void pan(QWidget& view, QPointF from, QPointF to) {
+    sendMouse(view, QEvent::MouseButtonPress, from, Qt::NoModifier);
+    sendMouse(view, QEvent::MouseMove, to, Qt::NoModifier);
+    sendMouse(view, QEvent::MouseButtonRelease, to, Qt::NoModifier);
+}
+
+// A pan within the converted area's margin converts nothing; past it, even a frozen frame is converted again
+// for what is now in view.
+TEST(MainWindowTest, PanningBeyondTheCutConvertsAgain) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", fourK());
+    QApplication::processEvents();
+    action(*window, "actionFreeze")->trigger();
+    auto* view = window->findChild<ImageView*>();
+    const QPointF centre = QRectF(view->rect()).center();
+    zoomIn(*view, centre);
+    const qint64 converted = view->picture().cacheKey();
+    ASSERT_NE(view->pictureArea(), QRect(0, 0, 4000, 3000));
+
+    pan(*view, centre, centre - QPointF(10, 0));
+    EXPECT_EQ(view->picture().cacheKey(), converted);
+
+    pan(*view, centre, centre - QPointF(view->width() / 2.0, 0));
+    EXPECT_NE(view->picture().cacheKey(), converted);
+    EXPECT_TRUE(view->pictureArea().contains(view->visibleArea()));
+}
+
+// The part converted is stretched with the whole frame's range under Auto, so zooming in does not brighten a
+// dim area: its value 1000 is grey 4 of a frame from 0 to 65535, not black or white as the part's own range.
+TEST(MainWindowTest, ZoomedInLooksAsTheWholeFrameWould) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    cv::Mat frame(3000, 4000, CV_16UC1, cv::Scalar(1000));
+    frame.at<std::uint16_t>(0, 0) = 0;
+    frame.at<std::uint16_t>(2999, 3999) = 65535;
+    feedLive(*window, "camera", frame);
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+
+    zoomIn(*view, QRectF(view->rect()).center());
+    feedLive(*window, "camera", frame);
+    QApplication::processEvents();
+
+    ASSERT_FALSE(view->pictureArea().contains(QRect(0, 0, 1, 1)));
+    EXPECT_EQ(viewedGrey(*window), 4);
+}
+
+// Past 1:1 the picture holds every pixel of its area already, so zooming further, or a resize, converts
+// nothing again: each step of a trackpad zoom would otherwise convert the area again.
 TEST(MainWindowTest, ZoomingPastOneToOneConvertsNothingAgain) {
     const auto window = makeTestWindow();
     showSized(*window);
@@ -2621,10 +2706,8 @@ TEST(MainWindowTest, ZoomingPastOneToOneConvertsNothingAgain) {
     QApplication::processEvents();
     action(*window, "actionFreeze")->trigger();
     auto* view = window->findChild<ImageView*>();
-    for (int i = 0; i < 20 && view->picture().size() != QSize(4000, 3000); ++i) {
-        zoomIn(*view, QRectF(view->rect()).center());
-    }
-    ASSERT_EQ(view->picture().size(), QSize(4000, 3000));
+    zoomPastOneToOne(*view, QSize(4000, 3000));
+    ASSERT_EQ(view->picture().size(), view->pictureArea().size());
     const qint64 converted = view->picture().cacheKey();
 
     zoomIn(*view, QRectF(view->rect()).center());
@@ -3687,6 +3770,36 @@ TEST(MainWindowTest, FirstFrameOfAChannelIsFitted) {
                      view->deviceScaleFor(size, ImageView::KeepView::No));
 }
 
+// A frame arriving while a channel's first picture converts is drawn for the fitted view that picture brings,
+// not for the zoom of the picture still on screen: otherwise the fitted view would show only the part that
+// zoom had in view, with the background around it, until something drew again.
+TEST(MainWindowTest, AFrameArrivingWhileAFitConvertsIsDrawnForTheFit) {
+    test_support::Latch latch;
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    window.setLiveConversionForTests(holdingWhen(
+        latch, [](const LiveJob& job) { return job.channel == "b" && job.keep == ImageView::KeepView::No; }));
+    showSized(window);
+    feedLive(window, "a", fourK());
+    feedLive(window, "b", fourK()); // the same size
+    QApplication::processEvents();
+    ASSERT_TRUE(waitForLiveResults(window, 1));
+    auto* view = window.findChild<ImageView*>();
+    const std::uint64_t before = window.liveResultCountsForTests().received;
+    zoomIn(*view, QRectF(view->rect()).center());
+    ASSERT_TRUE(waitForLiveResults(window, before + 1));
+    ASSERT_NE(view->pictureArea(), QRect(0, 0, 4000, 3000)); // a's zoomed-in cut
+
+    chooseLiveRow(window, QStringLiteral("b")); // b's first job, to be fitted, is held converting
+    ASSERT_TRUE(latch.waitUntilEntered());
+    feedLive(window, "b", fourK());
+    QApplication::processEvents(); // b's next frame's job waits behind it
+    latch.release();
+    ASSERT_TRUE(waitForLiveResults(window, before + 3));
+
+    EXPECT_TRUE(view->pictureArea().contains(view->visibleArea()));
+}
+
 // A zoom whose job is still running, then a fit back: the picture ends at the fitted size, not the zoom's.
 TEST(MainWindowTest, ZoomBackWhileAJobRunsEndsAtTheRightSize) {
     test_support::Latch latch;
@@ -3894,8 +4007,74 @@ TEST(MainWindowMeasurement, DISABLED_LiveFrameCost) {
     cv::setNumThreads(openCvThreads);
 }
 
+// How long a live frame takes from arrival to its picture in the view when zoomed in, which is the
+// conversion's time: 4K frames into a threaded window, 16UC3 HLG (shown as HDR), 16UC3 untagged and 32FC3
+// untagged (Auto, which takes the whole frame's range), each waited for until drawn, zoomed once (four wheel
+// notches, below 1:1) and past 1:1, the strip off and on; median of 60 frames each, and the area and picture
+// converted. Run by hand in a release build: --gtest_also_run_disabled_tests
+// --gtest_filter=*ZoomedLiveFrameCost*
+TEST(MainWindowMeasurement, DISABLED_ZoomedLiveFrameCost) {
+    cv::Mat sixteenBit(2160, 3840, CV_16UC3);
+    cv::randu(sixteenBit, cv::Scalar::all(0), cv::Scalar::all(65536));
+    cv::Mat floats(2160, 3840, CV_32FC3);
+    cv::randu(floats, cv::Scalar::all(0.0), cv::Scalar::all(1.0));
+    const QSize frameSize(3840, 2160);
+    const auto median = [](std::vector<double> values) {
+        std::sort(values.begin(), values.end());
+        return values[values.size() / 2];
+    };
+    struct Kind {
+        const char* name;
+        cv::Mat frame;
+        visual_debug::ImageDescription description;
+    };
+    for (const Kind& kind : {Kind{"16UC3 HLG", sixteenBit, kHlgDescription},
+                             Kind{"16UC3 untagged", sixteenBit, {}}, Kind{"32FC3 untagged", floats, {}}}) {
+        const cv::Mat& frame = kind.frame;
+        const visual_debug::ImageDescription& description = kind.description;
+        for (const bool pastOneToOne : {false, true}) {
+            for (const bool strip : {false, true}) {
+                const auto window =
+                    test_support::makeClockedTestWindow(&Clock::now, LiveConversion::Threaded);
+                showSized(*window);
+                if (strip) {
+                    showHistogram(*window);
+                }
+                feedLive(*window, "camera", frame, std::chrono::system_clock::now(), std::nullopt,
+                         description);
+                ASSERT_TRUE(waitForNextResult(*window));
+                auto* view = window->findChild<ImageView*>();
+                const QPointF centre = QRectF(view->rect()).center();
+                zoomIn(*view, centre);
+                for (int i = 0; pastOneToOne && i < 20 &&
+                                view->deviceScaleFor(frameSize, ImageView::KeepView::IfSameSize) < 1.0;
+                     ++i) {
+                    zoomIn(*view, centre);
+                }
+                QTest::qWait(300); // the zoom's redraw
+                std::vector<double> toView;
+                for (int i = 0; i < 60; ++i) {
+                    QElapsedTimer timer;
+                    timer.start();
+                    feedLive(*window, "camera", frame, std::chrono::system_clock::now(), std::nullopt,
+                             description);
+                    ASSERT_TRUE(waitForNextResult(*window));
+                    toView.push_back(static_cast<double>(timer.nsecsElapsed()) / 1e6);
+                }
+                std::cout << "[ zoomed live frame ] 4K " << kind.name << ", threaded, "
+                          << (pastOneToOne ? "zoomed past 1:1" : "zoomed once") << " ("
+                          << view->deviceScaleFor(frameSize, ImageView::KeepView::IfSameSize)
+                          << " device pixels per frame pixel), strip " << (strip ? "on" : "off") << ": area "
+                          << view->pictureArea().width() << "x" << view->pictureArea().height()
+                          << ", picture " << view->picture().width() << "x" << view->picture().height()
+                          << ", arrival to view " << median(toView) << " ms\n";
+            }
+        }
+    }
+}
+
 // A snapshot taken while 4K HLG frames stream at 30 fps into a threaded window with the histogram strip on,
-// zoomed past 1:1 (a cut; whole frames converted for the view) and fitted (the whole frame): how long the
+// zoomed past 1:1 (a cut; the area in view converted for the view) and fitted (the whole frame): how long the
 // Snapshot action holds the UI thread, how long until the snapshot is listed, and how many pictures the view
 // applied in the second after. Run by hand: --gtest_also_run_disabled_tests
 // --gtest_filter=*SnapshotWhileStreaming*
@@ -3919,7 +4098,9 @@ TEST(MainWindowMeasurement, DISABLED_SnapshotWhileStreaming) {
     auto* view = window->findChild<ImageView*>();
     for (const bool zoomed : {true, false}) {
         if (zoomed) {
-            for (int i = 0; i < 20 && view->picture().size() != QSize(3840, 2160); ++i) {
+            for (int i = 0;
+                 i < 20 && view->deviceScaleFor(QSize(3840, 2160), ImageView::KeepView::IfSameSize) < 1.0;
+                 ++i) {
                 zoomIn(*view, QRectF(view->rect()).center());
                 QTest::qWait(200);
             }

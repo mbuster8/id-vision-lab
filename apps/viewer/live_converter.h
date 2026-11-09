@@ -20,6 +20,13 @@
 #include <string>
 #include <thread>
 
+// What a picture of a live frame covers: the part of the frame, in frame pixels, and the size it is made at.
+struct LiveDrawing {
+    cv::Rect area;
+    cv::Size size;
+    bool operator==(const LiveDrawing&) const = default;
+};
+
 // One picture of the live frame in view to make: everything the conversion needs, copied or shared read-only,
 // so that it never reads the window's state from another thread.
 struct LiveJob {
@@ -29,7 +36,10 @@ struct LiveJob {
     cv::Mat frame;                 // shares the channel's pixels, which nothing changes in place
     viewer_core::DisplaySettings settings{};
     viewer_core::ImageTags tags{};
-    cv::Size drawnSize{}; // what the picture is made at
+    // The part of the frame to convert: zoomed in, what is in view and a margin; empty for the whole frame,
+    // which submit() writes out.
+    cv::Rect area{};
+    cv::Size drawnSize{}; // what the picture of the area is made at
     bool showClipping = false;
     bool histogram = false; // the strip is shown: count the frame's histogram too
     ImageView::KeepView keep = ImageView::KeepView::IfSameSize;
@@ -43,8 +53,9 @@ struct LiveResult {
     std::optional<viewer_core::RangeMarkers> markers{}; // with it
 };
 
-// The picture at the job's drawn size, and the histogram when asked: viewer_core's free functions only, which
-// keep no state, so this runs on any thread.
+// The picture of the job's area at its drawn size, looking as that part of the whole frame's picture (under
+// Auto, with the whole frame's range), and the whole frame's histogram when asked: viewer_core's free
+// functions only, which keep no state, so this runs on any thread.
 LiveResult convertLiveFrame(const LiveJob& job);
 
 // Converts the live frame in view off the UI thread: one worker thread, one waiting job. A job submitted
@@ -70,8 +81,9 @@ public:
     // The job it replaced, if one was still waiting, for the caller to count its frame as skipped. A fit
     // asked by the replaced job (KeepView::No) carries into `job`. A conversion that throws delivers nothing.
     std::optional<LiveJob> submit(LiveJob job);
-    // The drawn size of the newest job submitted: what the view will show next, for deciding on a redraw.
-    std::optional<cv::Size> newestSize() const;
+    // The area and drawn size of the newest job submitted: what the view will show next, for deciding whether
+    // a zoom, pan or resize needs a new picture.
+    std::optional<LiveDrawing> newestDrawing() const;
 
 private:
     void run();
@@ -80,7 +92,7 @@ private:
     Mode m_mode;
     Receiver m_receiver;
     Conversion m_conversion;
-    std::optional<cv::Size> m_newestSize; // the thread that submits only
+    std::optional<LiveDrawing> m_newestDrawing; // the thread that submits only
 
     std::mutex m_mutex;
     std::condition_variable m_wake;

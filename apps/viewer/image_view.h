@@ -33,18 +33,24 @@ public:
     void setImage(const QImage& image, KeepView keep = KeepView::No,
                   viewer_core::ImageTags::Overlays overlays = {});
     // A picture standing for an image of imageSize pixels, made smaller to be drawn at the view's scale:
-    // zoom, pan, the pixel readout and the overlays use imageSize, and the picture is stretched over it.
+    // zoom, pan, the pixel readout and the overlays use imageSize, and the picture is stretched over it. With
+    // a pictureArea, in image pixels, the picture is of that part only, stretched over it; the rest of the
+    // image shows the background. Empty: the whole image.
     void setImage(const QImage& picture, KeepView keep, QSize imageSize,
-                  viewer_core::ImageTags::Overlays overlays = {});
+                  viewer_core::ImageTags::Overlays overlays = {}, QRect pictureArea = {});
     void clear();
     bool hasImage() const;
     // Device pixels per image pixel that a picture of an image this size, set with `keep`, will be drawn at;
     // 1 while the view has no size yet.
     double deviceScaleFor(QSize imageSize, KeepView keep) const;
     const QImage& picture() const; // as set; null for none
+    QRect pictureArea() const;     // the part of the image the picture covers; empty for none
     // Every image pixel at least partly in view, in image pixels: the whole image when fitted; empty for
     // none.
     QRect visibleArea() const;
+    // The same for a picture of an image this size, set with `keep`: the whole image when it will be fitted,
+    // and while the view has no size yet.
+    QRect visibleAreaFor(QSize imageSize, KeepView keep) const;
     const std::vector<viewer_core::Overlay>& overlays() const; // empty for none
     // Shown at construction. Hiding them only repaints; the picture is not made again.
     void setOverlaysShown(bool shown);
@@ -62,6 +68,7 @@ signals:
     void pixelHovered(int x, int y);
     void hoverLeft();
     void scaleChanged(); // after a zoom, a fit or a resize; never for a new picture
+    void panned();       // after a drag moved the image; the scale is unchanged
     void regionChanged(std::optional<QRect> region);
 
 protected:
@@ -81,7 +88,8 @@ private:
     void paintRegionLabel(QPainter& painter, const QRectF& outline) const;
 
     QImage m_image;
-    QSize m_imageSize; // what m_image stands for; its own size unless it was made smaller
+    QSize m_imageSize;   // what m_image stands for; its own size unless it was made smaller
+    QRect m_pictureArea; // the part of it m_image covers: all of it unless a part was converted
     viewer_core::Viewport m_viewport;
     std::optional<QPointF> m_lastDragPosition;
     std::optional<QPointF> m_hoverPosition;   // while the cursor is over the view

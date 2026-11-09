@@ -45,13 +45,15 @@ void ImageView::setImage(const QImage& image, KeepView keep, viewer_core::ImageT
 }
 
 void ImageView::setImage(const QImage& picture, KeepView keep, QSize imageSize,
-                         viewer_core::ImageTags::Overlays overlays) {
+                         viewer_core::ImageTags::Overlays overlays, QRect pictureArea) {
     const bool sameSize = !m_image.isNull() && imageSize == m_imageSize;
     if (!sameSize) {
         clearRegion(); // its pixels are another image's
     }
     m_image = picture;
     m_imageSize = imageSize;
+    const QRect whole(QPoint(0, 0), imageSize);
+    m_pictureArea = pictureArea.isEmpty() ? whole : (pictureArea & whole);
     m_overlays = std::move(overlays);
     if (keep == KeepView::No || !sameSize) {
         m_viewport.setImageSize({imageSize.width(), imageSize.height()});
@@ -67,6 +69,7 @@ void ImageView::clear() {
     clearRegion();
     m_image = QImage();
     m_imageSize = QSize();
+    m_pictureArea = QRect();
     m_overlays.reset();
     m_viewport.setImageSize({0, 0});
     update();
@@ -103,6 +106,18 @@ double ImageView::deviceScaleFor(QSize imageSize, KeepView keep) const {
 }
 
 const QImage& ImageView::picture() const { return m_image; }
+
+QRect ImageView::pictureArea() const { return m_pictureArea; }
+
+QRect ImageView::visibleAreaFor(QSize imageSize, KeepView keep) const {
+    const QRect whole(QPoint(0, 0), imageSize);
+    // As deviceScaleFor: before the first resize the viewport has no view to show anything in.
+    if (!isVisible() || width() <= 0 || height() <= 0 || keep == KeepView::No || m_image.isNull() ||
+        imageSize != m_imageSize) {
+        return whole;
+    }
+    return visibleArea() & whole;
+}
 
 QRect ImageView::visibleArea() const {
     if (m_image.isNull()) {
@@ -180,22 +195,31 @@ void ImageView::paintEvent(QPaintEvent*) {
                             "visual_debug::sendLive(), or use File → Open…"));
         return;
     }
-    const cv::Rect2d source = m_viewport.visibleImageRect();
-    const QRectF target(toQt(m_viewport.imageToView(source.tl())), toQt(m_viewport.imageToView(source.br())));
-    // Under the image, so transparent pixels show as checks. Opaque images cover it completely. The checks
-    // start at the image's corner, so they move with it when panning.
-    painter.setBrushOrigin(toQt(m_viewport.imageToView({0.0, 0.0})));
-    painter.fillRect(target, checkerboard(palette()));
-    // The picture may be smaller than the image it stands for: its pixels per image pixel.
-    const double pictureScale = static_cast<double>(m_image.width()) / m_imageSize.width();
-    // Smooth when shrinking; nearest-neighbour when enlarging, so individual pixels stay visible. A picture
-    // made at the drawn size is copied about 1:1, where smoothing would only cost.
-    const double devicePerPicturePixel = m_viewport.scale() * devicePixelRatioF() / pictureScale;
-    painter.setRenderHint(QPainter::SmoothPixmapTransform,
-                          m_viewport.scale() < 1.0 && std::abs(devicePerPicturePixel - 1.0) > 0.01);
-    painter.drawImage(target, m_image,
-                      QRectF(source.x * pictureScale, source.y * pictureScale, source.width * pictureScale,
-                             source.height * pictureScale));
+    // Only the part of the picture's area in view. Outside the area (a zoomed-in live frame panned past what
+    // was converted) the background shows until the next picture covers it.
+    const cv::Rect2d area(m_pictureArea.x(), m_pictureArea.y(), m_pictureArea.width(),
+                          m_pictureArea.height());
+    const cv::Rect2d source = m_viewport.visibleImageRect() & area;
+    if (source.width > 0.0 && source.height > 0.0) {
+        const QRectF target(toQt(m_viewport.imageToView(source.tl())),
+                            toQt(m_viewport.imageToView(source.br())));
+        // Under the image, so transparent pixels show as checks. Opaque images cover it completely. The
+        // checks start at the image's corner, so they move with it when panning.
+        painter.setBrushOrigin(toQt(m_viewport.imageToView({0.0, 0.0})));
+        painter.fillRect(target, checkerboard(palette()));
+        // The picture may be smaller than its area: its pixels per image pixel, across and down, each
+        // rounded its own way when it was made.
+        const double scaleX = m_image.width() / area.width;
+        const double scaleY = m_image.height() / area.height;
+        // Smooth when shrinking; nearest-neighbour when enlarging, so individual pixels stay visible. A
+        // picture made at the drawn size is copied about 1:1, where smoothing would only cost.
+        const double devicePerPicturePixel = m_viewport.scale() * devicePixelRatioF() / scaleX;
+        painter.setRenderHint(QPainter::SmoothPixmapTransform,
+                              m_viewport.scale() < 1.0 && std::abs(devicePerPicturePixel - 1.0) > 0.01);
+        painter.drawImage(target, m_image,
+                          QRectF((source.x - area.x) * scaleX, (source.y - area.y) * scaleY,
+                                 source.width * scaleX, source.height * scaleY));
+    }
     if (m_overlaysShown && m_overlays) {
         // Image pixels, not the picture's, which may be smaller.
         const QPointF origin = toQt(m_viewport.imageToView({0.0, 0.0}));
@@ -265,6 +289,7 @@ void ImageView::mouseMoveEvent(QMouseEvent* event) {
         m_viewport.panBy(toCv(event->position() - *m_lastDragPosition));
         m_lastDragPosition = event->position();
         update();
+        emit panned();
     }
     reportPixelAt(event->position());
 }

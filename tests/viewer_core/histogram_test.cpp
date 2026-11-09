@@ -20,7 +20,6 @@
 
 namespace {
 
-using viewer_core::autoRange;
 using viewer_core::DisplayRange;
 using viewer_core::DisplaySettings;
 using viewer_core::ImageTags;
@@ -86,12 +85,20 @@ TEST(ValueExtent, AlphaInAllButNotInColours) {
 
     EXPECT_EQ(extent.all, (DisplayRange{100, 65535}));
     EXPECT_EQ(extent.colours, (DisplayRange{100, 100}));
-    ASSERT_TRUE(extent.all);
-    EXPECT_EQ(*extent.all, autoRange(image));
+}
+
+// OpenCV's masked pass over the finite values of a float image: what the threaded pieces must combine to.
+DisplayRange maskedFiniteExtremes(const cv::Mat& image) {
+    const cv::Mat values = image.reshape(1);
+    cv::Mat finite; // NaN fails every comparison, so one "|v| <= max" test leaves out NaN and infinities
+    cv::compare(cv::abs(values), std::numeric_limits<float>::max(), finite, cv::CMP_LE);
+    DisplayRange range;
+    cv::minMaxIdx(values, &range.min, &range.max, nullptr, nullptr, finite);
+    return range;
 }
 
 // Large enough to be split across threads, so the pieces' results must combine to the masked pass's.
-TEST(ValueExtent, LargeFloatFrameMatchesAutoRange) {
+TEST(ValueExtent, LargeFloatFrameMatchesTheMaskedPass) {
     cv::Mat image(1080, 1920, CV_32FC1);
     cv::randn(image, 0.0, 1.0);
     cv::Mat flat = image.reshape(1, 1);
@@ -106,7 +113,7 @@ TEST(ValueExtent, LargeFloatFrameMatchesAutoRange) {
     const ValueExtent extent = valueExtent(image);
 
     ASSERT_TRUE(extent.all);
-    EXPECT_EQ(*extent.all, autoRange(image));
+    EXPECT_EQ(*extent.all, maskedFiniteExtremes(image));
     EXPECT_EQ(extent.colours, extent.all);
     EXPECT_EQ(extent.nonFinite, planted);
 }

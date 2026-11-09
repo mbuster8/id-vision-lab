@@ -6,6 +6,7 @@
 #include <opencv2/core/mat.hpp>
 
 #include <cstddef>
+#include <optional>
 
 namespace viewer_core {
 
@@ -38,6 +39,10 @@ struct DisplayOptions {
     cv::Size size{};
     ImageTags tags{};
     bool showClipping = false;
+    // For an image that is part of a larger one: the whole's autoRange, which Auto stretches instead of the
+    // part's own extremes, so the part looks as it does in the whole. Every other setting reads only the
+    // pixels it converts.
+    std::optional<DisplayRange> autoRange{};
 };
 
 // The one the others call. With a value-range hint in the tags, Auto maps the hint as Fixed maps its range,

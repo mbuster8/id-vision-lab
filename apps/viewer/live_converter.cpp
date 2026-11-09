@@ -10,9 +10,19 @@
 
 LiveResult convertLiveFrame(const LiveJob& job) {
     LiveResult result{.job = job, .imageSize = QSize(job.frame.cols, job.frame.rows)};
+    const cv::Rect whole(0, 0, job.frame.cols, job.frame.rows);
+    const cv::Rect area = job.area.empty() ? whole : (job.area & whole);
+    // Auto stretches the whole frame's extremes, not the part's, so the part looks as it does in the whole.
+    std::optional<viewer_core::DisplayRange> autoRange;
+    const bool automatic = job.settings.mode == viewer_core::RangeMode::Auto ||
+                           (job.settings.mode == viewer_core::RangeMode::Hdr &&
+                            !viewer_core::showsHdr(job.settings, job.tags, job.frame.channels()));
+    if (area != whole && automatic) {
+        autoRange = viewer_core::autoRange(job.frame, job.tags);
+    }
     result.picture = qt_common::wrapAsQImage(viewer_core::toDisplayImage(
-        job.frame, job.settings,
-        {.size = job.drawnSize, .tags = job.tags, .showClipping = job.showClipping}));
+        job.frame(area), job.settings,
+        {.size = job.drawnSize, .tags = job.tags, .showClipping = job.showClipping, .autoRange = autoRange}));
     if (job.histogram) {
         const viewer_core::ValueExtent extent = viewer_core::valueExtent(job.frame);
         result.markers = viewer_core::rangeMarkers(job.frame.depth(), job.frame.channels(), job.settings,
@@ -43,7 +53,10 @@ LiveConverter::~LiveConverter() {
 }
 
 std::optional<LiveJob> LiveConverter::submit(LiveJob job) {
-    m_newestSize = job.drawnSize;
+    if (job.area.empty()) {
+        job.area = cv::Rect(0, 0, job.frame.cols, job.frame.rows);
+    }
+    m_newestDrawing = LiveDrawing{job.area, job.drawnSize};
     if (m_mode == Mode::Immediate) {
         if (std::optional<LiveResult> result = convert(job)) {
             m_receiver(std::move(*result));
@@ -65,7 +78,7 @@ std::optional<LiveJob> LiveConverter::submit(LiveJob job) {
     return replaced;
 }
 
-std::optional<cv::Size> LiveConverter::newestSize() const { return m_newestSize; }
+std::optional<LiveDrawing> LiveConverter::newestDrawing() const { return m_newestDrawing; }
 
 void LiveConverter::run() {
     for (;;) {
