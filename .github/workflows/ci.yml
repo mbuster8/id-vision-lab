@@ -36,6 +36,13 @@ jobs:
           cmake --build --preset debug
           ctest --preset debug
 
+      # Without NSCameraUsageDescription macOS ends the app when it asks for the camera; the second key lists
+      # an iPhone as a camera (Continuity Camera).
+      - name: The Document Lab's bundle asks for the camera
+        run: |
+          plutil -extract NSCameraUsageDescription raw build/debug/apps/document_lab/document_lab.app/Contents/Info.plist
+          plutil -extract NSCameraUseContinuityCameraDeviceType raw build/debug/apps/document_lab/document_lab.app/Contents/Info.plist
+
       - name: Configure, build and test (AddressSanitizer and UndefinedBehaviorSanitizer)
         run: |
           cmake --preset asan

@@ -1,5 +1,8 @@
 #include "main_window.h"
 
+#include "about.h"
+#include "appearance.h"
+#include "application_identity.h"
 #include "camera_formats.h"
 #include "image_tags_conversion.h"
 #include "live_drawing.h"
@@ -28,6 +31,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPointer>
@@ -167,6 +172,13 @@ LabWindow::~LabWindow() {
 
 void LabWindow::buildUi() {
     setWindowTitle(tr("Document Lab"));
+    // View holds the appearance only, which Qt before 6.8 cannot offer; Help, the About box.
+    QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
+    if (qt_common::addAppearanceMenu(viewMenu) == nullptr) {
+        viewMenu->menuAction()->setVisible(false);
+    }
+    qt_common::addHelpMenu(menuBar(),
+                           QCoreApplication::translate("About", qt_common::kDocumentLabDescription));
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
 

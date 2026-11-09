@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="document_lab_icon.png">../../resources/icons/document_lab_icon.png</file>
+    </qresource>
+</RCC>

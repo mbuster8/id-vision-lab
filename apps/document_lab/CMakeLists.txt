@@ -35,3 +35,27 @@ target_link_libraries(document_lab_ui
         opencv_imgcodecs
         opencv_imgproc)
 id_vision_lab_set_warnings(document_lab_ui)
+
+# The app. Resources belong to the executable: a static library's are dropped by the linker unless initialised
+# by hand. qt_add_executable's finaliser reads the Info.plist and links the camera permission plug-in that its
+# NSCameraUsageDescription needs; it is also imported by name, so a Qt whose finaliser does not still has it.
+qt_add_executable(document_lab MACOSX_BUNDLE
+    main.cpp
+    resources.qrc)
+set_target_properties(document_lab PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_NAME "Document Lab"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.proximasus.document-lab"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+    WIN32_EXECUTABLE ON)
+target_compile_definitions(document_lab PRIVATE ID_VISION_LAB_VERSION="${PROJECT_VERSION}")
+target_link_libraries(document_lab PRIVATE document_lab_ui)
+if(APPLE AND TARGET Qt6::QDarwinCameraPermissionPlugin)
+    qt_import_plugins(document_lab INCLUDE Qt6::QDarwinCameraPermissionPlugin)
+endif()
+id_vision_lab_add_bundle_icon(document_lab "${PROJECT_SOURCE_DIR}/resources/icons/document_lab_icon.png")
+id_vision_lab_use_utf8_code_page(document_lab)
+id_vision_lab_copy_ffmpeg_dlls(document_lab)
+id_vision_lab_set_warnings(document_lab)
+id_vision_lab_add_sanitizer_defaults(document_lab)
