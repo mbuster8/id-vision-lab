@@ -138,9 +138,15 @@ Written writeFrames(const std::string& path, const Settings& settings, int frame
     if (output->oformat->flags & AVFMT_GLOBALHEADER) {
         encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
+    // Scene-change detection would make every frame of a numbered clip, whose brightness changes each frame,
+    // a keyframe, and a seek would then never decode forward from an earlier one. Encoders without the option
+    // leave it in the dictionary.
+    AVDictionary* encoderOptions = nullptr;
+    av_dict_set(&encoderOptions, "sc_threshold", "1000000000", 0);
     AVStream* stream = avformat_new_stream(output.get(), nullptr);
-    if (!stream || avcodec_open2(encoder.get(), codec, nullptr) < 0 ||
-        avcodec_parameters_from_context(stream->codecpar, encoder.get()) < 0) {
+    const int opened = stream ? avcodec_open2(encoder.get(), codec, &encoderOptions) : -1;
+    av_dict_free(&encoderOptions);
+    if (opened < 0 || avcodec_parameters_from_context(stream->codecpar, encoder.get()) < 0) {
         return Written::Failed;
     }
     stream->time_base = encoder->time_base;

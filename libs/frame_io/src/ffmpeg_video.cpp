@@ -482,8 +482,12 @@ bool FfmpegVideo::Impl::seek(std::chrono::nanoseconds at, const std::function<bo
     }
     const AVRational nanoseconds{1, 1'000'000'000};
     const std::int64_t target = *firstTimestamp + av_rescale_q(at.count(), nanoseconds, timeBase);
-    const std::int64_t half =
-        info.fps > 0.0 ? av_rescale_q(std::llround(0.5e9 / info.fps), nanoseconds, timeBase) : 0;
+    // Half a frame, compared in nanoseconds: in a time base of one tick a frame (AVI, IVF), half a frame
+    // rounded to ticks would be a whole one, and the frame before the target would pass for it.
+    const std::int64_t half = info.fps > 0.0 ? std::llround(0.5e9 / info.fps) : 0;
+    const auto fromTarget = [&](std::int64_t timestamp) {
+        return av_rescale_q(timestamp - *firstTimestamp, timeBase, nanoseconds) - at.count();
+    };
     std::int64_t from = target;
     std::int64_t back = av_rescale_q(1'000'000'000, nanoseconds, timeBase); // a second, doubled each try
     for (;;) {
@@ -509,7 +513,7 @@ bool FfmpegVideo::Impl::seek(std::chrono::nanoseconds at, const std::function<bo
             // The first frame decoded already past the target: the seek landed late (an index by decoding
             // time, an open GOP's dropped leading frames), so try again from earlier, down to the first
             // frame.
-            if (firstDecoded && timestamp != AV_NOPTS_VALUE && timestamp > target + half &&
+            if (firstDecoded && timestamp != AV_NOPTS_VALUE && fromTarget(timestamp) > half &&
                 from > *firstTimestamp) {
                 from = std::max(target - back, *firstTimestamp);
                 back *= 2;
@@ -517,7 +521,7 @@ bool FfmpegVideo::Impl::seek(std::chrono::nanoseconds at, const std::function<bo
                 continue;
             }
             firstDecoded = false;
-            if (timestamp == AV_NOPTS_VALUE || timestamp >= target - half) {
+            if (timestamp == AV_NOPTS_VALUE || fromTarget(timestamp) >= -half) {
                 const AVFrame* kept = inMemory(frame);
                 if (!kept) {
                     return false;

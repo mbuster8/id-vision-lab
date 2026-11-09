@@ -444,6 +444,20 @@ TEST(FfmpegVideo, SeekLandsOnEveryFrameWithBFrames) {
     expectEverySeekLands(path);
 }
 
+// AVI counts time in frames, one tick each: half a frame must not round up to a whole one, or a seek would
+// take the frame before the one asked for.
+TEST(FfmpegVideo, SeekLandsOnEveryFrameOfAnAvi) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.avi");
+    const Written written = test_support::writeNumberedClip(path, NumberedClip{.encoder = "mpeg4"});
+    if (written == Written::NoEncoder) {
+        GTEST_SKIP() << "this FFmpeg has no mpeg4 encoder";
+    }
+    ASSERT_EQ(written, Written::Yes);
+
+    expectEverySeekLands(path);
+}
+
 TEST(FfmpegVideo, SeekBackwardsAndForwards) {
     const ScratchFolder folder;
     const std::string path = folder.file("numbered.mkv");
