@@ -98,7 +98,7 @@ Reader openReader(const std::filesystem::path& file, std::optional<std::uint64_t
     std::string ffmpegError;
     std::shared_ptr<FfmpegVideo> video = FfmpegVideo::open(path, true, ffmpegError);
     if (video && needsFfmpeg(video->info())) {
-        count.reset();
+        count = video->info().frameCount;
         return readerOf(std::move(video));
     }
 #endif

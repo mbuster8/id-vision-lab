@@ -5,6 +5,7 @@
 #include <opencv2/core/mat.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -17,8 +18,9 @@ struct VideoFrame {
 };
 
 struct VideoInfo {
-    cv::Size size;    // upright
-    double fps = 0.0; // the stream's average rate; 0 if unknown
+    cv::Size size;                           // upright
+    double fps = 0.0;                        // the stream's average rate; 0 if unknown
+    std::optional<std::uint64_t> frameCount; // as the file's header gives it, or its duration and rate
     int bitDepth = 8;
     visual_debug::ValueRange valueRange;                                // nominal black and white, measured
     visual_debug::Transfer transfer = visual_debug::Transfer::Sdr;      // unknown is SDR

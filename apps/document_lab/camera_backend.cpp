@@ -108,12 +108,12 @@ public:
         const quint64 session = m_sessionNumber;
         connect(m_sink.get(), &QVideoSink::videoFrameChanged, this,
                 [this, session](const QVideoFrame& frame) { emit frameArrived(frame, session); });
-        connect(m_camera.get(), &QCamera::errorOccurred, this,
-                [this, session](QCamera::Error error, const QString& reason) {
-                    if (error != QCamera::NoError && session == m_sessionNumber) {
-                        emit failed(reason.isEmpty() ? tr("The camera failed.") : reason);
-                    }
-                });
+        // A late error of a stopped camera, or of an earlier start, is not this session's.
+        reportCameraErrorsLater(*m_camera, *this, [this, session](const QString& reason) {
+            if (m_camera && session == m_sessionNumber) {
+                emit failed(reason);
+            }
+        });
         m_camera->start();
         return session;
     }
@@ -156,5 +156,21 @@ private:
 } // namespace
 
 std::unique_ptr<CameraBackend> makeQtCameraBackend() { return std::make_unique<QtCameraBackend>(); }
+
+// Queued, because the answer to an error is to stop the camera, which deletes it, and Qt goes on using the
+// camera after the error signal's slots return (QErrorInfo::setAndNotify emits errorChanged next).
+void reportCameraErrorsLater(QCamera& camera, QObject& context,
+                             std::function<void(const QString& reason)> report) {
+    QObject::connect(
+        &camera, &QCamera::errorOccurred, &context,
+        [report = std::move(report)](QCamera::Error error, const QString& reason) {
+            if (error != QCamera::NoError) {
+                report(reason.isEmpty() ? QCoreApplication::translate("document_lab::QtCameraBackend",
+                                                                      "The camera failed.")
+                                        : reason);
+            }
+        },
+        Qt::QueuedConnection);
+}
 
 } // namespace document_lab

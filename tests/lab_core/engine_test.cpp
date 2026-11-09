@@ -265,6 +265,23 @@ TEST(Engine, RestartAndLoop) {
     EXPECT_EQ(restarted->generation, generation + 2);
 }
 
+// At the end of a replay, Play (and Space) plays it again from its first frame, as players do.
+TEST(Engine, PlayAtTheEndStartsAgain) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    for (std::uint64_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(h.nextNumber(), i);
+    }
+    h.engine.pump();
+    ASSERT_EQ(h.engine.status().state, EngineState::Ended);
+
+    h.engine.play();
+
+    EXPECT_EQ(h.nextNumber(), 0U);
+    EXPECT_EQ(h.engine.status().state, EngineState::Playing);
+}
+
 // A video file cannot seek: Restart opens it again, and Step back is not offered.
 TEST(Engine, RestartReopensAVideo) {
     Harness h;

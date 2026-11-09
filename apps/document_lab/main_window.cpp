@@ -354,6 +354,9 @@ void LabWindow::buildUi() {
 }
 
 void LabWindow::startReplay(lab_core::ReplayOpener open) {
+    if (m_closing) {
+        return; // the window would wait for this run too
+    }
     stop(); // a camera running stops first
     beginRun();
     m_engine->startReplay(std::move(open));
@@ -395,10 +398,13 @@ void LabWindow::stop() {
     refreshStatus();
 }
 
-// Start while nothing runs and there is a camera; Stop while anything runs.
+// Start while nothing runs and there is a camera; Stop while anything runs. Nothing starts while the window
+// waits to close.
 void LabWindow::updateStartStop() {
     m_startStop->setText(m_running ? tr("Stop") : tr("Start"));
-    m_startStop->setEnabled(m_running || currentCamera() != nullptr);
+    m_startStop->setEnabled(!m_closing && (m_running || currentCamera() != nullptr));
+    m_openFile->setEnabled(!m_closing);
+    m_openFolder->setEnabled(!m_closing);
 }
 
 // --- Cameras
@@ -477,7 +483,7 @@ void LabWindow::startOrStop() {
 
 // Camera access first; the answer may come later, by when the window may be gone.
 void LabWindow::startCamera() {
-    if (currentCamera() == nullptr || !currentFormat()) {
+    if (currentCamera() == nullptr) {
         return;
     }
     m_message.clear();
@@ -504,16 +510,18 @@ void LabWindow::startCamera() {
 
 void LabWindow::startCameraGranted() {
     const CameraInfo* camera = currentCamera();
-    const std::optional<CameraFormat> format = currentFormat();
-    if (camera == nullptr || !format) {
+    if (camera == nullptr || m_closing) {
         return;
     }
+    // A camera that lists no formats starts in its own default: no format matches an empty one.
+    const std::optional<CameraFormat> format = currentFormat();
     stop(); // a replay running stops first
     beginRun();
     m_cameraRunning = true;
     m_geometry = {.frontCamera = camera->front};
-    m_engine->startLive((camera->name + QStringLiteral(" · ") + format->label()).toStdString());
-    m_session = m_dependencies.cameras->start(camera->id, *format);
+    m_engine->startLive(
+        (format ? camera->name + QStringLiteral(" · ") + format->label() : camera->name).toStdString());
+    m_session = m_dependencies.cameras->start(camera->id, format.value_or(CameraFormat{}));
     refreshStatus();
 }
 
@@ -798,6 +806,24 @@ void LabWindow::chooseProcessor(int index) {
     const lab_core::ProcessorKind kind = kProcessors[static_cast<std::size_t>(index)];
     m_settings.setProcessor(qtString(lab_core::nameOf(kind)));
     m_engine->setProcessor(m_dependencies.makeProcessor(kind));
+    forgetShowEntries();
+}
+
+// Show lists the pictures of the processor chosen: the earlier one's go, the frame shows until the choice
+// made (still wanted) comes back with a picture of that name.
+void LabWindow::forgetShowEntries() {
+    const QString shown = m_showCombo->currentText();
+    {
+        const QSignalBlocker blocker(m_showCombo);
+        while (m_showCombo->count() > 1) {
+            m_showCombo->removeItem(m_showCombo->count() - 1);
+        }
+        m_showCombo->setCurrentIndex(0);
+    }
+    if (shown != kFrameEntry) {
+        viewChanged();
+        display(ImageView::KeepView::IfSameSize);
+    }
 }
 
 void LabWindow::chooseShow(int index) {
@@ -1007,6 +1033,7 @@ void LabWindow::closeEvent(QCloseEvent* event) {
     if (!m_closing) {
         m_closing = true;
         stop();
+        updateStartStop();
         m_engine->setSender(nullptr);
     }
     if (m_dependencies.engineMode == lab_core::Engine::Mode::Immediate) {

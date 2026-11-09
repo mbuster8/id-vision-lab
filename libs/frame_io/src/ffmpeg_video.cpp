@@ -129,6 +129,28 @@ int dolbyVisionProfileOf(const AVCodecParameters* parameters) {
     return reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(record->data)->dv_profile;
 }
 
+// The frame count the header gives: the stream's own (MOV and MP4 store it), else its duration, or the
+// file's, at its average rate (Matroska stores only a duration). Nothing if the header gives neither.
+std::optional<std::uint64_t> frameCountOf(const AVFormatContext& input, const AVStream& stream) {
+    if (stream.nb_frames > 0) {
+        return static_cast<std::uint64_t>(stream.nb_frames);
+    }
+    const AVRational rate = stream.avg_frame_rate;
+    if (rate.num <= 0 || rate.den <= 0) {
+        return std::nullopt;
+    }
+    double seconds = 0.0;
+    if (stream.duration != AV_NOPTS_VALUE && stream.duration > 0) {
+        seconds = static_cast<double>(stream.duration) * av_q2d(stream.time_base);
+    } else if (input.duration != AV_NOPTS_VALUE && input.duration > 0) {
+        seconds = static_cast<double>(input.duration) / static_cast<double>(AV_TIME_BASE);
+    } else {
+        return std::nullopt;
+    }
+    const double frames = std::round(seconds * av_q2d(rate));
+    return frames >= 1.0 ? std::optional<std::uint64_t>(static_cast<std::uint64_t>(frames)) : std::nullopt;
+}
+
 // swscale numbers its matrices as FFmpeg's colour spaces, apart from the unknown ones, which are BT.709 here.
 int swsColourspaceOf(AVColorSpace matrix) {
     switch (matrix) {
@@ -502,6 +524,7 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
                                             : cv::Size(first->height, first->width);
     const AVRational rate = stream->avg_frame_rate;
     info.fps = rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0;
+    info.frameCount = frameCountOf(*input, *stream);
     info.bitDepth = av_pix_fmt_desc_get(format)->comp[0].depth;
     info.valueRange = calibration->valueRange;
     info.transfer = transferOf(tagOf(first->color_trc, parameters->color_trc, AVCOL_TRC_UNSPECIFIED));

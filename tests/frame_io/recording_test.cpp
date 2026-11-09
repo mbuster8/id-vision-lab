@@ -164,6 +164,31 @@ TEST(Recording, IncompleteReplaysListedAndLaterFrames) {
     }
 }
 
+// A recording's JSON names files inside its own folder only: one from elsewhere (a recording someone sent,
+// edited to point outside it) would replay, and send on, any image the user can read.
+TEST(Recording, FileOutsideTheFolderIsRefused) {
+    const ScratchFolder root;
+    const std::filesystem::path folder = root.path() / "recording";
+    std::filesystem::create_directory(folder);
+    {
+        auto writer = startIn(folder, immediate());
+        writer->push(grey(10, 0, 0ms));
+        writer->finish();
+    }
+    ASSERT_TRUE(
+        cv::imwrite((root.path() / "outside.png").string(), cv::Mat(8, 8, CV_8UC3, cv::Scalar::all(99))));
+    const nlohmann::json written = jsonIn(folder);
+    for (const std::string& file : {std::string("../outside.png"), (root.path() / "outside.png").string()}) {
+        nlohmann::json edited = written;
+        edited["frames"][0]["file"] = file;
+        std::ofstream(folder / "recording.json", std::ios::trunc) << edited.dump();
+        std::string error;
+
+        EXPECT_EQ(frame_io::openRecording(folder, error), nullptr) << file;
+        EXPECT_NE(error.find("outside"), std::string::npos) << error;
+    }
+}
+
 TEST(Recording, WithoutJsonIsAFolderOfImages) {
     const ScratchFolder folder;
     {

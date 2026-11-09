@@ -12,6 +12,8 @@
 #include <memory>
 #include <vector>
 
+class QCamera;
+
 namespace document_lab {
 
 // One way a camera can deliver frames.
@@ -58,5 +60,10 @@ signals:
 // Qt Multimedia's cameras: QMediaDevices' list, a new QCamera, capture session and QVideoSink per start(),
 // and the platform's camera permission from Qt 6.5.
 std::unique_ptr<CameraBackend> makeQtCameraBackend();
+
+// Passes `camera`'s errors to `report` on `context`'s thread, with a reason ("The camera failed." when Qt
+// gives none), once the camera's signal has returned.
+void reportCameraErrorsLater(QCamera& camera, QObject& context,
+                             std::function<void(const QString& reason)> report);
 
 } // namespace document_lab

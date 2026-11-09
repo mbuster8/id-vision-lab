@@ -127,6 +127,21 @@ TEST(VideoSource, TenBitClipComesThroughFfmpeg) {
     EXPECT_EQ(frames, test_support::kClipFrames);
 }
 
+// FFmpeg reports most damage to a 10-bit or HDR file as its end, so such a file needs its header's frame
+// count as much as an 8-bit one does to stop with an error when it is cut short (ClipCutShortIsAnError).
+TEST(VideoSource, TenBitClipKnowsItsFrameCount) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("hlg.mkv");
+    ASSERT_TRUE(test_support::writeClip(path, test_support::Clip{.transfer = AVCOL_TRC_ARIB_STD_B67}));
+    std::string error;
+    const auto source = frame_io::openVideo(path, error);
+    ASSERT_NE(source, nullptr) << error;
+
+    EXPECT_EQ(source->frameCount(), std::optional<std::uint64_t>(test_support::kClipFrames));
+    ASSERT_TRUE(source->restart(error)) << error;
+    EXPECT_EQ(source->frameCount(), std::optional<std::uint64_t>(test_support::kClipFrames));
+}
+
 // FFmpeg tells a failed read from the end of the file; only the end leaves lastError empty.
 TEST(FfmpegVideo, LastErrorEmptyAtTheEnd) {
     const ScratchFolder folder;

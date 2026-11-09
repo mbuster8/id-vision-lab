@@ -5,6 +5,7 @@
 #include <opencv2/core.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -172,6 +173,20 @@ TEST(FfmpegVideo, TimestampsFromTheFirstFrame) {
     for (std::size_t i = 0; i < frames.size(); ++i) {
         const std::chrono::duration<double, std::milli> at = frames[i].at;
         EXPECT_NEAR(at.count(), static_cast<double>(i) * 1000.0 / 30.0, 1.0) << "frame " << i;
+    }
+}
+
+// The frame count the file's header gives, which tells a file cut short from its end: MOV stores the count,
+// Matroska a duration, which with the rate gives it.
+TEST(FfmpegVideo, InfoHasTheFrameCount) {
+    const ScratchFolder folder;
+    for (const char* name : {"clip.mkv", "clip.mov"}) {
+        const std::string path = folder.file(name);
+        ASSERT_TRUE(writeClip(path, Clip{})) << name;
+        const std::unique_ptr<FfmpegVideo> video = openInSoftware(path);
+        ASSERT_NE(video, nullptr) << name;
+
+        EXPECT_EQ(video->info().frameCount, std::optional<std::uint64_t>(kClipFrames)) << name;
     }
 }
 

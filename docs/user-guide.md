@@ -599,7 +599,8 @@ The canvas is the viewer's: the wheel zooms at the cursor, a drag pans, a double
 chooses what runs on each frame: **None**, **Edges** (the frame's edges as a picture, and their share of the
 frame) or **Outline** (the document's outline, drawn over the frame). **Show** chooses what the canvas shows:
 the **Frame**, or a picture the processor made, such as `edges`; a picture the frame on screen does not have
-says so instead of showing an older one. **Overlays**, on from the start, draws what the processor found over
+says so instead of showing an older one. Choosing another processor leaves only its own pictures in the list,
+and the frame shows until a picture of the name chosen comes back. **Overlays**, on from the start, draws what the processor found over
 the frame; turned off, only the drawing goes. The results panel beside the canvas lists the processor's
 findings for the frame on screen, such as `document: found`.
 
@@ -616,7 +617,7 @@ names compared as numbers, 30 frames a second) or a recording. Every frame is pr
 video's pace or slower: a frame the processing could not keep up with is shown late, never skipped.
 **Play**/**Pause**, **Step** (the next frame), **Step Back** (folders and recordings only), **Restart**,
 **Loop** and **As fast as possible**; Space plays and pauses, → steps and ← steps back, except while a button
-has the focus, when Space presses it. A video that is damaged part-way stops with `stopped at frame N:` and
+has the focus, when Space presses it. **Play** at the end plays the replay again from its first frame. A video that is damaged part-way stops with `stopped at frame N:` and
 the reason, never as its end. 10-bit and HDR videos (an iPhone's HLG, PQ) are read as 16-bit frames with their
 tags.
 

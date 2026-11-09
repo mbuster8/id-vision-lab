@@ -208,16 +208,31 @@ TEST(LabWindow, ShowListsDebugImages) {
     EXPECT_EQ(lab.entries("showCombo"), (QStringList{QStringLiteral("Frame"), QStringLiteral("edges")}));
 }
 
+// A processor that makes its "edges" picture for the first frame only.
+class FirstFrameEdges : public lab_core::FrameProcessor {
+public:
+    lab_core::ProcessorResult process(const frame_io::Frame& frame) override {
+        lab_core::ProcessorResult result;
+        if (frame.number == 0) {
+            result.images.push_back({.name = "edges", .image = frame.image.clone(), .description = {}});
+        }
+        return result;
+    }
+    void reset() override {}
+};
+
 // Show keeps a picture the frames no longer have, and says so; nothing is drawn for it meanwhile.
 TEST(LabWindow, MissingShowEntryShowsThePlaceholder) {
-    Lab lab;
-    lab.choose("processorCombo", QStringLiteral("Edges"));
+    Lab lab([](LabDependencies& dependencies) {
+        dependencies.makeProcessor = [](lab_core::ProcessorKind) {
+            return std::make_unique<FirstFrameEdges>();
+        };
+    });
     lab.replay(framesOf(test_support::cardFrame(), 3));
     lab.pump();
     lab.choose("showCombo", QStringLiteral("edges"));
     EXPECT_FALSE(lab.placeholder()->isVisible());
 
-    lab.choose("processorCombo", QStringLiteral("None"));
     lab.pump();
 
     EXPECT_EQ(lab.combo("showCombo")->currentText(), QStringLiteral("edges"));
@@ -228,6 +243,25 @@ TEST(LabWindow, MissingShowEntryShowsThePlaceholder) {
     zoomIn(*lab.canvas(), centre);
     pan(*lab.canvas(), centre, centre - QPointF(150, 0));
     EXPECT_EQ(lab.conversions, conversions);
+}
+
+// Show lists the pictures of the processor chosen, not of the ones before it; a choice comes back with its
+// picture.
+TEST(LabWindow, ProcessorChangeEmptiesShow) {
+    Lab lab;
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    lab.choose("showCombo", QStringLiteral("edges"));
+
+    lab.choose("processorCombo", QStringLiteral("None"));
+    lab.pump();
+    EXPECT_EQ(lab.entries("showCombo"), QStringList{QStringLiteral("Frame")});
+    EXPECT_FALSE(lab.placeholder()->isVisible());
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.pump();
+    EXPECT_EQ(lab.combo("showCombo")->currentText(), QStringLiteral("edges"));
 }
 
 TEST(LabWindow, FindingsInTheResultsPanel) {
@@ -495,6 +529,22 @@ TEST(LabWindow, StartAsksPermissionFirst) {
     ASSERT_EQ(lab.backend->starts.size(), 1U);
     EXPECT_EQ(lab.backend->starts[0].first, QByteArray("a"));
     EXPECT_EQ(lab.backend->starts[0].second, nv12(1280, 720));
+}
+
+// A camera that lists no formats (some drivers on Linux) starts in its own default rather than not at all.
+TEST(LabWindow, CameraWithoutFormatsStartsInItsDefault) {
+    Lab lab([](LabDependencies& dependencies) {
+        fakeOf(dependencies).list = {
+            {.id = "c", .name = QStringLiteral("USB Camera"), .front = false, .formats = {}}};
+    });
+    ASSERT_TRUE(startStop(lab)->isEnabled());
+
+    startStop(lab)->click();
+
+    ASSERT_EQ(lab.backend->starts.size(), 1U);
+    EXPECT_EQ(lab.backend->starts[0].first, QByteArray("c"));
+    EXPECT_EQ(lab.backend->starts[0].second, document_lab::CameraFormat{});
+    EXPECT_EQ(startStop(lab)->text(), QStringLiteral("Stop"));
 }
 
 TEST(LabWindow, PermissionRefusedSaysHow) {
@@ -790,10 +840,12 @@ TEST(LabWindow, OtherFolderShowsTheReminder) {
     EXPECT_TRUE(std::filesystem::exists(other.path() / "Captures"));
 }
 
-// Closing waits until the recording has written every frame, and says so meanwhile.
+// Closing waits until the recording has written every frame, and says so meanwhile; nothing new can start in
+// the meantime, or the window would wait for that run too.
 TEST(LabWindow, CloseWaitsForTheRecording) {
     test_support::Latch latch;
     Lab lab([&latch](LabDependencies& dependencies) {
+        twoCameras(dependencies);
         dependencies.engineMode = lab_core::Engine::Mode::Threaded;
         dependencies.recorderMode = frame_io::RecordingWriter::Mode::Threaded;
         dependencies.recorderBeforeWrite = [&latch](std::uint64_t) { latch.hold(); };
@@ -822,6 +874,9 @@ TEST(LabWindow, CloseWaitsForTheRecording) {
     EXPECT_TRUE(QTest::qWaitFor([&lab] {
         return lab.status().contains(QStringLiteral("writing recording"));
     })) << lab.status().toStdString();
+    EXPECT_FALSE(startStop(lab)->isEnabled());
+    EXPECT_FALSE(button(lab, "openFileButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "openFolderButton")->isEnabled());
     latch.release();
 
     EXPECT_TRUE(QTest::qWaitFor([&lab] { return !lab.window->isVisible(); }, 10000));

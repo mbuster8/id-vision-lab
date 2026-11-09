@@ -12,7 +12,7 @@
     {
       "name": "ffmpeg",
       "default-features": false,
-      "features": ["avcodec", "avformat", "swscale"]
+      "features": ["avcodec", "avformat", "swresample", "swscale"]
     },
     "zeromq",
     "cppzmq",

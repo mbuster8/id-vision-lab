@@ -636,6 +636,8 @@ void Engine::doPlay() {
         m_pacer.restart();
         m_heldDue.reset();
         setState(EngineState::Playing);
+    } else if (m_state == EngineState::Ended && !m_oneFrame) {
+        doRestart(); // played to its end: again from the start, as players do
     }
 }
 

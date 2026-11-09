@@ -12,6 +12,16 @@
 #include <system_error>
 
 namespace frame_io {
+namespace {
+
+// A recording names its frames by file name alone; anything with a folder or a root in it (a recording sent
+// by someone, edited to point elsewhere) would read images from outside the recording.
+bool isBareFileName(const std::string& file) {
+    const std::filesystem::path path = fromUtf8(file);
+    return !file.empty() && path == path.filename() && !path.has_root_path() && path != "." && path != "..";
+}
+
+} // namespace
 
 std::unique_ptr<ReplaySource> openRecording(const std::filesystem::path& folder, std::string& error) {
     std::ifstream stream(folder / "recording.json");
@@ -35,6 +45,10 @@ std::unique_ptr<ReplaySource> openRecording(const std::filesystem::path& folder,
             continue;
         }
         const std::string file = frame["file"].get<std::string>();
+        if (!isBareFileName(file)) {
+            error = utf8Name(folder) + ": recording.json names a file outside its folder";
+            return nullptr;
+        }
         listed.insert(file);
         const std::int64_t at = frame.value("at", std::int64_t{0});
         const visual_debug::ImageDescription tags =

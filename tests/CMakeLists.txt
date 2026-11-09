@@ -206,36 +206,39 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             opencv_imgcodecs
             Qt6::Test
             GTest::gtest)
-    # The Document Lab's: Qt Multimedia's frames, and the window with fake cameras. With the UTF-8 code page
-    # and, on Windows, vcpkg's FFmpeg beside it, as the lab runs.
-    id_vision_lab_add_test_executable(document_lab_ui_tests
-        SOURCES
-            qt_common/test_main.cpp
-            qt_common/owner_only.cpp
-            document_lab/camera_formats_test.cpp
-            document_lab/camera_frame_test.cpp
-            document_lab/fake_camera_backend.h
-            document_lab/main_window_test.cpp
-            document_lab/measurement_test.cpp
-        LIBRARIES
-            document_lab_ui
-            opencv_imgproc
-            cppzmq
-            nlohmann_json::nlohmann_json
-            Qt6::Test
-            GTest::gtest)
-    id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
-    id_vision_lab_copy_ffmpeg_dlls(document_lab_ui_tests)
     # The shared Qt test helpers, such as palette_support.h and control_checks.h.
     target_include_directories(viewer_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
     target_include_directories(example_sender_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
-    # The lab's also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
-    target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
-                                                             ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
-                                                             ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
-                                                             ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
-    # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of its
-    # own so that it also runs from the installed Windows package.
-    add_test(NAME media_smoke COMMAND media_smoke)
-    set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
+    # The Document Lab's, when Qt has Multimedia: Qt Multimedia's frames, and the window with fake cameras. With
+    # the UTF-8 code page and, on Windows, vcpkg's FFmpeg beside it, as the lab runs.
+    if(TARGET document_lab_ui)
+        id_vision_lab_add_test_executable(document_lab_ui_tests
+            SOURCES
+                qt_common/test_main.cpp
+                qt_common/owner_only.cpp
+                document_lab/camera_backend_test.cpp
+                document_lab/camera_formats_test.cpp
+                document_lab/camera_frame_test.cpp
+                document_lab/fake_camera_backend.h
+                document_lab/main_window_test.cpp
+                document_lab/measurement_test.cpp
+            LIBRARIES
+                document_lab_ui
+                opencv_imgproc
+                cppzmq
+                nlohmann_json::nlohmann_json
+                Qt6::Test
+                GTest::gtest)
+        id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
+        id_vision_lab_copy_ffmpeg_dlls(document_lab_ui_tests)
+        # They also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
+        target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
+                                                                 ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
+                                                                 ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
+                                                                 ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+        # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of
+        # its own so that it also runs from the installed Windows package.
+        add_test(NAME media_smoke COMMAND media_smoke)
+        set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
+    endif()
 endif()

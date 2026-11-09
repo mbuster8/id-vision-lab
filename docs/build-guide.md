@@ -24,7 +24,9 @@ and setup: see [Windows](#windows).
    Homebrew's `opencv` brings `ffmpeg` with it, whose libraries `frame_io` reads 10-bit and HDR videos with
    (for the Document Lab and `live_sender --hdr`). They are optional: CMake finds them through `pkgconf`, and
    without them frame_io reads 8-bit video only and `live_sender` builds without `--hdr`. Homebrew's `qt`
-   includes Qt Multimedia, which the Document Lab's cameras need, with its AVFoundation backend.
+   includes Qt Multimedia, which the Document Lab's cameras need, with its AVFoundation backend. A Qt without
+   Multimedia still builds everything else: CMake says "Qt Multimedia not found: the Document Lab is not built"
+   and leaves out the lab, its tests and the Windows packages.
 
 3. Qt Creator, the reference IDE (optional; any CMake-aware editor works):
 
@@ -429,7 +431,7 @@ Versions this was verified with (vcpkg's, from the baseline in `vcpkg.json`):
 | Qt Creator | 20.0.2 |
 | Git for Windows | 2.45.1 |
 | `opencv4` | 4.14.0 (vcpkg has no OpenCV 5 yet), with its FFmpeg and Media Foundation video backends |
-| `ffmpeg` | 9.0.2 (LGPL build: `avcodec`, `avformat`, `swscale`, and `swresample`, which vcpkg builds too) |
+| `ffmpeg` | 9.0.2 (LGPL build: `avcodec`, `avformat`, `swresample`, which Qt Multimedia's FFmpeg plug-in imports, and `swscale`) |
 | `zeromq` / `cppzmq` | 4.3.5 / 4.11.0 |
 | `nlohmann-json` | 3.12.0 |
 | `gtest` | 1.18.0 |

@@ -97,6 +97,7 @@ private:
     void takeResult();
     const cv::Mat* shownImage(visual_debug::ImageDescription& description) const;
     void updateShowEntries(const lab_core::LabResult& result);
+    void forgetShowEntries();
     void showResults(const lab_core::LabResult& result);
     void display(ImageView::KeepView keep);
     void applyPicture(LiveResult result);

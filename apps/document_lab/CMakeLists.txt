@@ -1,6 +1,10 @@
 # The Document Lab. Qt Multimedia is found here, not in apps/CMakeLists.txt, so a Qt without it still builds the
-# viewer and the example sender.
-find_package(Qt6 6.4 REQUIRED COMPONENTS Multimedia)
+# viewer and the example sender, without the lab and its tests.
+find_package(Qt6 6.4 QUIET OPTIONAL_COMPONENTS Multimedia)
+if(NOT TARGET Qt6::Multimedia)
+    message(STATUS "Qt Multimedia not found: the Document Lab is not built")
+    return()
+endif()
 
 # A check that Qt Multimedia's backend loads beside frame_io's video readers, run by ctest and, on Windows, from
 # the installed package (see cmake/windows_packaging.cmake).
