@@ -1,18 +1,27 @@
 ID Vision Lab: third-party software in the Windows packages
 ===========================================================
 
-The Visual Debug Viewer and the Visual Debug Example Sender are licensed under the Apache License 2.0
-(LICENSE.txt and NOTICE.txt in this folder). The packages also contain the libraries below, each under its
+The Visual Debug Viewer, the Visual Debug Example Sender and the Document Lab are licensed under the Apache
+License 2.0 (LICENSE.txt and NOTICE.txt in this folder). The packages also contain the libraries below, each under its
 own licence. Their licence texts are in this folder: the vcpkg ports' own copyright files are under
 vcpkg\<port>\copyright, and the GNU licences Qt is used under are LGPL-3.0.txt and GPL-3.0.txt.
 
-Qt 6 (Qt Core, Qt Gui, Qt Widgets, and the plug-ins windeployqt adds)
+Qt 6 (Qt Core, Qt Gui, Qt Widgets, Qt Multimedia, Qt Network, and the plug-ins windeployqt adds)
     Licence: GNU Lesser General Public License version 3 (LGPL-3.0.txt, which builds on GPL-3.0.txt).
     Qt is linked dynamically: its DLLs (Qt6*.dll and the plug-in folders) may be replaced with other builds
     of the same Qt version.
     Source: https://download.qt.io/official_releases/qt/ (the version is in Qt6Core.dll's properties)
 
-OpenCV (core, imgproc, imgcodecs)          Apache License 2.0           vcpkg\opencv4\copyright
+FFmpeg (avcodec, avformat, avutil, swresample, swscale)
+    Licence: GNU Lesser General Public License version 2.1 or later; this project asks vcpkg for it without
+    its GPL feature. vcpkg's copyright file for the build is vcpkg\ffmpeg\copyright; the LGPL's version 3,
+    which "or later" allows, is LGPL-3.0.txt.
+    FFmpeg is linked dynamically: its DLLs (avcodec-*.dll, avformat-*.dll, avutil-*.dll, swresample-*.dll and
+    swscale-*.dll) may be replaced with other builds of the same version, which the Document Lab and Qt
+    Multimedia's FFmpeg plug-in then both use.
+    Source: https://ffmpeg.org/releases/ (the version is in the DLLs' properties)
+
+OpenCV (core, imgproc, imgcodecs, videoio) Apache License 2.0           vcpkg\opencv4\copyright
 ZeroMQ (libzmq)                            Mozilla Public License 2.0   vcpkg\zeromq\copyright
 cppzmq (compiled in)                       MIT                          vcpkg\cppzmq\copyright
 nlohmann/json (compiled in)                MIT                          vcpkg\nlohmann-json\copyright
