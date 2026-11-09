@@ -19,6 +19,7 @@ constexpr std::chrono::milliseconds kWaitSlice{50};
 constexpr std::chrono::milliseconds kIdleWait{1000};
 
 constexpr char kLowDisk[] = "recording stopped: low disk space";
+const std::string kRecordingStopped = "recording stopped: ";
 
 bool isRunning(EngineState state) { return state == EngineState::Live || state == EngineState::Playing; }
 
@@ -496,6 +497,10 @@ void Engine::record(const frame_io::Frame& frame) {
         m_recorder->countNotRecorded();
         stopRecordingNow(kLowDisk);
         return;
+    case frame_io::RecordingWriter::Push::Failed:
+        m_recorder->countNotRecorded();
+        stopRecordingNow(kRecordingStopped + m_recorder->progress().failure);
+        return;
     }
 }
 
@@ -515,6 +520,11 @@ bool Engine::pushWaitingFrame() {
         m_waitingToRecord.reset();
         m_recorder->countNotRecorded();
         stopRecordingNow(kLowDisk);
+        return true;
+    case frame_io::RecordingWriter::Push::Failed:
+        m_waitingToRecord.reset();
+        m_recorder->countNotRecorded();
+        stopRecordingNow(kRecordingStopped + m_recorder->progress().failure);
         return true;
     }
     return true;
