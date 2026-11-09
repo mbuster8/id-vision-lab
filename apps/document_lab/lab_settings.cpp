@@ -9,6 +9,7 @@ const QString kShow = QStringLiteral("lab/show");
 const QString kOverlays = QStringLiteral("lab/overlays");
 const QString kCamera = QStringLiteral("lab/camera");
 const QString kFormats = QStringLiteral("lab/formats/");
+const QString kLabFolder = QStringLiteral("lab/folder");
 
 } // namespace
 
@@ -36,5 +37,9 @@ QString LabSettings::formatFor(const QByteArray& cameraId) const {
 void LabSettings::setFormatFor(const QByteArray& cameraId, const QString& label) {
     m_settings.setValue(kFormats + QString::fromLatin1(cameraId.toHex()), label);
 }
+
+QString LabSettings::labFolder() const { return m_settings.value(kLabFolder).toString(); }
+
+void LabSettings::setLabFolder(const QString& folder) { m_settings.setValue(kLabFolder, folder); }
 
 } // namespace document_lab

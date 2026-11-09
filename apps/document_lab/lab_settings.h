@@ -19,6 +19,8 @@ public:
     void setCameraId(const QByteArray& id);
     QString formatFor(const QByteArray& cameraId) const; // the format label chosen for a camera
     void setFormatFor(const QByteArray& cameraId, const QString& label);
+    QString labFolder() const; // chosen by the user; empty for the default
+    void setLabFolder(const QString& folder);
 
 private:
     QSettings m_settings;

@@ -5,11 +5,14 @@
 #include "fake_sender.h"
 #include "latch.h"
 #include "list_source.h"
+#include "owner_only.h"
 #include "scratch_folder.h"
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFile>
 #include <QLabel>
 #include <QListWidget>
 #include <QMouseEvent>
@@ -18,11 +21,16 @@
 #include <QWheelEvent>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/videoio.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -585,6 +593,260 @@ TEST(LabWindow, RemembersTheCameraAndItsFormat) {
 
     EXPECT_EQ(lab.combo("cameraCombo")->currentText(), QStringLiteral("C920"));
     EXPECT_EQ(lab.combo("formatCombo")->currentText(), QStringLiteral("640×480, 30 fps, NV12"));
+}
+
+// --- Replay, Record, Capture, closing
+// -----------------------------------------------------------------------
+
+QAbstractButton* button(const Lab& lab, const char* name) {
+    return lab.window->findChild<QAbstractButton*>(name);
+}
+
+// A folder of three 64×48 PNGs, greys 10, 20 and 30.
+std::filesystem::path imageFolder(const test_support::ScratchFolder& scratch) {
+    const std::filesystem::path folder = scratch.path() / "images";
+    std::filesystem::create_directories(folder);
+    for (int i = 0; i < 3; ++i) {
+        cv::imwrite((folder / ("frame " + std::to_string(i) + ".png")).string(),
+                    cv::Mat(48, 64, CV_8UC3, cv::Scalar::all(10.0 * (i + 1))));
+    }
+    return folder;
+}
+
+std::filesystem::path videoFile(const test_support::ScratchFolder& scratch) {
+    const std::filesystem::path path = scratch.path() / "clip.avi";
+    cv::VideoWriter writer(path.string(), cv::CAP_OPENCV_MJPEG, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
+                           30.0, cv::Size(64, 48));
+    for (int i = 0; i < 5; ++i) {
+        writer.write(cv::Mat(48, 64, CV_8UC3, cv::Scalar::all(40.0 * i)));
+    }
+    return path;
+}
+
+QString qtPath(const std::filesystem::path& path) { return QString::fromStdU16String(path.u16string()); }
+
+// Pumps until a result has been drawn: a video's frames come from a reading thread.
+bool pumpUntilShown(Lab& lab, std::uint64_t pictures) {
+    return QTest::qWaitFor([&] {
+        lab.pump();
+        return lab.window->canvasCountsForTests().applied >= pictures;
+    });
+}
+
+// Folders can step back; a video file cannot, only start again.
+TEST(LabWindow, ReplayControlsFollowTheSource) {
+    const test_support::ScratchFolder files;
+    const std::filesystem::path folder = imageFolder(files);
+    const std::filesystem::path video = videoFile(files);
+    Lab lab([&](LabDependencies& dependencies) {
+        dependencies.chooseFolder = [&folder] { return qtPath(folder); };
+        dependencies.chooseFile = [&video] { return qtPath(video); };
+    });
+    EXPECT_FALSE(button(lab, "playPauseButton")->isEnabled());
+
+    button(lab, "openFolderButton")->click();
+    ASSERT_TRUE(pumpUntilShown(lab, 1));
+    lab.advance(40ms);
+    ASSERT_TRUE(pumpUntilShown(lab, 2));
+    EXPECT_TRUE(button(lab, "playPauseButton")->isEnabled());
+    EXPECT_TRUE(button(lab, "stepBackButton")->isEnabled());
+    EXPECT_TRUE(button(lab, "restartButton")->isEnabled());
+
+    button(lab, "openFileButton")->click();
+    ASSERT_TRUE(pumpUntilShown(lab, 3));
+    lab.advance(40ms);
+    ASSERT_TRUE(pumpUntilShown(lab, 4));
+    EXPECT_TRUE(button(lab, "playPauseButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "stepBackButton")->isEnabled());
+    EXPECT_TRUE(button(lab, "restartButton")->isEnabled());
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("clip.avi"))) << lab.status().toStdString();
+}
+
+// Space plays and pauses, unless a button has the focus: then it presses that button.
+TEST(LabWindow, SpaceTogglesPlay) {
+    Lab lab;
+    lab.window->activateWindow();
+    ASSERT_TRUE(QTest::qWaitForWindowActive(lab.window.get()));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(lab.status().startsWith(QStringLiteral("Playing"))) << lab.status().toStdString();
+    lab.canvas()->setFocus();
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Space);
+    lab.pump();
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused"))) << lab.status().toStdString();
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Space);
+    lab.pump();
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Playing"))) << lab.status().toStdString();
+
+    QAbstractButton* loop = button(lab, "loopCheck");
+    loop->setFocus();
+    QTest::keyClick(loop, Qt::Key_Space);
+    lab.pump();
+    EXPECT_TRUE(loop->isChecked());
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Playing"))) << lab.status().toStdString();
+}
+
+// The folder of the recording only its owner may open; the lab's folder is left as it was.
+std::vector<std::filesystem::path> recordingsIn(const std::filesystem::path& labFolder) {
+    std::vector<std::filesystem::path> folders;
+    for (const auto& entry : std::filesystem::directory_iterator(labFolder)) {
+        if (entry.is_directory() && std::filesystem::exists(entry.path() / "recording.json")) {
+            folders.push_back(entry.path());
+        }
+    }
+    return folders;
+}
+
+nlohmann::json recordingJson(const std::filesystem::path& folder) {
+    std::ifstream stream(folder / "recording.json");
+    return nlohmann::json::parse(stream);
+}
+
+TEST(LabWindow, RecordWritesAPrivateFolder) {
+    Lab lab;
+    const QFileDevice::Permissions labFolderBefore = QFile::permissions(qtPath(lab.folder.path()));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+
+    button(lab, "recordButton")->click();
+    lab.pump(2);
+    button(lab, "recordButton")->click();
+    lab.pump();
+
+    const std::vector<std::filesystem::path> recordings = recordingsIn(lab.folder.path());
+    ASSERT_EQ(recordings.size(), 1U);
+    EXPECT_TRUE(test_support::isOwnerOnly(qtPath(recordings[0])));
+    EXPECT_EQ(QFile::permissions(qtPath(lab.folder.path())), labFolderBefore);
+    const nlohmann::json json = recordingJson(recordings[0]);
+    EXPECT_EQ(json["complete"], true);
+    EXPECT_EQ(json["frames"].size(), 2U);
+    EXPECT_FALSE(button(lab, "recordButton")->isChecked());
+}
+
+// Capture keeps what the canvas shows, even while a newer frame's picture is still being made.
+TEST(LabWindow, CaptureKeepsTheFrameOnScreen) {
+    test_support::Latch latch;
+    Lab lab([&latch](LabDependencies& dependencies) {
+        dependencies.conversionMode = LiveConverter::Mode::Threaded;
+        dependencies.conversion = holdingWhen(latch, [](const LiveJob& job) { return job.frameNumber == 2; });
+    });
+    const cv::Mat first(48, 64, CV_8UC3, cv::Scalar::all(50));
+    const cv::Mat second(48, 64, CV_8UC3, cv::Scalar::all(200));
+    lab.replay({{.status = frame_io::ReadStatus::Frame,
+                 .frame = test_support::listFrame(0, 0ms, first),
+                 .error = {}},
+                {.status = frame_io::ReadStatus::Frame,
+                 .frame = test_support::listFrame(1, 0ms, second),
+                 .error = {}}});
+    lab.pump();
+    ASSERT_TRUE(waitForPictures(*lab.window, 1));
+    lab.pump(); // the second's picture is held
+    ASSERT_TRUE(latch.waitUntilEntered());
+
+    button(lab, "captureButton")->click();
+    latch.release();
+
+    const std::filesystem::path captures = lab.folder.path() / "Captures";
+    std::vector<std::filesystem::path> pngs;
+    for (const auto& entry : std::filesystem::directory_iterator(captures)) {
+        if (entry.path().extension() == ".png") {
+            pngs.push_back(entry.path());
+        }
+    }
+    ASSERT_EQ(pngs.size(), 1U);
+    EXPECT_TRUE(pngs[0].filename().string().ends_with(" frame 1.png")) << pngs[0];
+    EXPECT_EQ(cv::norm(cv::imread(pngs[0].string()), first, cv::NORM_INF), 0.0);
+}
+
+TEST(LabWindow, CapturesFolderIsPrivate) {
+    Lab lab;
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    button(lab, "captureButton")->click();
+
+    EXPECT_TRUE(test_support::isOwnerOnly(qtPath(lab.folder.path() / "Captures")));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("frame 1.png"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, OtherFolderShowsTheReminder) {
+    const test_support::ScratchFolder other;
+    Lab lab([&other](LabDependencies& dependencies) {
+        dependencies.chooseLabFolder = [&other] { return qtPath(other.path()); };
+    });
+
+    button(lab, "chooseLabFolderButton")->click();
+
+    EXPECT_TRUE(lab.status().contains(
+        QStringLiteral("Recordings may show real passports; avoid synced or shared folders.")))
+        << lab.status().toStdString();
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+    button(lab, "captureButton")->click();
+    EXPECT_TRUE(std::filesystem::exists(other.path() / "Captures"));
+}
+
+// Closing waits until the recording has written every frame, and says so meanwhile.
+TEST(LabWindow, CloseWaitsForTheRecording) {
+    test_support::Latch latch;
+    Lab lab([&latch](LabDependencies& dependencies) {
+        dependencies.engineMode = lab_core::Engine::Mode::Threaded;
+        dependencies.recorderMode = frame_io::RecordingWriter::Mode::Threaded;
+        dependencies.recorderBeforeWrite = [&latch](std::uint64_t) { latch.hold(); };
+    });
+    // Frames a second apart on the test's clock: frame 1 shows at once, the others when the clock moves.
+    std::vector<frame_io::ReadResult> reads;
+    for (std::uint64_t i = 0; i < 3; ++i) {
+        reads.push_back(
+            {.status = frame_io::ReadStatus::Frame,
+             .frame = test_support::listFrame(i, std::chrono::seconds(i), test_support::cardFrame()),
+             .error = {}});
+    }
+    lab.replay(std::move(reads));
+    ASSERT_TRUE(QTest::qWaitFor([&lab] { return lab.status().contains(QStringLiteral("frame 1 of 3")); }))
+        << lab.status().toStdString();
+    button(lab, "recordButton")->click();
+    lab.advance(1s);
+    ASSERT_TRUE(latch.waitUntilEntered()); // frame 2 is being written
+    lab.advance(1s);
+    ASSERT_TRUE(QTest::qWaitFor([&lab] { return lab.status().contains(QStringLiteral("frame 3 of 3")); }))
+        << lab.status().toStdString();
+
+    lab.window->close();
+    QApplication::processEvents();
+    EXPECT_TRUE(lab.window->isVisible());
+    EXPECT_TRUE(QTest::qWaitFor([&lab] {
+        return lab.status().contains(QStringLiteral("writing recording"));
+    })) << lab.status().toStdString();
+    latch.release();
+
+    EXPECT_TRUE(QTest::qWaitFor([&lab] { return !lab.window->isVisible(); }, 10000));
+    const std::vector<std::filesystem::path> recordings = recordingsIn(lab.folder.path());
+    ASSERT_EQ(recordings.size(), 1U);
+    EXPECT_EQ(recordingJson(recordings[0])["complete"], true);
+    EXPECT_EQ(recordingJson(recordings[0])["frames"].size(), 2U);
+}
+
+// Another camera format is another run: the recording ends with the one it belongs to.
+TEST(LabWindow, FormatChangeStopsTheRecording) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    lab.backend->deliver(cameraFrame(120));
+    lab.pump();
+    button(lab, "recordButton")->click();
+    lab.backend->deliver(cameraFrame(130));
+    lab.pump();
+
+    lab.choose("formatCombo", QStringLiteral("640×480, 30 fps, NV12"));
+    lab.pump();
+
+    EXPECT_FALSE(button(lab, "recordButton")->isChecked());
+    const std::vector<std::filesystem::path> recordings = recordingsIn(lab.folder.path());
+    ASSERT_EQ(recordings.size(), 1U);
+    EXPECT_EQ(recordingJson(recordings[0])["complete"], true);
+    EXPECT_EQ(recordingJson(recordings[0])["source"]["kind"], "camera");
 }
 
 } // namespace

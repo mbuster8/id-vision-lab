@@ -25,9 +25,11 @@
 #include <string>
 #include <vector>
 
+class QAction;
 class QCheckBox;
 class QCloseEvent;
 class QComboBox;
+class QEvent;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -82,6 +84,11 @@ public:
     };
     CanvasCounts canvasCountsForTests() const;
 
+protected:
+    // Waits, with the window open and its progress shown, until the recording has written every frame.
+    void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     void buildUi();
     void beginRun();
@@ -114,12 +121,44 @@ private:
     const CameraInfo* currentCamera() const;
     std::optional<CameraFormat> currentFormat() const;
 
+    // Replay.
+    void openFile();
+    void openFolder();
+    void openReplay(const QString& path);
+    void togglePlay();
+    void updateReplayControls(const lab_core::EngineStatus& status);
+
+    // Recording and capture.
+    QString labFolder() const;
+    void toggleRecord(bool on);
+    bool startRecording(QString& failure);
+    void capture();
+    void captured(const std::filesystem::path& file, const std::string& error);
+    void chooseLabFolder();
+    void openLabFolder();
+
     LabDependencies m_dependencies;
     LabSettings m_settings;
 
     QComboBox* m_cameraCombo = nullptr;
     QComboBox* m_formatCombo = nullptr;
     QPushButton* m_startStop = nullptr;
+    QPushButton* m_openFile = nullptr;
+    QPushButton* m_openFolder = nullptr;
+    QPushButton* m_playPause = nullptr;
+    QPushButton* m_step = nullptr;
+    QPushButton* m_stepBack = nullptr;
+    QPushButton* m_restart = nullptr;
+    QCheckBox* m_loop = nullptr;
+    QCheckBox* m_asFast = nullptr;
+    QAction* m_playPauseAction = nullptr;
+    QAction* m_stepAction = nullptr;
+    QAction* m_stepBackAction = nullptr;
+    QPushButton* m_record = nullptr;
+    QPushButton* m_capture = nullptr;
+    QPushButton* m_openLabFolder = nullptr;
+    QPushButton* m_chooseLabFolder = nullptr;
+    QTimer* m_closeTimer = nullptr;
     QComboBox* m_processorCombo = nullptr;
     QComboBox* m_showCombo = nullptr;
     QCheckBox* m_overlaysCheck = nullptr;
@@ -138,11 +177,17 @@ private:
     quint64 m_session = 0; // the camera session whose frames are taken
     CameraGeometry m_geometry;
 
-    bool m_running = false;                       // a camera or a replay runs: its results are taken
-    std::uint64_t m_minimumGeneration = 0;        // the run's: results of earlier ones are dropped
-    std::optional<lab_core::LabResult> m_current; // the result on screen
-    std::uint64_t m_resultSequence = 0;           // a number per result taken, for the converter's jobs
-    std::uint64_t m_viewCounter = 0;              // bumped by each change of what is shown
+    bool m_running = false;                // a camera or a replay runs: its results are taken
+    std::uint64_t m_minimumGeneration = 0; // the run's: results of earlier ones are dropped
+    std::string m_replayKind;              // "video", "images" or "recording", for a recording made of it
+    bool m_recordingAsked = false;         // Record clicked, and the engine not yet recording
+    bool m_closing = false;                // closing waits for the recording; the run is already stopped
+    std::optional<lab_core::LabResult> m_current;  // the result taken last
+    std::optional<lab_core::LabResult> m_previous; // the one before, whose picture may still be on screen
+    std::uint64_t m_previousSequence = 0;
+    std::optional<lab_core::LabResult> m_onScreen; // the result whose picture the canvas shows: Capture's
+    std::uint64_t m_resultSequence = 0;            // a number per result taken, for the converter's jobs
+    std::uint64_t m_viewCounter = 0;               // bumped by each change of what is shown
     bool m_fitPending = false;
     bool m_fitNext = true; // the next result is fitted: the first, and the first after a stop or a new source
     std::uint64_t m_notDrawn = 0;

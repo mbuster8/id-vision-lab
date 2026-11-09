@@ -3,13 +3,26 @@
 #include "camera_formats.h"
 #include "image_tags_conversion.h"
 #include "live_drawing.h"
+#include "private_files.h"
 
+#include <frame_io/capture.h>
+#include <frame_io/image_folder.h>
 #include <viewer_core/image_tags.h>
 
+#include <QAbstractButton>
+#include <QAction>
+#include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QDir>
+#include <QFileDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
 #include <QMetaObject>
@@ -17,9 +30,12 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
+#include <QThreadPool>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -40,10 +56,18 @@ constexpr std::array kProcessors{lab_core::ProcessorKind::None, lab_core::Proces
 // A processor busy this long on one frame is named in the status bar.
 constexpr auto kBusyShownAfter = std::chrono::seconds(1);
 constexpr int kStatusRefreshMs = 500; // also how often the busy time moves on
+constexpr int kClosePollMs = 100;     // while closing waits for the recording
 
 QString qtString(std::string_view text) {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
 }
+
+// Paths through UTF-16, so a name in any script survives on every platform.
+std::filesystem::path toPath(const QString& path) { return std::filesystem::path(path.toStdU16String()); }
+
+QString fromPath(const std::filesystem::path& path) { return QString::fromStdU16String(path.u16string()); }
+
+QString timeStamp() { return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH.mm.ss")); }
 
 QString stateText(lab_core::EngineState state) {
     switch (state) {
@@ -103,11 +127,13 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     connect(cameras, &CameraBackend::failed, this, &LabWindow::cameraFailed);
     fillCameras();
 
+    qApp->installEventFilter(this); // Space for the focused button, not Play
     refreshStatus();
     m_statusTimer->start(kStatusRefreshMs);
 }
 
 LabWindow::~LabWindow() {
+    qApp->removeEventFilter(this);
     // The camera first: no frame reaches a window whose engine is gone.
     m_dependencies.cameras->disconnect(this);
     m_dependencies.cameras->stop();
@@ -135,8 +161,42 @@ void LabWindow::buildUi() {
     m_startStop->setObjectName(QStringLiteral("startStopButton"));
     m_startStop->setEnabled(false);
     sourceRow->addWidget(m_startStop);
+    m_openFile = new QPushButton(tr("Open File…"), central);
+    m_openFile->setObjectName(QStringLiteral("openFileButton"));
+    sourceRow->addWidget(m_openFile);
+    m_openFolder = new QPushButton(tr("Open Folder…"), central);
+    m_openFolder->setObjectName(QStringLiteral("openFolderButton"));
+    sourceRow->addWidget(m_openFolder);
     sourceRow->addStretch();
     layout->addLayout(sourceRow);
+
+    auto* replayRow = new QHBoxLayout;
+    m_playPause = new QPushButton(tr("Play"), central);
+    m_playPause->setObjectName(QStringLiteral("playPauseButton"));
+    m_step = new QPushButton(tr("Step"), central);
+    m_step->setObjectName(QStringLiteral("stepButton"));
+    m_stepBack = new QPushButton(tr("Step Back"), central);
+    m_stepBack->setObjectName(QStringLiteral("stepBackButton"));
+    m_restart = new QPushButton(tr("Restart"), central);
+    m_restart->setObjectName(QStringLiteral("restartButton"));
+    m_loop = new QCheckBox(tr("Loop"), central);
+    m_loop->setObjectName(QStringLiteral("loopCheck"));
+    m_asFast = new QCheckBox(tr("As fast as possible"), central);
+    m_asFast->setObjectName(QStringLiteral("asFastCheck"));
+    for (QWidget* control :
+         std::initializer_list<QWidget*>{m_playPause, m_step, m_stepBack, m_restart, m_loop, m_asFast}) {
+        replayRow->addWidget(control);
+    }
+    replayRow->addStretch();
+    layout->addLayout(replayRow);
+    // Keys for the replay: Space, → and ←, from anywhere in the window but a focused button (eventFilter).
+    m_playPauseAction = new QAction(tr("Play or Pause"), this);
+    m_playPauseAction->setShortcut(QKeySequence(Qt::Key_Space));
+    m_stepAction = new QAction(tr("Step"), this);
+    m_stepAction->setShortcut(QKeySequence(Qt::Key_Right));
+    m_stepBackAction = new QAction(tr("Step Back"), this);
+    m_stepBackAction->setShortcut(QKeySequence(Qt::Key_Left));
+    addActions({m_playPauseAction, m_stepAction, m_stepBackAction});
 
     auto* processingRow = new QHBoxLayout;
     processingRow->addWidget(new QLabel(tr("Processor:"), central));
@@ -159,6 +219,19 @@ void LabWindow::buildUi() {
     m_overlaysCheck->setChecked(m_settings.overlays());
     processingRow->addWidget(m_overlaysCheck);
     processingRow->addStretch();
+    m_record = new QPushButton(tr("Record"), central);
+    m_record->setObjectName(QStringLiteral("recordButton"));
+    m_record->setCheckable(true);
+    processingRow->addWidget(m_record);
+    m_capture = new QPushButton(tr("Capture"), central);
+    m_capture->setObjectName(QStringLiteral("captureButton"));
+    processingRow->addWidget(m_capture);
+    m_openLabFolder = new QPushButton(tr("Open Lab Folder"), central);
+    m_openLabFolder->setObjectName(QStringLiteral("openLabFolderButton"));
+    processingRow->addWidget(m_openLabFolder);
+    m_chooseLabFolder = new QPushButton(tr("Choose Folder…"), central);
+    m_chooseLabFolder->setObjectName(QStringLiteral("chooseLabFolderButton"));
+    processingRow->addWidget(m_chooseLabFolder);
     layout->addLayout(processingRow);
 
     // The canvas, with the placeholder over it in the same cell, beside the results.
@@ -191,8 +264,34 @@ void LabWindow::buildUi() {
     m_status->setObjectName(QStringLiteral("statusLabel"));
     statusBar()->addWidget(m_status, 1);
     m_statusTimer = new QTimer(this);
+    m_closeTimer = new QTimer(this);
 
     connect(m_startStop, &QPushButton::clicked, this, &LabWindow::startOrStop);
+    connect(m_openFile, &QPushButton::clicked, this, &LabWindow::openFile);
+    connect(m_openFolder, &QPushButton::clicked, this, &LabWindow::openFolder);
+    connect(m_playPause, &QPushButton::clicked, this, &LabWindow::togglePlay);
+    connect(m_playPauseAction, &QAction::triggered, this, &LabWindow::togglePlay);
+    connect(m_step, &QPushButton::clicked, this, [this] { m_engine->step(); });
+    connect(m_stepAction, &QAction::triggered, this, [this] { m_engine->step(); });
+    connect(m_stepBack, &QPushButton::clicked, this, [this] { m_engine->stepBack(); });
+    connect(m_stepBackAction, &QAction::triggered, this, [this] { m_engine->stepBack(); });
+    connect(m_restart, &QPushButton::clicked, this, [this] { m_engine->restart(); });
+    connect(m_loop, &QCheckBox::toggled, this, [this](bool on) { m_engine->setLoop(on); });
+    connect(m_asFast, &QCheckBox::toggled, this, [this](bool on) { m_engine->setAsFastAsPossible(on); });
+    connect(m_record, &QPushButton::toggled, this, &LabWindow::toggleRecord);
+    connect(m_capture, &QPushButton::clicked, this, &LabWindow::capture);
+    connect(m_openLabFolder, &QPushButton::clicked, this, &LabWindow::openLabFolder);
+    connect(m_chooseLabFolder, &QPushButton::clicked, this, &LabWindow::chooseLabFolder);
+    connect(m_closeTimer, &QTimer::timeout, this, [this] {
+        if (m_dependencies.engineMode == lab_core::Engine::Mode::Immediate) {
+            m_engine->pump();
+        }
+        refreshStatus();
+        if (m_engine->shutDown()) {
+            m_closeTimer->stop();
+            close();
+        }
+    });
     connect(m_cameraCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseCamera);
     connect(m_formatCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseFormat);
     connect(m_processorCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseProcessor);
@@ -231,9 +330,15 @@ void LabWindow::stop() {
         m_session = 0;
         m_dependencies.cameras->stop();
     }
-    m_engine->stop();
+    m_engine->stop(); // the recording ends with the run
+    if (m_record->isChecked()) {
+        const QSignalBlocker blocker(m_record);
+        m_record->setChecked(false);
+    }
     viewChanged();
     m_current.reset();
+    m_previous.reset();
+    m_onScreen.reset();
     m_canvas->clear();
     m_placeholder->hide();
     m_results->clear();
@@ -420,6 +525,8 @@ void LabWindow::takeResult() {
         return;
     }
     m_taken.push_back(now());
+    m_previous = std::move(m_current);
+    m_previousSequence = m_resultSequence;
     m_current = std::move(*result);
     ++m_resultSequence;
     updateShowEntries(*m_current);
@@ -524,6 +631,12 @@ void LabWindow::applyPicture(LiveResult result) {
     }
     ++m_canvasCounts.applied;
     m_drawn.push_back(now());
+    // The result this picture is of is now the one on screen: the newest, or the one before it.
+    if (result.job.frameNumber == m_resultSequence && m_current) {
+        m_onScreen = m_current;
+    } else if (result.job.frameNumber == m_previousSequence && m_previous) {
+        m_onScreen = m_previous;
+    }
     const ImageView::KeepView keep = result.job.keep;
     const cv::Rect& area = result.job.area;
     m_canvas->setImage(result.picture, keep, result.imageSize, result.job.tags.overlays,
@@ -589,6 +702,25 @@ void LabWindow::refreshStatus() {
           << tr("not drawn %1").arg(m_notDrawn + status.resultsNotTaken)
           << tr("not sent %1").arg(status.sending ? status.sending->notSent : 0)
           << tr("not recorded %1").arg(status.recordingProgress ? status.recordingProgress->notRecorded : 0);
+    if (status.recording && status.recordingProgress) {
+        parts << tr("recording %1 frames")
+                     .arg(status.recordingProgress->written + status.recordingProgress->queued);
+    } else if (status.recordingProgress && !status.recordingProgress->finished) {
+        parts << tr("writing recording: %1 of %2 frames")
+                     .arg(status.recordingProgress->written)
+                     .arg(status.recordingProgress->written + status.recordingProgress->queued);
+    }
+    if (status.recordingProgress && !status.recordingProgress->failure.empty()) {
+        parts << tr("recording: %1").arg(QString::fromStdString(status.recordingProgress->failure));
+    }
+    // The engine stopped the recording (a restart, a loop, low disk space): Record is off again.
+    if (m_record->isChecked() && m_recordingAsked && status.recording) {
+        m_recordingAsked = false; // started: from now on its end shows here
+    } else if (m_record->isChecked() && !m_recordingAsked && !status.recording) {
+        const QSignalBlocker blocker(m_record);
+        m_record->setChecked(false);
+    }
+    updateReplayControls(status);
     if (status.busyFrame && status.busySince && at - *status.busySince >= kBusyShownAfter) {
         parts << tr("processing frame %1 for %2 s")
                      .arg(*status.busyFrame + 1)
@@ -625,5 +757,227 @@ void LabWindow::chooseShow(int index) {
 std::string LabWindow::currentShow() const { return m_showCombo->currentText().toStdString(); }
 
 Clock::time_point LabWindow::now() const { return m_dependencies.clock(); }
+
+// --- Replay
+// -------------------------------------------------------------------------------------------------
+
+void LabWindow::openFile() {
+    const QString path = m_dependencies.chooseFile
+                             ? m_dependencies.chooseFile()
+                             : QFileDialog::getOpenFileName(this, tr("Open a Video or an Image"));
+    if (!path.isEmpty()) {
+        openReplay(path);
+    }
+}
+
+void LabWindow::openFolder() {
+    const QString path =
+        m_dependencies.chooseFolder
+            ? m_dependencies.chooseFolder()
+            : QFileDialog::getExistingDirectory(this, tr("Open a Folder of Images or a Recording"));
+    if (!path.isEmpty()) {
+        openReplay(path);
+    }
+}
+
+// A recording, a folder of images, an image or a video, as frame_io tells them apart; opened on the engine's
+// thread, so a slow disk never holds up the window.
+void LabWindow::openReplay(const QString& path) {
+    const std::filesystem::path file = toPath(path);
+    std::error_code ignored;
+    if (std::filesystem::is_directory(file, ignored)) {
+        m_replayKind = std::filesystem::exists(file / "recording.json", ignored) ? "recording" : "images";
+    } else {
+        m_replayKind = frame_io::isImageFileName(file) ? "images" : "video";
+    }
+    startReplay([file](std::string& error) { return frame_io::openReplay(file, error); });
+}
+
+void LabWindow::togglePlay() {
+    if (m_engine->status().state == lab_core::EngineState::Playing) {
+        m_engine->pause();
+    } else {
+        m_engine->play();
+    }
+}
+
+void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
+    const bool replay = m_running && !m_cameraRunning;
+    const bool playing = status.state == lab_core::EngineState::Playing;
+    m_playPause->setEnabled(replay);
+    m_playPause->setText(playing ? tr("Pause") : tr("Play"));
+    m_playPauseAction->setEnabled(replay);
+    m_step->setEnabled(replay);
+    m_stepAction->setEnabled(replay);
+    m_stepBack->setEnabled(replay && status.canStepBack);
+    m_stepBackAction->setEnabled(replay && status.canStepBack);
+    m_restart->setEnabled(replay);
+    m_record->setEnabled(m_running || m_record->isChecked());
+    m_capture->setEnabled(m_onScreen.has_value());
+}
+
+// --- Recording and capture
+// ----------------------------------------------------------------------------------
+
+QString LabWindow::labFolder() const {
+    const QString chosen = m_settings.labFolder();
+    if (!chosen.isEmpty()) {
+        return chosen;
+    }
+    if (!m_dependencies.labFolder.isEmpty()) {
+        return m_dependencies.labFolder;
+    }
+    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+}
+
+void LabWindow::toggleRecord(bool on) {
+    if (!on) {
+        m_engine->stopRecording();
+        refreshStatus();
+        return;
+    }
+    QString failure;
+    if (!startRecording(failure)) {
+        const QSignalBlocker blocker(m_record);
+        m_record->setChecked(false);
+        m_message = failure;
+        refreshStatus();
+    }
+}
+
+// A new folder per recording, named by the local time, private to its owner, in the lab's folder.
+bool LabWindow::startRecording(QString& failure) {
+    const std::filesystem::path parent = toPath(labFolder());
+    std::error_code made;
+    std::filesystem::create_directories(parent, made);
+    std::string error;
+    const std::filesystem::path folder =
+        frame_io::createUniqueFolder(parent, timeStamp().toStdString(), error);
+    if (folder.empty() || !makePrivateFolder(fromPath(folder))) {
+        failure = tr("Could not make a folder for the recording in %1: %2")
+                      .arg(labFolder(), QString::fromStdString(error));
+        return false;
+    }
+    frame_io::RecordingInfo info{
+        .kind = m_cameraRunning ? "camera" : m_replayKind,
+        .name = m_engine->status().source,
+        .format = m_cameraRunning && currentFormat() ? currentFormat()->label().toStdString() : std::string(),
+        .startedAt = QDateTime::currentDateTime().toString(Qt::ISODate).toStdString()};
+    frame_io::RecordingWriter::Options options;
+    options.mode = m_dependencies.recorderMode;
+    options.beforeWrite = m_dependencies.recorderBeforeWrite;
+    options.freeSpace = m_dependencies.freeSpace;
+    std::unique_ptr<frame_io::RecordingWriter> writer =
+        frame_io::RecordingWriter::start(folder, std::move(info), std::move(options), error);
+    if (!writer) {
+        failure = tr("Could not start the recording: %1").arg(QString::fromStdString(error));
+        return false;
+    }
+    m_recordingAsked = true;
+    m_engine->startRecording(std::move(writer));
+    return true;
+}
+
+// The frame on screen at full resolution, with what the processor found in it, in the lab's Captures folder.
+void LabWindow::capture() {
+    if (!m_onScreen) {
+        return;
+    }
+    const QString folder = QDir(labFolder()).filePath(QStringLiteral("Captures"));
+    if (!makePrivateFolder(folder)) {
+        m_message = tr("Could not make the Captures folder in %1.").arg(labFolder());
+        refreshStatus();
+        return;
+    }
+    const frame_io::Frame frame = m_onScreen->frame; // shares the pixels, which nothing changes
+    const frame_io::CaptureInfo info{.source = m_engine->status().source,
+                                     .findings = m_onScreen->processed.findings};
+    const std::string baseName = timeStamp().toStdString();
+    const std::filesystem::path path = toPath(folder);
+    auto write = [path, baseName, frame, info]() -> std::pair<std::filesystem::path, std::string> {
+        std::string error;
+        std::filesystem::path written = frame_io::writeCapture(path, baseName, frame, info, error);
+        return {std::move(written), std::move(error)};
+    };
+    if (m_dependencies.immediateCapture) {
+        const auto [written, error] = write();
+        captured(written, error);
+        return;
+    }
+    QThreadPool::globalInstance()->start([write, window = QPointer<LabWindow>(this)] {
+        auto [written, error] = write();
+        QMetaObject::invokeMethod(
+            QCoreApplication::instance(),
+            [window, written, error] {
+                if (window) {
+                    window->captured(written, error);
+                }
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void LabWindow::captured(const std::filesystem::path& file, const std::string& error) {
+    m_message = file.empty() ? tr("Could not capture the frame: %1").arg(QString::fromStdString(error))
+                             : tr("captured %1").arg(fromPath(file));
+    refreshStatus();
+}
+
+void LabWindow::chooseLabFolder() {
+    const QString folder =
+        m_dependencies.chooseLabFolder
+            ? m_dependencies.chooseLabFolder()
+            : QFileDialog::getExistingDirectory(this, tr("Choose the Lab's Folder"), labFolder());
+    if (folder.isEmpty()) {
+        return;
+    }
+    m_settings.setLabFolder(folder);
+    m_message = tr("Recordings may show real passports; avoid synced or shared folders.");
+    refreshStatus();
+}
+
+void LabWindow::openLabFolder() {
+    QDir().mkpath(labFolder());
+    QDesktopServices::openUrl(QUrl::fromLocalFile(labFolder()));
+}
+
+// --- Closing
+// ------------------------------------------------------------------------------------------------
+
+// The camera and the engine stop at once; the recording writes every queued frame first, its progress in the
+// status bar, and the window closes when it has.
+void LabWindow::closeEvent(QCloseEvent* event) {
+    // Once: a command posted on every try would keep the engine from ever being shut down.
+    if (!m_closing) {
+        m_closing = true;
+        stop();
+        m_engine->setSender(nullptr);
+    }
+    if (m_dependencies.engineMode == lab_core::Engine::Mode::Immediate) {
+        m_engine->pump();
+    }
+    if (m_engine->shutDown()) {
+        m_closeTimer->stop();
+        event->accept();
+        return;
+    }
+    event->ignore();
+    refreshStatus();
+    m_closeTimer->start(kClosePollMs);
+}
+
+// Space plays and pauses unless a button has the focus, which Space then presses.
+bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const auto* pressed = qobject_cast<QAbstractButton*>(watched);
+        if (pressed != nullptr && pressed->window() == this && key->key() == Qt::Key_Space &&
+            key->modifiers() == Qt::NoModifier) {
+            event->accept();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
 
 } // namespace document_lab
