@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -14,12 +15,14 @@ namespace frame_io {
 
 // Runs `read` on a thread of its own, up to `depth` items ahead of take(), so decoding the next frames
 // overlaps sending this one. take() blocks until an item is ready, and returns nothing once `read` has (or
-// has thrown). The destructor stops the thread without waiting for `read` to run dry; a read already running
-// finishes.
+// has thrown: then `onException`, if given, turns what was thrown into one last item). The destructor stops
+// the thread without waiting for `read` to run dry; a read already running finishes.
 template <typename T> class ReadAhead {
 public:
-    ReadAhead(std::function<std::optional<T>()> read, std::size_t depth)
-        : m_read(std::move(read)), m_depth(depth == 0 ? 1 : depth), m_thread([this] { readUntilDone(); }) {}
+    ReadAhead(std::function<std::optional<T>()> read, std::size_t depth,
+              std::function<std::optional<T>(std::string what)> onException = {})
+        : m_read(std::move(read)), m_onException(std::move(onException)), m_depth(depth == 0 ? 1 : depth),
+          m_thread([this] { readUntilDone(); }) {}
 
     ~ReadAhead() {
         {
@@ -71,21 +74,27 @@ private:
                     return;
                 }
             }
+            // A reader that throws ends the stream, after the handler's item if it gives one: the caller sees
+            // an error or the end, never a terminated program.
             std::optional<T> item;
+            bool threw = false;
             try {
                 item = m_read();
-            } catch (const std::exception&) {
-                // A reader that fails ends the stream: the caller sees its end, not a terminated program.
+            } catch (const std::exception& exception) {
+                threw = true;
+                item = lastItem(exception.what());
+            } catch (...) {
+                threw = true;
+                item = lastItem("unknown exception");
             }
             std::function<void()> wake;
-            const bool ended = !item;
+            const bool ended = threw || !item;
             {
                 const std::lock_guard lock(m_mutex);
                 if (item) {
                     m_items.push_back(std::move(*item));
-                } else {
-                    m_ended = true;
                 }
+                m_ended = ended;
                 wake = m_wake;
             }
             m_changed.notify_all();
@@ -98,7 +107,20 @@ private:
         }
     }
 
+    // The handler's item for what the reader threw; nothing without a handler, or if the handler throws too.
+    std::optional<T> lastItem(const char* what) {
+        if (!m_onException) {
+            return std::nullopt;
+        }
+        try {
+            return m_onException(what);
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     std::function<std::optional<T>()> m_read;
+    std::function<std::optional<T>(std::string what)> m_onException;
     std::size_t m_depth;
     mutable std::mutex m_mutex;
     std::condition_variable m_changed;

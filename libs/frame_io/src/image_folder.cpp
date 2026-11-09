@@ -260,7 +260,15 @@ ReadResult FileSequence::next() {
         return {};
     }
     startReads();
-    ReadResult result = m_reads.front().second.get();
+    ReadResult result;
+    try {
+        result = m_reads.front().second.get();
+    } catch (...) {
+        // A read that threw is an error at its frame, never the end of the folder.
+        result = {.status = ReadStatus::Error,
+                  .frame = {},
+                  .error = displayName(m_entries[m_next].file) + ": reading failed"};
+    }
     m_reads.pop_front();
     ++m_next;
     startReads();

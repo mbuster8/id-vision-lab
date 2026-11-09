@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -121,6 +122,27 @@ TEST(ImageFolder, ErrorIsNotTheEnd) {
     writePng(folder, "3.png", 30);
     std::string error;
     const auto source = frame_io::openImageFolder(folder.path(), error);
+    ASSERT_NE(source, nullptr) << error;
+
+    EXPECT_EQ(source->next().status, ReadStatus::Frame);
+    const frame_io::ReadResult broken = source->next();
+    EXPECT_EQ(broken.status, ReadStatus::Error);
+    EXPECT_NE(broken.error.find("2.png"), std::string::npos) << broken.error;
+}
+
+// A read that throws is an error at that frame, never the folder's end.
+TEST(ImageFolder, ThrowingReadIsAnError) {
+    const ScratchFolder folder;
+    writePng(folder, "1.png", 10);
+    writePng(folder, "2.png", 20);
+    writePng(folder, "3.png", 30);
+    std::string error;
+    const auto source =
+        frame_io::openImageFolder(folder.path(), error, {.beforeRead = [](std::uint64_t index) {
+                                      if (index == 1) {
+                                          throw std::runtime_error("disk gone");
+                                      }
+                                  }});
     ASSERT_NE(source, nullptr) << error;
 
     EXPECT_EQ(source->next().status, ReadStatus::Frame);

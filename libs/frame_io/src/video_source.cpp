@@ -175,7 +175,11 @@ private:
                 frames += result.status == ReadStatus::Frame ? 1 : 0;
                 return result;
             },
-            kFramesAhead);
+            kFramesAhead,
+            [](std::string what) -> std::optional<ReadResult> {
+                return ReadResult{
+                    .status = ReadStatus::Error, .frame = {}, .error = "reading failed: " + what};
+            });
         if (m_wake) {
             m_ahead->setWake(m_wake);
         }
