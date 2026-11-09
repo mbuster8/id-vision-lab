@@ -50,6 +50,62 @@ id_vision_lab_add_test_executable(viewer_core_tests
         opencv_imgproc
         GTest::gtest_main)
 
+# frame_io's readers, which write and read clips of their own; on Windows with the UTF-8 code page, as the
+# programs that use them run. FFmpeg's libraries are optional: the tests of its reader, and the clips they write
+# through it, only when CMake found them (the target is GLOBAL, made in libs/frame_io).
+set(frame_io_ffmpeg_tests "")
+set(frame_io_ffmpeg_libraries "")
+if(TARGET PkgConfig::FFMPEG)
+    set(frame_io_ffmpeg_tests frame_io/ffmpeg_clip.cpp frame_io/ffmpeg_clip.h frame_io/ffmpeg_video_test.cpp)
+    set(frame_io_ffmpeg_libraries PkgConfig::FFMPEG)
+endif()
+id_vision_lab_add_test_executable(frame_io_tests
+    SOURCES
+        frame_io/capture_test.cpp
+        frame_io/frame_test.cpp
+        frame_io/image_folder_test.cpp
+        frame_io/read_ahead_test.cpp
+        frame_io/recording_measurement_test.cpp
+        frame_io/recording_test.cpp
+        frame_io/replay_pacer_test.cpp
+        frame_io/scratch_folder.h
+        frame_io/video_file_test.cpp
+        frame_io/video_source_test.cpp
+        frame_io/yuv_test.cpp
+        ${frame_io_ffmpeg_tests}
+    LIBRARIES
+        frame_io::frame_io
+        ${frame_io_ffmpeg_libraries}
+        opencv_videoio
+        opencv_imgcodecs
+        opencv_imgproc
+        nlohmann_json::nlohmann_json
+        cppzmq
+        GTest::gtest_main)
+id_vision_lab_use_utf8_code_page(frame_io_tests)
+# latch.h: holding a reader's thread without timing (Qt-free, kept with the other test helpers);
+# test_support.h: the measurements' environment variables.
+target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+
+id_vision_lab_add_test_executable(lab_core_tests
+    SOURCES
+        lab_core/card_frame.h
+        lab_core/document_outline_test.cpp
+        lab_core/engine_test.cpp
+        lab_core/fake_sender.h
+        lab_core/list_source.h
+        lab_core/processors_test.cpp
+        lab_core/result_sender_test.cpp
+    LIBRARIES
+        lab_core::lab_core
+        opencv_imgproc
+        nlohmann_json::nlohmann_json
+        GTest::gtest_main)
+# latch.h: holding a sending thread without timing; scratch_folder.h: a recording's folder.
+target_include_directories(lab_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
+
 if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(pipeline_tests
         SOURCES
@@ -60,26 +116,14 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             GTest::gtest_main)
     # The examples' file reading, tested as the examples run: with the UTF-8 code page on Windows.
     id_vision_lab_use_utf8_code_page(pipeline_tests)
-    # video_file_test.cpp writes and reads clips, so these tests need OpenCV's videoio, as live_sender does.
-    find_package(OpenCV REQUIRED COMPONENTS videoio)
-    # FFmpeg's libraries are optional; the tests write their clips with them too. Listed before
-    # visual_debug, which live_sender_ffmpeg needs, so it is linked once.
-    set(live_sender_ffmpeg_tests "")
-    set(live_sender_ffmpeg_libraries "")
-    if(TARGET live_sender_ffmpeg)
-        set(live_sender_ffmpeg_tests examples/ffmpeg_video_test.cpp)
-        set(live_sender_ffmpeg_libraries live_sender_ffmpeg PkgConfig::FFMPEG)
-    endif()
     id_vision_lab_add_test_executable(live_sender_tests
         SOURCES
             examples/live_sender_test.cpp
-            examples/read_ahead_test.cpp
-            examples/video_file_test.cpp
-            ${live_sender_ffmpeg_tests}
+            examples/real_time_frames_test.cpp
         LIBRARIES
             live_sender_lib
-            live_sender_video
-            ${live_sender_ffmpeg_libraries}
+            lab_core::lab_core
+            frame_io::frame_io
             opencv_videoio
             opencv_imgproc
             opencv_imgcodecs
@@ -87,8 +131,9 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             cppzmq
             nlohmann_json::nlohmann_json
             GTest::gtest_main)
-    # test_support.h: the collecting sink the delivery test uses.
-    target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+    # test_support.h: the collecting sink the delivery test uses; card_frame.h: the outline's synthetic card.
+    target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
+                                                         ${CMAKE_CURRENT_SOURCE_DIR}/lab_core)
     id_vision_lab_use_utf8_code_page(live_sender_tests)
 endif()
 
@@ -109,14 +154,22 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/about_test.cpp
             qt_common/appearance_test.cpp
             qt_common/image_file_test.cpp
+            qt_common/image_tags_conversion_test.cpp
+            qt_common/image_view_test.cpp
+            qt_common/live_converter_test.cpp
+            qt_common/live_drawing_test.cpp
             qt_common/outline_icons_test.cpp
             qt_common/overlay_painter_test.cpp
+            qt_common/owner_only.cpp
+            qt_common/owner_only_test.cpp
             qt_common/qimage_conversion_test.cpp
             qt_common/shades_test.cpp
         LIBRARIES
             qt_common
             viewer_core::viewer_core
+            visual_debug::visual_debug
             opencv_imgcodecs
+            opencv_imgproc
             Qt6::Test
             GTest::gtest)
     id_vision_lab_add_test_executable(viewer_ui_tests
@@ -130,13 +183,9 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_info_bar_test.cpp
             viewer/image_sidebar_test.cpp
             viewer/image_store_test.cpp
-            viewer/image_tags_conversion_test.cpp
-            viewer/image_view_test.cpp
             viewer/live_channel_panel_test.cpp
-            viewer/live_converter_test.cpp
             viewer/main_window_test.cpp
-            viewer/owner_only.cpp
-            viewer/owner_only_test.cpp
+            qt_common/owner_only.cpp
             viewer/qt_image_sink_test.cpp
             viewer/server_controls_test.cpp
             viewer/snapshot_converter_test.cpp
@@ -160,4 +209,36 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
     # The shared Qt test helpers, such as palette_support.h and control_checks.h.
     target_include_directories(viewer_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
     target_include_directories(example_sender_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
+    # The Document Lab's, when Qt has Multimedia: Qt Multimedia's frames, and the window with fake cameras. With
+    # the UTF-8 code page and, on Windows, vcpkg's FFmpeg beside it, as the lab runs.
+    if(TARGET document_lab_ui)
+        id_vision_lab_add_test_executable(document_lab_ui_tests
+            SOURCES
+                qt_common/test_main.cpp
+                qt_common/owner_only.cpp
+                document_lab/camera_backend_test.cpp
+                document_lab/camera_formats_test.cpp
+                document_lab/camera_frame_test.cpp
+                document_lab/fake_camera_backend.h
+                document_lab/main_window_test.cpp
+                document_lab/measurement_test.cpp
+            LIBRARIES
+                document_lab_ui
+                opencv_imgproc
+                cppzmq
+                nlohmann_json::nlohmann_json
+                Qt6::Test
+                GTest::gtest)
+        id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
+        id_vision_lab_copy_ffmpeg_dlls(document_lab_ui_tests)
+        # They also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
+        target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
+                                                                 ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
+                                                                 ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
+                                                                 ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+        # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of
+        # its own so that it also runs from the installed Windows package.
+        add_test(NAME media_smoke COMMAND media_smoke)
+        set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
+    endif()
 endif()

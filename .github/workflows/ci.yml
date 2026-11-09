@@ -36,6 +36,13 @@ jobs:
           cmake --build --preset debug
           ctest --preset debug
 
+      # Without NSCameraUsageDescription macOS ends the app when it asks for the camera; the second key lists
+      # an iPhone as a camera (Continuity Camera).
+      - name: The Document Lab's bundle asks for the camera
+        run: |
+          plutil -extract NSCameraUsageDescription raw build/debug/apps/document_lab/document_lab.app/Contents/Info.plist
+          plutil -extract NSCameraUseContinuityCameraDeviceType raw build/debug/apps/document_lab/document_lab.app/Contents/Info.plist
+
       - name: Configure, build and test (AddressSanitizer and UndefinedBehaviorSanitizer)
         run: |
           cmake --preset asan
@@ -162,7 +169,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\Qt\${{ env.QT_VERSION }}
-          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-qtmultimedia-aqt${{ env.AQTINSTALL_COMMIT }}
 
       - name: Install Qt
         if: steps.qt-cache.outputs.cache-hit != 'true'
@@ -175,7 +182,7 @@ jobs:
             Write-Host "pipx attempt $attempt failed; trying again in $(30 * $attempt) seconds."
             Start-Sleep -Seconds (30 * $attempt)
           }
-          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
+          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH -m qtmultimedia --outputdir C:\Qt
 
       # Saved straight away, so a later failure in the job does not lose it.
       - name: Save Qt
@@ -183,7 +190,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\Qt\${{ env.QT_VERSION }}
-          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-qtmultimedia-aqt${{ env.AQTINSTALL_COMMIT }}
 
       - name: Point the presets at Qt
         shell: pwsh
@@ -212,6 +219,32 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --preset windows-debug
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The FFmpeg DLLs next to the Document Lab's programs: all five vcpkg's (cmake/ffmpeg_dlls.cmake), so
+          # Qt Multimedia's plug-in never pairs them with Qt's own copies.
+          Get-ChildItem build\windows-debug\apps\av*.dll, build\windows-debug\apps\sw*.dll |
+            ForEach-Object { "$($_.Name): $($_.VersionInfo.ProductVersion)" }
+
+      # The apps installed as the packages hold them (windeployqt's Qt, vcpkg's DLLs), and the media check run
+      # from there: Qt Multimedia's backend must load with vcpkg's FFmpeg, the only one in the folder.
+      - name: Install the release apps and check their media
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+          cmake --preset windows-release --fresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-release --target visual_debug_viewer visual_debug_example_sender document_lab media_smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install build\windows-release --prefix "$env:RUNNER_TEMP\lab"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install build\windows-release --prefix "$env:RUNNER_TEMP\lab" --component smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\lab\bin\media_smoke.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem "$env:RUNNER_TEMP\lab\bin" -Name
+          Get-ChildItem "$env:RUNNER_TEMP\lab\bin\av*.dll", "$env:RUNNER_TEMP\lab\bin\sw*.dll" |
+            ForEach-Object { "$($_.Name): $($_.VersionInfo.ProductVersion)" }
 
       # Only when vcpkg added packages, so a run with nothing new does not store another copy.
       - name: Count vcpkg's cached packages again

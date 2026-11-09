@@ -37,7 +37,8 @@ case "${1:-}" in
 esac
 
 # The folders reported one by one; together they are everything but the tests.
-readonly kAreas=(libs/visual_debug libs/viewer_core apps/qt_common apps/viewer apps/example_sender examples)
+readonly kAreas=(libs/visual_debug libs/viewer_core libs/frame_io libs/lab_core apps/qt_common apps/viewer
+    apps/example_sender apps/document_lab examples)
 readonly kSources=(libs apps examples)
 
 # Xcode's copies on macOS; elsewhere those on PATH, which must come from the LLVM of the Clang that built it.
@@ -81,7 +82,7 @@ quietly merge llvm_tool llvm-profdata merge -sparse "${raw[@]}" -o "$profdata"
 # code only they contain counts as not reached rather than being left out.
 objects=()
 for candidate in "$build"/tests/*_tests "$build"/apps/*/*.app/Contents/MacOS/* "$build"/apps/*/visual_debug_* \
-    "$build"/examples/*/*; do
+    "$build"/apps/document_lab/document_lab "$build"/apps/document_lab/media_smoke "$build"/examples/*/*; do
     if [[ -f "$candidate" && -x "$candidate" ]]; then
         objects+=("$candidate")
     fi

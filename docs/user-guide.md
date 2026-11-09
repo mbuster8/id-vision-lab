@@ -12,6 +12,7 @@ programs are `.exe` files under `build\windows-debug`, and take the same options
 |---|---|
 | `visual_debug_viewer` (the **Visual Debug Viewer**, or the viewer) | Shows every image sent to it, keeps a history of thumbnails, zooms, pans and reads out the original value of the pixel under the cursor. Can also open image files itself. |
 | `visual_debug_example_sender` (the **Visual Debug Example Sender**) | A small Qt app: open an image file and send it to the viewer. Shows how a GUI application uses the library. |
+| `document_lab` (the **Document Lab**) | The workbench for document-reading code: a camera (an iPhone through Continuity Camera too) or a video, image, folder or recording runs through a processor, and the results show over the frames. Records frames losslessly, captures one at full resolution, and sends to the viewer when asked (see [Running the Document Lab](#running-the-document-lab)). |
 | `pipeline_demo` | A command-line OpenCV pipeline that sends the result of each of its ten stages. Exercises every image type the viewer handles. |
 | `minimal_sender` | The smallest real use of the library: one include, one call per image. |
 | `overlay_sender` | Sends a made-up ID card with overlays: the shapes a document detector would find in it, drawn by the viewer over the image (see [worked example 7](#7-show-what-your-code-found-overlays)). |
@@ -571,6 +572,79 @@ next start.
 A send that finds the endpoint unusable (`Invalid endpoint`, for example `tcp://localhost` without a port)
 outlines the field in red until you edit it, and is not remembered. A variable set to
 `tcp://127.0.0.1:7139` itself counts as unset, so the remembered endpoint is used.
+
+## Running the Document Lab
+
+```sh
+open build/debug/apps/document_lab/document_lab.app
+```
+
+Start it with `open` or from Finder: macOS asks for camera access on behalf of the app that started it, so
+started from a terminal it asks for the terminal (see the [build guide](build-guide.md#building)).
+
+### Cameras
+
+The **Camera** picker lists the cameras macOS, Windows or Linux offers, an iPhone through Continuity Camera
+among them on a Mac (the iPhone near, on the same Apple Account, Wi-Fi and Bluetooth on), and follows them as
+they come and go. The format picker lists each way the camera can deliver frames once (size, rate, pixel
+format), and starts on the largest uncompressed one up to 60 fps; the lab remembers the camera and each
+camera's format. Nothing starts until you press **Start**. The first Start asks for camera access; refused,
+the status bar says where to allow it (on a Mac, System Settings → Privacy & Security → Camera). Another camera
+or format while running starts a new run; a camera that fails or is unplugged stops it, and the status bar
+says why. **Stop** empties the canvas.
+
+### The canvas, Show and Overlays
+
+The canvas is the viewer's: the wheel zooms at the cursor, a drag pans, a double-click fits. **Processor**
+chooses what runs on each frame: **None**, **Edges** (the frame's edges as a picture, and their share of the
+frame) or **Outline** (the document's outline, drawn over the frame). **Show** chooses what the canvas shows:
+the **Frame**, or a picture the processor made, such as `edges`; a picture the frame on screen does not have
+says so instead of showing an older one. Choosing another processor leaves only its own pictures in the list,
+and the frame shows until a picture of the name chosen comes back. **Overlays**, on from the start, draws what the processor found over
+the frame; turned off, only the drawing goes. The results panel beside the canvas lists the processor's
+findings for the frame on screen, such as `document: found`.
+
+The status bar shows the run (Live, Playing, Paused, Ended, Stopped), the source, the frame and of how many,
+the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a camera's
+frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas drew
+them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
+how long.
+
+### Replay
+
+**Open File…** replays a video or an image; **Open Folder…** a folder of images (in name order, numbers in
+names compared as numbers, 30 frames a second) or a recording. Every frame is processed, in order, at the
+video's pace or slower: a frame the processing could not keep up with is shown late, never skipped.
+**Play**/**Pause**, **Step** (the next frame), **Step Back** (folders and recordings only), **Restart**,
+**Loop** and **As fast as possible**; Space plays and pauses, → steps and ← steps back, except while a button
+has the focus, when Space presses it. **Play** at the end plays the replay again from its first frame. A video that is damaged part-way stops with `stopped at frame N:` and
+the reason, never as its end. 10-bit and HDR videos (an iPhone's HLG, PQ) are read as 16-bit frames with their
+tags.
+
+### Record and Capture
+
+**Record** writes every frame the processor gets, losslessly, as a new folder named by the local time in the
+lab's folder, readable by you only; **Record** again, **Stop**, **Restart**, **Step Back**, a loop, another
+source or another camera format ends it. Stopping, or closing the lab, waits until every frame is written,
+with the progress in the status bar. A camera's frame that finds the queue full is left out and counted; a
+replay waits instead. Recording stops when the disk has less than 5 GB free. A recording replays through
+**Open Folder…**.
+
+**Capture** keeps the frame on the canvas at full resolution as a PNG, with a JSON beside it (the source, the
+frame's number, its time, its tags and the processor's findings), in the `Captures` folder.
+
+The lab's folder is the app's local data folder (`~/Library/Application Support/Document Lab` on a Mac,
+`%LOCALAPPDATA%\Document Lab` on Windows, `~/.local/share/Document Lab` on Linux), which iCloud and OneDrive do
+not sync. **Open Lab Folder** shows it; **Choose Folder…** picks another, with a reminder that recordings may
+show real passports and should stay out of synced or shared folders.
+
+### Send to viewer
+
+**Send to viewer**, off by default, sends each result to the viewer at the endpoint beside it: the frame as the
+live channel `lab`, with the processor's overlays, and each picture as `lab <name>`, such as `lab edges`. A
+slow or absent viewer never slows the lab; the status bar shows the viewer's last reply. An endpoint on another
+computer is used only after you agree, once per session, that frames may show real passports and travel there
+unencrypted; while sending there, the status bar names the host.
 
 ## Running live_sender
 

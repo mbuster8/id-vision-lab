@@ -21,8 +21,12 @@ and setup: see [Windows](#windows).
    brew install cmake ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest
    ```
 
-   Homebrew's `opencv` brings `ffmpeg` with it, whose libraries `live_sender --hdr` reads videos with. They
-   are optional: CMake finds them through `pkgconf`, and without them `live_sender` builds without `--hdr`.
+   Homebrew's `opencv` brings `ffmpeg` with it, whose libraries `frame_io` reads 10-bit and HDR videos with
+   (for the Document Lab and `live_sender --hdr`). They are optional: CMake finds them through `pkgconf`, and
+   without them frame_io reads 8-bit video only and `live_sender` builds without `--hdr`. Homebrew's `qt`
+   includes Qt Multimedia, which the Document Lab's cameras need, with its AVFoundation backend. A Qt without
+   Multimedia still builds everything else: CMake says "Qt Multimedia not found: the Document Lab is not built"
+   and leaves out the lab, its tests and the Windows packages.
 
 3. Qt Creator, the reference IDE (optional; any CMake-aware editor works):
 
@@ -73,7 +77,14 @@ open build/debug/apps/viewer/visual_debug_viewer.app                   # the Vis
 build/debug/examples/pipeline_demo/pipeline_demo                       # sends it ten images
 build/debug/examples/live_sender/live_sender --pattern                  # streams two live channels
 open build/debug/apps/example_sender/visual_debug_example_sender.app   # the Visual Debug Example Sender
+open build/debug/apps/document_lab/document_lab.app                    # the Document Lab
 ```
+
+Start the Document Lab with `open` (or from Finder) when trying its cameras: macOS asks for camera access on
+behalf of the app that started it, so a lab started from a terminal asks for the terminal, and the prompt and
+System Settings name the terminal instead. macOS remembers the answer per app; `tccutil reset Camera
+com.proximasus.document-lab` forgets it, so the next Start asks again. A rebuild changes the app's signature,
+which can make macOS ask again too.
 
 The build is warning-free under `-Wall -Wextra -Wpedantic`. Warnings are not errors, so a newer compiler
 or library cannot break the build, but a new warning from project code should be fixed.
@@ -84,20 +95,26 @@ or library cannot break the build, but a new warning from project code should be
 |---|---|---|
 | `visual_debug` | The sender library: wire format, `Client`, `Server`, `sendImage`, `sendLive` | `libs/visual_debug/libvisual_debug.a` |
 | `viewer_core` | The viewer's UI-free logic: display conversion and settings, history, live channels, pixel readout, zoom | `libs/viewer_core/libviewer_core.a` |
-| `qt_common` | Qt helpers shared by both apps | `apps/qt_common/libqt_common.a` |
+| `frame_io` | Frames from video files, images, folders and recordings; the recorder and captures; YUV conversion. No Qt | `libs/frame_io/libframe_io.a` |
+| `lab_core` | The Document Lab's processors, engine and result sender. No Qt | `libs/lab_core/liblab_core.a` |
+| `qt_common` | Qt helpers shared by the apps, the canvas among them (`ImageView`, `LiveConverter`) | `apps/qt_common/libqt_common.a` |
 | `viewer_ui` | The viewer's windows, as a library its tests link | `apps/viewer/libviewer_ui.a` |
 | `visual_debug_viewer` | **The Visual Debug Viewer** | `apps/viewer/visual_debug_viewer.app` |
 | `example_sender_ui` | The example sender's window, as a library its tests link | `apps/example_sender/libexample_sender_ui.a` |
 | `visual_debug_example_sender` | The Visual Debug Example Sender, a Qt app that sends image files | `apps/example_sender/visual_debug_example_sender.app` |
+| `document_lab_ui` | The Document Lab's window, cameras and frame conversion, as a library its tests link | `apps/document_lab/libdocument_lab_ui.a` |
+| `document_lab` | **The Document Lab**: cameras and replays through processing code, with recording, capture and sending | `apps/document_lab/document_lab.app` |
+| `media_smoke` | A check that Qt Multimedia's backend loads beside frame_io's video readers; ctest runs it | `apps/document_lab/media_smoke` |
 | `pipeline` | The demo's OpenCV stages | `examples/pipeline_demo/libpipeline.a` |
 | `pipeline_demo` | Command-line demo: an OpenCV pipeline that sends every stage | `examples/pipeline_demo/pipeline_demo` |
 | `minimal_sender` | The smallest use of `sendImage` | `examples/minimal_sender/minimal_sender` |
 | `overlay_sender` | An image sent with overlays | `examples/overlay_sender/overlay_sender` |
-| `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel, read-ahead, real-time playback and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
-| `live_sender_video` | Opens a video file for `live_sender`: AVFoundation first on macOS, then OpenCV's default backend | `examples/live_sender/liblive_sender_video.a` |
-| `live_sender_ffmpeg` | Reads a video with FFmpeg's libraries for `live_sender --hdr`, as 16-bit frames with their HDR tags. Built only when CMake finds FFmpeg's development files (`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not | `examples/live_sender/liblive_sender_ffmpeg.a` |
-| `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels. With `live_sender_video` and the tests, the only targets that need OpenCV's `videoio` module | `examples/live_sender/live_sender` |
-| `visual_debug_tests`, `viewer_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
+| `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel, real-time playback and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
+| `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels; reads files through `frame_io` | `examples/live_sender/live_sender` |
+| `visual_debug_tests`, `viewer_core_tests`, `frame_io_tests`, `lab_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `document_lab_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
+
+FFmpeg's reader in `frame_io` (`FfmpegVideo`) is built only when CMake finds FFmpeg's development files
+(`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not.
 
 To build one target: `cmake --build --preset debug --target pipeline_demo`.
 
@@ -112,7 +129,7 @@ build tool, `id_vision_lab_make_ico` (from `cmake/make_ico.cpp`, with OpenCV), w
 
 | Option | Default | Effect |
 |---|---|---|
-| `ID_VISION_LAB_BUILD_QT_APPS` | `ON` | The viewer, the example sender, `qt_common` and the Qt tests |
+| `ID_VISION_LAB_BUILD_QT_APPS` | `ON` | The viewer, the example sender, the Document Lab, `qt_common` and the Qt tests |
 | `ID_VISION_LAB_BUILD_EXAMPLES` | `ON` | `pipeline_demo`, `minimal_sender`, `overlay_sender`, `live_sender` and their tests |
 | `ID_VISION_LAB_BUILD_TESTS` | `ON` | All GoogleTest executables |
 | `ID_VISION_LAB_SANITIZERS` | `OFF` | AddressSanitizer and UndefinedBehaviorSanitizer (the `asan` preset turns it on) |
@@ -120,7 +137,7 @@ build tool, `id_vision_lab_make_ico` (from `cmake/make_ico.cpp`, with OpenCV), w
 
 ### Building without Qt
 
-The two libraries never use Qt. To prove it, or to build on a machine without Qt, turn the Qt apps off
+The four libraries never use Qt. To prove it, or to build on a machine without Qt, turn the Qt apps off
 and build into a separate folder:
 
 ```sh
@@ -129,7 +146,7 @@ cmake --build build/no-qt
 ctest --test-dir build/no-qt               # the tests that need no Qt
 ```
 
-CMake then does not look for Qt at all; both libraries, the three examples and their tests still build.
+CMake then does not look for Qt at all; the four libraries, the examples and their tests still build.
 
 ## Running the tests
 
@@ -265,7 +282,7 @@ by hand. If a menu has moved in your version, the presets above still work from 
    `ctest`, it runs all the tests of one program in a single process, so a test that leaves global state
    behind (or crashes) affects the tests after it, and the pane reports the program as crashed. If
    `viewer_ui_tests` crashes in `ThumbnailPanel`, see the `ImageIO` entry under Troubleshooting.
-6. Debugging: click in the margin of `apps/viewer/image_view.cpp` next to the first line of
+6. Debugging: click in the margin of `apps/qt_common/image_view.cpp` next to the first line of
    `ImageView::wheelEvent` to set a breakpoint, start with **Debug → Start Debugging** (⌘Y), and scroll
    the mouse wheel over an image in the viewer. Qt Creator stops at the breakpoint with LLDB.
 
@@ -338,9 +355,12 @@ sudo scripts/install-ubuntu-deps.sh
 Then build with the presets as above. With Qt older than 6.8 the **View → Appearance** menu is absent. The
 presets add `/opt/homebrew/bin` to `PATH`, which is harmless on Linux because a missing folder on `PATH` is
 ignored. The apps are then plain executables rather than bundles, under the same names:
-`build/debug/apps/viewer/visual_debug_viewer` and
-`build/debug/apps/example_sender/visual_debug_example_sender`. Their windows show their icons, but there is
-no desktop launcher for them yet.
+`build/debug/apps/viewer/visual_debug_viewer`,
+`build/debug/apps/example_sender/visual_debug_example_sender` and `build/debug/apps/document_lab/document_lab`.
+Their windows show their icons, but there is no desktop launcher for them yet. The Document Lab's cameras go
+through Qt Multimedia's GStreamer backend, which needs GStreamer's `v4l2src` from `gstreamer1.0-plugins-good`
+(not in the CI's list: its tests use no camera). With Qt 6.4 that camera waits for the window's thread for each
+frame, up to 300 ms, so a busy window slows it; Linux is the secondary platform.
 
 ## Windows
 
@@ -356,8 +376,10 @@ explains these choices.
    is ticked; it is by default.
 2. **Git for Windows**, which also gives Git Bash, used for `scripts/check.sh`.
 3. **Qt 6** from the [Qt Online Installer](https://www.qt.io/download-qt-installer) (a free Qt account is
-   needed). Under **Qt → Qt 6.12.0** (or newer) tick **MSVC 2022 64-bit**; under **Developer and Designer
-   Tools**, Qt Creator is ticked by default. Nothing else is needed.
+   needed). Under **Qt → Qt 6.12.0** (or newer) tick **MSVC 2022 64-bit**, and under **Additional
+   Libraries** tick **Qt Multimedia**, which the Document Lab's cameras need (an installed Qt gets it later
+   from the Qt Maintenance Tool; CI installs it with aqtinstall's `-m qtmultimedia`). Under **Developer and
+   Designer Tools**, Qt Creator is ticked by default. Nothing else is needed.
 4. **vcpkg**, cloned to a short path with no spaces, then bootstrapped:
 
    ```powershell
@@ -409,11 +431,18 @@ Versions this was verified with (vcpkg's, from the baseline in `vcpkg.json`):
 | Qt Creator | 20.0.2 |
 | Git for Windows | 2.45.1 |
 | `opencv4` | 4.14.0 (vcpkg has no OpenCV 5 yet), with its FFmpeg and Media Foundation video backends |
-| `ffmpeg` | 9.0.2 (LGPL build: `avcodec`, `avformat`, `swscale`) |
+| `ffmpeg` | 9.0.2 (LGPL build: `avcodec`, `avformat`, `swresample`, which Qt Multimedia's FFmpeg plug-in imports, and `swscale`) |
 | `zeromq` / `cppzmq` | 4.3.5 / 4.11.0 |
 | `nlohmann-json` | 3.12.0 |
 | `gtest` | 1.18.0 |
 | `pkgconf` | 3.0.3 (how CMake finds FFmpeg) |
+
+**One FFmpeg per process.** Qt Multimedia's Windows backend is an FFmpeg plug-in, and Qt ships its own
+FFmpeg DLLs beside it; frame_io and OpenCV load vcpkg's. Two builds of the same DLL names in one process
+clash, so every build copies all five of vcpkg's FFmpeg DLLs (`avcodec`, `avformat`, `avutil`, `swresample`,
+`swscale`) next to the Document Lab, `media_smoke` and the tests (`cmake/ffmpeg_dlls.cmake`), which Windows
+searches before `PATH`, and the packages hold vcpkg's and none of Qt's. `media_smoke`, which ctest runs,
+checks that the plug-in loads with them.
 
 ### The developer environment
 
@@ -473,10 +502,11 @@ build\windows-debug\apps\visual_debug_viewer.exe
 build\windows-debug\examples\pipeline_demo\pipeline_demo.exe
 build\windows-debug\examples\live_sender\live_sender.exe --pattern
 build\windows-debug\apps\visual_debug_example_sender.exe
+build\windows-debug\apps\document_lab.exe
 ```
 
-The apps land in `build\<preset>\apps\`, not in `apps\viewer\` and `apps\example_sender\` as on macOS and
-Linux: Qt's CMake setup sends every executable of the `apps` folder there on Windows. The examples and tests
+The apps land in `build\<preset>\apps\`, not in `apps\viewer\`, `apps\example_sender\` and
+`apps\document_lab\` as on macOS and Linux: Qt's CMake setup sends every executable of the `apps` folder there on Windows. The examples and tests
 land where they do on the other platforms, as `.exe` files. Every option in the
 [user guide](user-guide.md) works the same, for example `visual_debug_viewer.exe --endpoint
 tcp://127.0.0.1:7140`, and `--help` prints to the terminal.
@@ -511,8 +541,8 @@ sanitizer and an annotated `std::vector` passed between the two would be reporte
 
 ### Packages for Windows
 
-`cpack` makes two packages of the two apps from a `windows-release` build: a portable `.zip` and an `.msi`
-installer. The `.msi` needs the [WiX Toolset](https://wixtoolset.org/) **version 3**, which CPack's `WIX`
+`cpack` makes two packages of the three apps from a `windows-release` build (with Qt 6.7 or newer, for
+windeployqt's `--no-ffmpeg`): a portable `.zip` and an `.msi` installer. The `.msi` needs the [WiX Toolset](https://wixtoolset.org/) **version 3**, which CPack's `WIX`
 generator uses by default (checked with WiX 3.10.4); its installer sets the `WIX` environment variable CPack
 looks for. Inside the developer environment:
 
@@ -521,15 +551,18 @@ cmake --build --preset windows-release
 cpack --config build\windows-release\CPackConfig.cmake -B build\windows-release\packages
 ```
 
-Both packages hold the same `ID Vision Lab` folder: `bin\` with the two apps, the Qt and vcpkg DLLs they load
-and the Visual C++ runtime; `plugins\` with Qt's platform, style and image-format plug-ins; and `licenses\`
+Both packages hold the same `ID Vision Lab` folder: `bin\` with the three apps, the Qt and vcpkg DLLs they load
+(vcpkg's five FFmpeg DLLs, and none of Qt's) and the Visual C++ runtime; `plugins\` with Qt's platform, style,
+image-format and multimedia (FFmpeg only) plug-ins; and `licenses\`
 with the project's licence, `THIRD-PARTY-NOTICES.txt` naming every library inside and its licence, the GNU
 licences Qt is used under, and each vcpkg library's own copyright file. Neither needs Qt, vcpkg or Visual
 Studio on the computer it runs on. The `.zip` runs from wherever it is unpacked. The `.msi` installs into
 `C:\Program Files\ID Vision Lab` for everyone on the computer (so it asks for administrator rights), adds
-**Visual Debug Viewer**, **Visual Debug Example Sender** and an uninstaller to the Start menu under
+**Visual Debug Viewer**, **Visual Debug Example Sender**, **Document Lab** and an uninstaller to the Start menu under
 **ID Vision Lab**, and is removed from **Settings → Apps** like any other program. The viewer's settings and
-saved images belong to each user, not to the install, so uninstalling keeps them. `cmake/windows_packaging.cmake` lists what is left out and why.
+saved images belong to each user, not to the install, so uninstalling keeps them, as it keeps the Document
+Lab's recordings. `cmake/windows_packaging.cmake` lists what is left out and why. CI installs the release apps
+as the packages hold them and runs `media_smoke` from there.
 
 ### Checking changes on Windows
 

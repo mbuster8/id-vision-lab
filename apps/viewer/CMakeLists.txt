@@ -23,19 +23,11 @@ add_library(viewer_ui STATIC
     image_sidebar.h
     image_store.cpp
     image_store.h
-    image_tags_conversion.cpp
-    image_tags_conversion.h
-    image_view.cpp
-    image_view.h
     live_channel_panel.cpp
     live_channel_panel.h
-    live_converter.cpp
-    live_converter.h
     main_window.cpp
     main_window.h
     main_window.ui
-    private_files.cpp
-    private_files.h
     qt_image_sink.cpp
     qt_image_sink.h
     server_controls.cpp

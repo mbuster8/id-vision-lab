@@ -1,6 +1,8 @@
+#include "frame_io/video_file.h"
 #include "live_sender.h"
-#include "video_file.h"
 
+#include "card_frame.h"
+#include "lab_core/document_outline.h"
 #include "test_support.h"
 
 #include "visual_debug/client.h"
@@ -33,6 +35,8 @@ using live_sender::Arguments;
 using live_sender::CameraSource;
 using live_sender::FileSource;
 using live_sender::PatternSource;
+using test_support::cardFrame;
+using test_support::findsTheCorners;
 using visual_debug::SendResult;
 
 std::optional<Arguments> parse(const std::vector<std::string>& words) {
@@ -313,30 +317,6 @@ TEST(LiveSender, PatternMovesAndIsSendable) {
     EXPECT_EQ(live_sender::patternFrame(3, {1, 1}).size(), cv::Size(1, 1));
 }
 
-TEST(LiveSender, EdgesAreSingleChannelOfTheSameSize) {
-    const cv::Mat frame = live_sender::patternFrame(0, {320, 240});
-
-    const cv::Mat edges = live_sender::edgesOf(frame);
-
-    EXPECT_EQ(edges.type(), CV_8UC1);
-    EXPECT_EQ(edges.size(), frame.size());
-    EXPECT_GT(cv::countNonZero(edges), 0);
-    EXPECT_EQ(live_sender::edgesOf(cv::Mat(10, 12, CV_8UC1, cv::Scalar(7))).type(), CV_8UC1);
-    EXPECT_EQ(live_sender::edgesOf(cv::Mat(10, 12, CV_8UC4, cv::Scalar(1, 2, 3, 4))).type(), CV_8UC1);
-}
-
-// An HDR video's frames are 16-bit: their edges are those of the top 8 bits.
-TEST(LiveSender, EdgesOfSixteenBitMatchEightBit) {
-    const cv::Mat frame8 = live_sender::patternFrame(3, {64, 48});
-    cv::Mat frame16;
-    frame8.convertTo(frame16, CV_16U, 257.0); // 255 becomes 65535
-
-    const cv::Mat edges = live_sender::edgesOf(frame16);
-
-    ASSERT_EQ(edges.type(), CV_8UC1);
-    EXPECT_EQ(cv::norm(edges, live_sender::edgesOf(frame8), cv::NORM_INF), 0.0);
-}
-
 TEST(LiveSender, SendsTheDescription) {
     RecordingSender sender;
     int read = 0;
@@ -483,107 +463,6 @@ TEST(LiveSender, ParsesOutline) {
     EXPECT_FALSE(parse({"--outline", "--list-cameras"}));
 }
 
-const std::vector<cv::Point> kCorners{{100, 80}, {540, 100}, {520, 400}, {120, 380}};
-
-// A light card on a darker desk, `scale` times the 640×480 picture.
-cv::Mat cardFrame(int scale = 1) {
-    cv::Mat frame(480 * scale, 640 * scale, CV_8UC3, cv::Scalar::all(40));
-    std::vector<cv::Point> corners;
-    for (const cv::Point& corner : kCorners) {
-        corners.push_back(corner * scale);
-    }
-    cv::fillConvexPoly(frame, corners, cv::Scalar::all(220));
-    return frame;
-}
-
-// Each corner is within `tolerance` of a different found point.
-bool findsTheCorners(const std::vector<cv::Point2d>& found, int scale, double tolerance) {
-    if (found.size() != 4) {
-        return false;
-    }
-    std::vector<bool> used(found.size(), false);
-    for (const cv::Point& corner : kCorners) {
-        bool matched = false;
-        for (std::size_t i = 0; i < found.size() && !matched; ++i) {
-            if (!used[i] && cv::norm(found[i] - cv::Point2d(corner * scale)) <= tolerance) {
-                used[i] = true;
-                matched = true;
-            }
-        }
-        if (!matched) {
-            return false;
-        }
-    }
-    return true;
-}
-
-TEST(LiveSender, FindsTheDocumentsFourCorners) {
-    const auto outline = live_sender::documentOutline(cardFrame());
-
-    ASSERT_TRUE(outline);
-    EXPECT_TRUE(findsTheCorners(*outline, 1, 4.0));
-}
-
-TEST(LiveSender, FindsItInALargeFrame) {
-    const auto outline = live_sender::documentOutline(cardFrame(3));
-
-    ASSERT_TRUE(outline);
-    EXPECT_TRUE(findsTheCorners(*outline, 3, 8.0));
-}
-
-// The outline is found on a copy 6 times smaller; mapping its corners back must take each copy pixel's
-// centre, or the whole outline shifts by 2.5 frame pixels up and to the left. The corners' centroid shows it,
-// free of the edge detector's own spread, which is the same on every side.
-TEST(LiveSender, OutlineIsNotShiftedByTheShrinking) {
-    // A rectangle, so the edge detector's outward spread is the same on opposite sides and cancels in the
-    // centroid: pixels 600 to 3239 across and 480 to 2399 down, whose centre is (1919.5, 1439.5).
-    cv::Mat frame(2880, 3840, CV_8UC3, cv::Scalar::all(40)); // found at 640×480
-    cv::rectangle(frame, cv::Rect(600, 480, 2640, 1920), cv::Scalar::all(220), cv::FILLED);
-    const cv::Point2d expected(1919.5, 1439.5);
-
-    const auto outline = live_sender::documentOutline(frame);
-
-    ASSERT_TRUE(outline);
-    ASSERT_EQ(outline->size(), 4U);
-    cv::Point2d centroid;
-    for (const cv::Point2d& corner : *outline) {
-        centroid += corner / 4.0;
-    }
-    EXPECT_NEAR(centroid.x, expected.x, 1.0);
-    EXPECT_NEAR(centroid.y, expected.y, 1.0);
-}
-
-using Outline = std::vector<cv::Point2d>;
-
-TEST(OutlineHold, KeepsTheLastOutlineForTenFramesThenLetsGo) {
-    live_sender::OutlineHold hold;
-    const Outline card{{1, 1}, {9, 1}, {9, 6}, {1, 6}};
-
-    EXPECT_EQ(hold.next(card), card);
-    for (int frame = 1; frame <= live_sender::kOutlineHoldFrames; ++frame) {
-        EXPECT_EQ(hold.next(std::nullopt), card) << frame;
-    }
-
-    EXPECT_EQ(hold.next(std::nullopt), std::nullopt);
-}
-
-TEST(OutlineHold, ANewOutlineReplacesTheHeldOne) {
-    live_sender::OutlineHold hold;
-    const Outline first{{1, 1}, {9, 1}, {9, 6}, {1, 6}};
-    const Outline second{{2, 2}, {8, 2}, {8, 5}, {2, 5}};
-    hold.next(first);
-    hold.next(std::nullopt);
-
-    EXPECT_EQ(hold.next(second), second);
-    EXPECT_EQ(hold.next(std::nullopt), second);
-}
-
-TEST(OutlineHold, NothingFoundYetHoldsNothing) {
-    live_sender::OutlineHold hold;
-
-    EXPECT_EQ(hold.next(std::nullopt), std::nullopt);
-}
-
 // A frame without an outline between two with one: the camera frame still carries the held outline.
 TEST(LiveSender, RunHoldsTheOutlineThroughAMissedFrame) {
     int read = 0;
@@ -597,66 +476,6 @@ TEST(LiveSender, RunHoldsTheOutlineThroughAMissedFrame) {
 
     ASSERT_EQ(sender.calls.size(), 6u);
     EXPECT_EQ(sender.calls[2].description.overlays.size(), 1u); // the plain frame, with the held outline
-}
-
-// A thumb over one edge, darker than the card, dents its outline; the card is still found. (Fitting the
-// corners to the outline's convex hull matters most on real frames: on the passport clips it gave fewer
-// misses and half the flicker; this synthetic dent is handled without it too.)
-TEST(LiveSender, AThumbOverAnEdgeStillFindsTheCard) {
-    cv::Mat frame = cardFrame();
-    cv::ellipse(frame, cv::Point(115, 230), cv::Size(70, 40), 0, 0, 360, cv::Scalar(60, 80, 110), cv::FILLED);
-
-    const auto outline = live_sender::documentOutline(frame);
-
-    ASSERT_TRUE(outline);
-    EXPECT_TRUE(findsTheCorners(*outline, 1, 12.0));
-}
-
-// Only a document wholly in view is outlined: one the frame cuts off has an edge that is the frame's.
-TEST(LiveSender, NoOutlineForACardCutOffByTheFrame) {
-    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar::all(40));
-    cv::fillConvexPoly(frame, std::vector<cv::Point>{{100, 80}, {540, 100}, {520, 479}, {120, 479}},
-                       cv::Scalar::all(220));
-
-    EXPECT_FALSE(live_sender::documentOutline(frame));
-}
-
-// A page is lighter than what it lies on: a dark shape on a light desk, such as a keyboard, is no document.
-TEST(LiveSender, NoOutlineForADarkShapeOnALightDesk) {
-    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar::all(220));
-    cv::fillConvexPoly(frame, kCorners, cv::Scalar::all(40));
-
-    EXPECT_FALSE(live_sender::documentOutline(frame));
-}
-
-// Four corners with one side far shorter than the others, as when a hand joins a page, are no document.
-TEST(LiveSender, NoOutlineForASliver) {
-    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar::all(40));
-    cv::fillConvexPoly(frame, std::vector<cv::Point>{{60, 60}, {580, 90}, {590, 130}, {70, 420}},
-                       cv::Scalar::all(220));
-
-    EXPECT_FALSE(live_sender::documentOutline(frame));
-}
-
-TEST(LiveSender, NoOutlineInAPlainFrame) {
-    EXPECT_FALSE(live_sender::documentOutline(cv::Mat(480, 640, CV_8UC3, cv::Scalar::all(128))));
-}
-
-TEST(LiveSender, NoOutlineForASmallShape) {
-    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar::all(40));
-    cv::rectangle(frame, cv::Rect(300, 200, 20, 20), cv::Scalar::all(220), cv::FILLED);
-
-    EXPECT_FALSE(live_sender::documentOutline(frame));
-}
-
-TEST(LiveSender, SixteenBitFramesHaveOutlinesToo) {
-    cv::Mat frame16;
-    cardFrame().convertTo(frame16, CV_16U, 257.0);
-
-    const auto outline = live_sender::documentOutline(frame16);
-
-    ASSERT_TRUE(outline);
-    EXPECT_TRUE(findsTheCorners(*outline, 1, 4.0));
 }
 
 TEST(LiveSender, OutlineGoesWithTheCameraFrameOnly) {
@@ -697,7 +516,7 @@ TEST(LiveSenderMeasurement, DISABLED_OutlineOnAClip) {
     const std::string& clip = *clipVariable;
     const char* debug = debugVariable ? debugVariable->c_str() : nullptr;
     cv::VideoCapture capture;
-    ASSERT_TRUE(live_sender::openVideoFile(capture, clip)) << clip;
+    ASSERT_TRUE(frame_io::openVideoFile(capture, clip)) << clip;
 
     std::vector<cv::Mat> tiles; // every 15th frame, 320 pixels wide, for one contact sheet
     int frames = 0;
@@ -709,10 +528,10 @@ TEST(LiveSenderMeasurement, DISABLED_OutlineOnAClip) {
     int shown = 0; // with the outline held as live_sender holds it
     int shownChanges = 0;
     bool previousShown = false;
-    live_sender::OutlineHold hold;
+    lab_core::OutlineHold hold;
     cv::Mat frame;
     while (capture.read(frame)) {
-        const auto found_ = live_sender::documentOutline(frame);
+        const auto found_ = lab_core::documentOutline(frame);
         const bool now = found_.has_value();
         found += now ? 1 : 0;
         gap = now ? 0 : gap + 1;

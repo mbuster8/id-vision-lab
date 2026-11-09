@@ -1,0 +1,217 @@
+#pragma once
+
+#include "camera_backend.h"
+#include "camera_frame.h"
+#include "image_view.h"
+#include "lab_settings.h"
+#include "live_converter.h"
+
+#include <frame_io/recording.h>
+#include <lab_core/engine.h>
+#include <lab_core/processors.h>
+#include <visual_debug/image_description.h>
+#include <visual_debug/image_sender.h>
+
+#include <QMainWindow>
+#include <QSet>
+#include <QString>
+
+#include <chrono>
+#include <cstdint>
+#include <deque>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+class QAction;
+class QCheckBox;
+class QCloseEvent;
+class QComboBox;
+class QEvent;
+class QLabel;
+class QLineEdit;
+class QListWidget;
+class QPushButton;
+class QTimer;
+
+namespace document_lab {
+
+using Clock = std::chrono::steady_clock;
+
+// Everything the window would otherwise make or ask for itself, so that its tests can run it without cameras,
+// threads, dialogs or a disk that fills up.
+struct LabDependencies {
+    std::unique_ptr<CameraBackend> cameras;
+    std::function<std::unique_ptr<visual_debug::ImageSender>(const std::string& endpoint)> makeSender;
+    std::function<std::unique_ptr<lab_core::FrameProcessor>(lab_core::ProcessorKind)>
+        makeProcessor; // null: lab_core's
+    lab_core::Engine::Mode engineMode = lab_core::Engine::Mode::Threaded;
+    LiveConverter::Mode conversionMode = LiveConverter::Mode::Threaded;
+    LiveConverter::Conversion conversion = convertLiveFrame;
+    lab_core::ResultSender::Mode senderMode = lab_core::ResultSender::Mode::Threaded;
+    frame_io::RecordingWriter::Mode recorderMode = frame_io::RecordingWriter::Mode::Threaded;
+    std::function<void(std::uint64_t)> recorderBeforeWrite;
+    bool immediateCapture = false;
+    std::function<std::uintmax_t(const std::filesystem::path&)> freeSpace; // null: what the volume has
+    std::function<bool(const QString& question)> confirm;                  // null: a QMessageBox
+    std::function<QString()> chooseFile;
+    std::function<QString()> chooseFolder;
+    std::function<QString()> chooseLabFolder; // null: QFileDialog
+    QString labFolder;                        // empty: the app's local data folder
+    std::function<Clock::time_point()> clock; // null: steady_clock::now
+};
+
+// The Document Lab: a camera or a replay, run through a processor on the engine's thread, the result drawn on
+// the viewer's canvas with its overlays, its findings listed, and its counts in the status bar.
+class LabWindow : public QMainWindow {
+    Q_OBJECT
+
+public:
+    explicit LabWindow(LabDependencies dependencies, QWidget* parent = nullptr);
+    ~LabWindow() override;
+
+    // A replay of whatever `open` opens, on the engine's thread (Open File… and Open Folder… use it).
+    void startReplay(lab_core::ReplayOpener open);
+    // Stops the camera or the replay; the canvas and the results empty, and nothing of the run comes after.
+    void stop();
+
+    // Immediate modes: one engine pump, its result taken and drawn, the status refreshed.
+    void pumpForTests();
+    struct CanvasCounts {
+        std::uint64_t received = 0; // pictures the converter made
+        std::uint64_t applied = 0;  // of those, drawn: the others were for a view no longer shown
+    };
+    CanvasCounts canvasCountsForTests() const;
+
+protected:
+    // Waits, with the window open and its progress shown, until the recording has written every frame.
+    void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    void buildUi();
+    void beginRun();
+    void takeResult();
+    const cv::Mat* shownImage(visual_debug::ImageDescription& description) const;
+    void updateShowEntries(const lab_core::LabResult& result);
+    void forgetShowEntries();
+    void showResults(const lab_core::LabResult& result);
+    void display(ImageView::KeepView keep);
+    void applyPicture(LiveResult result);
+    void redrawForView();
+    void viewChanged();
+    void refreshStatus();
+    void chooseProcessor(int index);
+    void chooseShow(int index);
+    std::string currentShow() const;
+    Clock::time_point now() const;
+    void updateStartStop();
+
+    // Cameras.
+    void fillCameras();
+    void fillFormats();
+    void chooseCamera(int index);
+    void chooseFormat(int index);
+    void startOrStop();
+    void startCamera();
+    void startCameraGranted();
+    void restartCamera();
+    void cameraFrame(const QVideoFrame& frame, quint64 session);
+    void cameraFailed(const QString& reason);
+    const CameraInfo* currentCamera() const;
+    std::optional<CameraFormat> currentFormat() const;
+
+    // Replay.
+    void openFile();
+    void openFolder();
+    void openReplay(const QString& path);
+    void togglePlay();
+    void updateReplayControls(const lab_core::EngineStatus& status);
+
+    // Recording and capture.
+    QString labFolder() const;
+    void toggleRecord(bool on);
+    bool startRecording(QString& failure);
+    void capture();
+    void captured(const std::filesystem::path& file, const std::string& error);
+    void chooseLabFolder();
+    void openLabFolder();
+
+    // Send to viewer.
+    void toggleSend(bool on);
+    void startSending();
+    void stopSending();
+    void endpointChanged();
+
+    LabDependencies m_dependencies;
+    LabSettings m_settings;
+
+    QComboBox* m_cameraCombo = nullptr;
+    QComboBox* m_formatCombo = nullptr;
+    QPushButton* m_startStop = nullptr;
+    QPushButton* m_openFile = nullptr;
+    QPushButton* m_openFolder = nullptr;
+    QPushButton* m_playPause = nullptr;
+    QPushButton* m_step = nullptr;
+    QPushButton* m_stepBack = nullptr;
+    QPushButton* m_restart = nullptr;
+    QCheckBox* m_loop = nullptr;
+    QCheckBox* m_asFast = nullptr;
+    QAction* m_playPauseAction = nullptr;
+    QAction* m_stepAction = nullptr;
+    QAction* m_stepBackAction = nullptr;
+    QPushButton* m_record = nullptr;
+    QPushButton* m_capture = nullptr;
+    QPushButton* m_openLabFolder = nullptr;
+    QPushButton* m_chooseLabFolder = nullptr;
+    QTimer* m_closeTimer = nullptr;
+    QCheckBox* m_send = nullptr;
+    QLineEdit* m_endpoint = nullptr;
+    QString m_sendingHost;              // another computer's, while sending there; empty for this one
+    QSet<QString> m_confirmedEndpoints; // the user said yes to sending there, this session
+    QComboBox* m_processorCombo = nullptr;
+    QComboBox* m_showCombo = nullptr;
+    QCheckBox* m_overlaysCheck = nullptr;
+    ImageView* m_canvas = nullptr;
+    QLabel* m_placeholder = nullptr;
+    QListWidget* m_results = nullptr;
+    QLabel* m_status = nullptr;
+    QTimer* m_statusTimer = nullptr;
+
+    QString m_wantedShow; // the Show entry chosen last, selected again when a frame has it
+    QString m_message;    // the window's own: a refused permission, a camera gone
+
+    std::vector<CameraInfo> m_cameras;   // as the camera picker lists them
+    std::vector<CameraFormat> m_formats; // the chosen camera's, as the format picker lists them
+    bool m_cameraRunning = false;
+    quint64 m_session = 0; // the camera session whose frames are taken
+    CameraGeometry m_geometry;
+
+    bool m_running = false;                // a camera or a replay runs: its results are taken
+    std::uint64_t m_minimumGeneration = 0; // the run's: results of earlier ones are dropped
+    std::string m_replayKind;              // "video", "images" or "recording", for a recording made of it
+    bool m_recordingAsked = false;         // Record clicked, and the engine not yet recording
+    bool m_closing = false;                // closing waits for the recording; the run is already stopped
+    std::optional<lab_core::LabResult> m_current;  // the result taken last
+    std::optional<lab_core::LabResult> m_previous; // the one before, whose picture may still be on screen
+    std::uint64_t m_previousSequence = 0;
+    std::optional<lab_core::LabResult> m_onScreen; // the result whose picture the canvas shows: Capture's
+    std::uint64_t m_resultSequence = 0;            // a number per result taken, for the converter's jobs
+    std::uint64_t m_viewCounter = 0;               // bumped by each change of what is shown
+    bool m_fitPending = false;
+    bool m_fitNext = true; // the next result is fitted: the first, and the first after a stop or a new source
+    std::uint64_t m_notDrawn = 0;
+    CanvasCounts m_canvasCounts;
+    std::deque<Clock::time_point> m_taken; // results taken in the last second
+    std::deque<Clock::time_point> m_drawn; // pictures drawn in the last second
+
+    // Destroyed in this order, from the bottom: the converter's thread and the engine's stop before anything
+    // they call back into goes.
+    std::unique_ptr<LiveConverter> m_converter;
+    std::unique_ptr<lab_core::Engine> m_engine;
+};
+
+} // namespace document_lab

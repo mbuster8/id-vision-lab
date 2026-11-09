@@ -175,8 +175,6 @@ private:
     // A converted frame onto the view and the histogram strip, counted as drawn once per frame; dropped
     // unless its channel is still in view and nothing else took the view meanwhile.
     void applyLiveResult(LiveResult result);
-    // What to convert of a frame this size for a draw with `keep`: the area and the size to make it at.
-    LiveDrawing liveDrawing(cv::Size frameSize, ImageView::KeepView keep) const;
     void redrawLiveFrameForView();            // after a zoom, a fit, a resize or a pan
     void showLiveText(Clock::time_point now); // the shown channel's info strip
     void updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now);
