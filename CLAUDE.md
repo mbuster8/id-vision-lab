@@ -108,7 +108,7 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   goes through Qt and `cv::imdecode`/`imencode`, while the examples (and their tests) get a UTF-8 code page
   from `id_vision_lab_use_utf8_code_page()`; under it `std::filesystem::path` throws on bytes that are not
   UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach access lists, so the viewer sets its folders' lists in
-  `apps/viewer/private_files.cpp` and privacy tests use `tests/viewer/owner_only.h`; those two `.cpp` files are
+  `apps/qt_common/private_files.cpp` and privacy tests use `tests/qt_common/owner_only.h`; those two `.cpp` files are
   the only ones that include `<windows.h>`.
 - **Warnings:** zero from project code under `-Wall -Wextra -Wpedantic`, and under MSVC's `/W4`.
 - **UI tests run offscreen in the Fusion style**, so they cannot see macOS drawing (a `QToolBar`'s buttons

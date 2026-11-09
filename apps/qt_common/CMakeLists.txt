@@ -21,6 +21,8 @@ add_library(qt_common STATIC
     outline_icons.h
     overlay_painter.cpp
     overlay_painter.h
+    private_files.cpp
+    private_files.h
     qimage_conversion.cpp
     qimage_conversion.h
     shades.cpp

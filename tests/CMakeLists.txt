@@ -115,6 +115,8 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/live_drawing_test.cpp
             qt_common/outline_icons_test.cpp
             qt_common/overlay_painter_test.cpp
+            qt_common/owner_only.cpp
+            qt_common/owner_only_test.cpp
             qt_common/qimage_conversion_test.cpp
             qt_common/shades_test.cpp
         LIBRARIES
@@ -138,8 +140,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/image_store_test.cpp
             viewer/live_channel_panel_test.cpp
             viewer/main_window_test.cpp
-            viewer/owner_only.cpp
-            viewer/owner_only_test.cpp
+            qt_common/owner_only.cpp
             viewer/qt_image_sink_test.cpp
             viewer/server_controls_test.cpp
             viewer/snapshot_converter_test.cpp

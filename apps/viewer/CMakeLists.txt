@@ -28,8 +28,6 @@ add_library(viewer_ui STATIC
     main_window.cpp
     main_window.h
     main_window.ui
-    private_files.cpp
-    private_files.h
     qt_image_sink.cpp
     qt_image_sink.h
     server_controls.cpp

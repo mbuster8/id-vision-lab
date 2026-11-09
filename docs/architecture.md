@@ -374,7 +374,8 @@ may read them:
   The files inside inherit the folder's list as they are created, and setting it on a folder an earlier
   viewer made also reaches the files already there. When Windows refuses, for example on a drive without
   access lists, the folder counts as unavailable and the viewer keeps everything in memory. The tests check
-  the access list itself through `tests/viewer/owner_only.h`. `private_files.cpp` and `owner_only.cpp` are
+  the access list itself through `tests/qt_common/owner_only.h`. `private_files.cpp` (in `qt_common`) and
+  `owner_only.cpp` are
   the only files that include `<windows.h>`.
 
 ## Extension points
