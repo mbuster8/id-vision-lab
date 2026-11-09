@@ -63,3 +63,46 @@ TEST(Capture, TakenNameGetsANumber) {
 }
 
 } // namespace
+
+namespace {
+
+nlohmann::json captureJson(const std::filesystem::path& png) {
+    std::filesystem::path json = png;
+    json.replace_extension(".json");
+    std::ifstream stream(json);
+    return nlohmann::json::parse(stream);
+}
+
+// Where the processor found the document, as the viewer's overlays describe it, so a capture keeps it.
+TEST(Capture, KeepsTheOverlays) {
+    const ScratchFolder folder;
+    std::string error;
+    const frame_io::CaptureInfo info{
+        .source = "camera",
+        .findings = {"document: found"},
+        .overlays = {visual_debug::Polygon{.points = {{1, 2}, {30, 2}, {30, 20}}, .label = "Document"}}};
+
+    const std::filesystem::path png =
+        frame_io::writeCapture(folder.path(), "c", frameNumberSix(), info, error);
+
+    ASSERT_FALSE(png.empty()) << error;
+    const nlohmann::json json = captureJson(png);
+    ASSERT_EQ(json["overlays"].size(), 1U);
+    EXPECT_EQ(json["overlays"][0]["shape"], "polygon");
+    EXPECT_EQ(json["overlays"][0]["label"], "Document");
+    EXPECT_EQ(json["overlays"][0]["points"][1], nlohmann::json::array({30, 2}));
+}
+
+// A processor's finding that is not UTF-8 is written with U+FFFD in its place, never thrown on.
+TEST(Capture, InvalidUtf8FindingIsReplaced) {
+    const ScratchFolder folder;
+    std::string error;
+
+    const std::filesystem::path png =
+        frame_io::writeCapture(folder.path(), "c", frameNumberSix(), {.findings = {"a\xff"}}, error);
+
+    ASSERT_FALSE(png.empty()) << error;
+    EXPECT_EQ(captureJson(png)["findings"][0], "a\xEF\xBF\xBD");
+}
+
+} // namespace
