@@ -8,8 +8,12 @@
 #include "live_converter.h"
 #include "test_support.h"
 
+#if defined(FRAME_IO_HAS_FFMPEG)
+#include <frame_io/ffmpeg_video.h>
+#endif
 #include <frame_io/image_folder.h>
 #include <frame_io/recording.h>
+#include <frame_io/video_file.h>
 #include <lab_core/document_outline.h>
 #include <lab_core/engine.h>
 #include <lab_core/processors.h>
@@ -20,8 +24,10 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -155,5 +161,91 @@ TEST(DocumentLabMeasurement, DISABLED_ReplayAsFastAsPossible) {
                   << processed / engineSeconds << " fps\n";
     }
 }
+
+#if defined(FRAME_IO_HAS_FFMPEG)
+
+// Milliseconds for a seek and the read of the frame it lands on, as the replay shows it.
+double seekMs(frame_io::FfmpegVideo& video, std::chrono::nanoseconds at) {
+    const Clock::time_point start = Clock::now();
+    EXPECT_TRUE(video.seek(at)) << video.lastError();
+    EXPECT_TRUE(video.read().has_value()) << video.lastError();
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+std::chrono::nanoseconds frameTime(double frame, double fps) {
+    return std::chrono::nanoseconds(std::llround(frame * 1e9 / fps));
+}
+
+// A seek in each clip, with the hardware decoder and in software: the first after opening, a later one, and
+// ten Step Backs one after another, each its own seek (the engine makes one of those waiting, so this is the
+// most a held key can cost).
+TEST(DocumentLabMeasurement, DISABLED_SeekInAClip) {
+    for (const char* variable : {"DOCUMENT_LAB_CLIP_4K60", "DOCUMENT_LAB_CLIP_SDR"}) {
+        const std::optional<std::string> clip = test_support::environmentValue(variable);
+        if (!clip) {
+            std::cout << "[ measurement ] " << variable << " not set: skipped\n";
+            continue;
+        }
+        for (const bool hardware : {true, false}) {
+            std::string error;
+            const auto video = frame_io::FfmpegVideo::open(
+                *clip, frame_io::FfmpegVideo::Options{.allowHardware = hardware, .eightBitAsEightBit = true},
+                error);
+            ASSERT_TRUE(video) << error;
+            const double fps = video->info().fps;
+            const double frames = static_cast<double>(video->info().frameCount.value_or(300));
+            const double first = seekMs(*video, frameTime(frames / 2, fps));
+            const double later = seekMs(*video, frameTime(frames / 3, fps));
+            const double midGop = seekMs(*video, std::chrono::milliseconds(1930));
+            double backs = 0.0;
+            const double from = std::floor(frames * 2 / 3);
+            for (int step = 1; step <= 10; ++step) {
+                backs += seekMs(*video, frameTime(from - step, fps));
+            }
+            std::cout << "[ measurement ] " << variable << " (" << video->info().decoder << ", "
+                      << video->info().size.width << "×" << video->info().size.height << ", " << fps
+                      << " fps): first seek " << first << " ms, a later one " << later << " ms, to 1.93 s "
+                      << midGop << " ms; ten Step Backs " << backs << " ms, " << backs / 10 << " ms each\n";
+        }
+    }
+}
+
+// The 8-bit clip read whole through FFmpeg as 8-bit, with the hardware decoder and in software, and through
+// OpenCV, as A2 read it.
+TEST(DocumentLabMeasurement, DISABLED_ReadEightBitThroughFfmpegAndOpenCv) {
+    const std::optional<std::string> clip = test_support::environmentValue("DOCUMENT_LAB_CLIP_SDR");
+    if (!clip) {
+        std::cout << "[ measurement ] DOCUMENT_LAB_CLIP_SDR not set: skipped\n";
+        return;
+    }
+    for (const bool hardware : {true, false}) {
+        std::string error;
+        const auto video = frame_io::FfmpegVideo::open(
+            *clip, frame_io::FfmpegVideo::Options{.allowHardware = hardware, .eightBitAsEightBit = true},
+            error);
+        ASSERT_TRUE(video) << error;
+        int frames = 0;
+        const Clock::time_point start = Clock::now();
+        while (video->read()) {
+            ++frames;
+        }
+        const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+        std::cout << "[ measurement ] SDR clip through FFmpeg, 8-bit (" << video->info().decoder
+                  << "): " << frames << " frames at " << frames / seconds << " fps\n";
+    }
+    cv::VideoCapture capture;
+    ASSERT_TRUE(frame_io::openVideoFile(capture, *clip));
+    int frames = 0;
+    cv::Mat image;
+    const Clock::time_point start = Clock::now();
+    while (capture.read(image) && !image.empty()) {
+        ++frames;
+    }
+    const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+    std::cout << "[ measurement ] SDR clip through OpenCV (" << capture.getBackendName() << "): " << frames
+              << " frames at " << frames / seconds << " fps\n";
+}
+
+#endif
 
 } // namespace

@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace frame_io {
 
@@ -32,6 +33,10 @@ struct VideoInfo {
     // keeps timestamps (a raw .h264 or .hevc stream does not).
     bool seekable = false;
 };
+
+// Whether a codec, by FFmpeg's decoder name ("h264", "hevc"), decodes faster in software than with the
+// hardware decoder: then open() leaves the hardware alone for it.
+bool codecPrefersSoftware(std::string_view decoderName);
 
 // A video file read with FFmpeg's libraries rather than OpenCV's videoio, which hands over 8-bit pictures
 // without their transfer and primaries. Every frame comes as 16-bit BGR: a limited-range video's nominal

@@ -517,4 +517,28 @@ TEST(FfmpegVideo, HardwareSeekOnMacOS) {
 }
 #endif
 
+// Measured at 4K on Apple silicon, FFmpeg's own H.264 decoder reads and seeks several times faster than
+// VideoToolbox through FFmpeg; HEVC the other way round.
+TEST(FfmpegVideo, H264PrefersSoftware) {
+    EXPECT_TRUE(frame_io::codecPrefersSoftware("h264"));
+    EXPECT_FALSE(frame_io::codecPrefersSoftware("hevc"));
+    EXPECT_FALSE(frame_io::codecPrefersSoftware("prores"));
+}
+
+TEST(FfmpegVideo, H264DecodesInSoftware) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mp4");
+    // Large enough for VideoToolbox, which would otherwise leave a tiny clip to software anyway.
+    if (test_support::writeNumberedClip(
+            path, NumberedClip{.encoder = "libx264", .frames = 12, .size = {320, 240}}) != Written::Yes) {
+        GTEST_SKIP() << "this FFmpeg has no H.264 encoder";
+    }
+    std::string error;
+
+    const std::unique_ptr<FfmpegVideo> video = FfmpegVideo::open(path, true, error);
+
+    ASSERT_NE(video, nullptr) << error;
+    EXPECT_EQ(video->info().decoder, "software");
+}
+
 } // namespace

@@ -608,7 +608,8 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
     impl->decoder->pkt_timebase = stream->time_base;
     impl->timeBase = stream->time_base;
 
-    impl->hardwareFormat = hardware ? hardwareFormatOf(codec) : AV_PIX_FMT_NONE;
+    impl->hardwareFormat =
+        hardware && !codecPrefersSoftware(codec->name) ? hardwareFormatOf(codec) : AV_PIX_FMT_NONE;
     AVBufferRef* device = nullptr;
     if (impl->hardwareFormat != AV_PIX_FMT_NONE &&
         av_hwdevice_ctx_create(&device, kHardware, nullptr, nullptr, 0) >= 0) {
@@ -700,6 +701,11 @@ std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, bool all
                                                std::string& error) {
     return open(path, Options{.allowHardware = allowHardware, .eightBitAsEightBit = false}, error);
 }
+
+// H.264 at 4K on Apple silicon: FFmpeg's own decoder read a 60 fps clip about four times as fast as
+// VideoToolbox through FFmpeg did, and sought in well under half the time (A2.1's measurements). HEVC went
+// the other way, so it keeps the hardware.
+bool codecPrefersSoftware(std::string_view decoderName) { return decoderName == "h264"; }
 
 FfmpegVideo::FfmpegVideo(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
 
