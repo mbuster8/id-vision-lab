@@ -69,6 +69,12 @@ TEST(Yuv, Bt709AgainstFormula) {
     expectBgrNear(bgrOf(100, 90, 200, YuvMatrix::Bt601, YuvRange::Video), 21.15, 54.16, 212.72, 1);
 }
 
+// BT.2020 (Kr 0.2627, Kb 0.0593), the matrix of HDR video: R = Y' + 1.4746 Cr', G = Y' − 0.164553 Cb' −
+// 0.571353 Cr', B = Y' + 1.8814 Cb'.
+TEST(Yuv, Bt2020AgainstFormula) {
+    expectBgrNear(bgrOf(100, 90, 200, YuvMatrix::Bt2020, YuvRange::Video), 16.42, 58.10, 218.67, 1);
+}
+
 // One 4×2 picture in every layout: the same BGR whichever way its planes are laid out.
 TEST(Yuv, EveryLayoutGivesTheSamePicture) {
     const std::array<std::uint8_t, 8> y{16, 60, 120, 200, 235, 180, 90, 30};

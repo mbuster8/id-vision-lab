@@ -10,8 +10,9 @@
 namespace frame_io {
 
 // Camera frames arrive as YUV in one of a few layouts, with a matrix and a range their format names. OpenCV's
-// own conversions know one of each (BT.601, video range), so the others are converted here, exactly.
-enum class YuvMatrix { Bt601, Bt709 };
+// own conversions know one of each (BT.601, video range), so the others are converted here, exactly. BT.2020
+// is the matrix of HDR video.
+enum class YuvMatrix { Bt601, Bt709, Bt2020 };
 // Video range: luma 16 to 235, chroma 16 to 240 (10-bit: 64 to 940, 64 to 960). Full range: all codes.
 enum class YuvRange { Video, Full };
 // Nv12 and Nv21: a luma plane and one plane of interleaved chroma at half width and height (UV, or VU).

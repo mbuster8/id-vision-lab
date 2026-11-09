@@ -23,6 +23,9 @@ Coefficients coefficientsOf(YuvMatrix matrix) {
     if (matrix == YuvMatrix::Bt709) {
         return {.rCr = 1.5748, .gCb = -0.187324, .gCr = -0.468124, .bCb = 1.8556};
     }
+    if (matrix == YuvMatrix::Bt2020) {
+        return {.rCr = 1.4746, .gCb = -0.164553, .gCr = -0.571353, .bCb = 1.8814};
+    }
     return {.rCr = 1.402, .gCb = -0.344136, .gCr = -0.714136, .bCb = 1.772};
 }
 
