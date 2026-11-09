@@ -9,16 +9,19 @@
 #include "scratch_folder.h"
 
 #include <QAbstractButton>
+#include <QAction>
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QSettings>
+#include <QSplitter>
 #include <QTest>
+#include <QTreeWidget>
 #include <QWheelEvent>
 
 #include <gtest/gtest.h>
@@ -35,6 +38,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -104,11 +108,18 @@ struct Lab {
     }
     QString status() const { return window->findChild<QLabel*>("statusLabel")->text(); }
     QLabel* placeholder() const { return window->findChild<QLabel*>("placeholder"); }
+    QTreeWidget* resultsTree() const { return window->findChild<QTreeWidget*>("resultsList"); }
+    // Each row as "name: value", or the name alone when it has no value.
     QStringList results() const {
         QStringList lines;
-        const auto* list = window->findChild<QListWidget*>("resultsList");
-        for (int i = 0; i < list->count(); ++i) {
-            lines << list->item(i)->text();
+        const QTreeWidget* tree = resultsTree();
+        if (tree == nullptr) {
+            return {QStringLiteral("(no results tree)")};
+        }
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            const QTreeWidgetItem* row = tree->topLevelItem(i);
+            lines << (row->text(1).isEmpty() ? row->text(0)
+                                             : row->text(0) + QStringLiteral(": ") + row->text(1));
         }
         return lines;
     }
@@ -183,10 +194,10 @@ TEST(LabWindow, ShowsTheResultOnTheCanvas) {
 // The processor's overlays are drawn over the frame from the start; hiding them only repaints.
 TEST(LabWindow, OverlaysOnByDefaultAndCanBeHidden) {
     Lab lab;
-    lab.choose("processorCombo", QStringLiteral("Outline"));
+    lab.choose("processorCombo", QStringLiteral("Outline (simple)"));
     lab.replay(framesOf(test_support::cardFrame()));
     lab.pump();
-    auto* overlays = lab.window->findChild<QCheckBox*>("overlaysCheck");
+    auto* overlays = lab.window->findChild<QAbstractButton*>("overlaysCheck");
     ASSERT_TRUE(overlays->isChecked());
     EXPECT_FALSE(lab.canvas()->overlays().empty());
     EXPECT_TRUE(lab.canvas()->overlaysShown());
@@ -274,6 +285,156 @@ TEST(LabWindow, FindingsInTheResultsPanel) {
     ASSERT_EQ(lab.results().size(), 1);
     EXPECT_TRUE(lab.results().front().startsWith(QStringLiteral("edges: ")))
         << lab.results().front().toStdString();
+}
+
+// Findings a test chooses, and an error when asked; it stands in for Edges.
+class ScriptedProcessor : public lab_core::FrameProcessor {
+public:
+    ScriptedProcessor(std::vector<std::string> findings, std::string error,
+                      std::vector<std::chrono::nanoseconds>* times)
+        : m_findings(std::move(findings)), m_error(std::move(error)), m_times(times) {}
+
+    lab_core::ProcessorResult process(const frame_io::Frame& frame) override {
+        if (m_times) {
+            m_times->push_back(frame.at);
+        }
+        if (!m_error.empty()) {
+            throw std::runtime_error(m_error);
+        }
+        return {.overlays = {}, .images = {}, .findings = m_findings};
+    }
+    void reset() override {}
+
+private:
+    std::vector<std::string> m_findings;
+    std::string m_error;
+    std::vector<std::chrono::nanoseconds>* m_times;
+};
+
+// Edges made by `make`; the others as lab_core makes them.
+void edgesAre(LabDependencies& dependencies,
+              std::function<std::unique_ptr<lab_core::FrameProcessor>()> make) {
+    dependencies.makeProcessor = [make = std::move(make)](lab_core::ProcessorKind kind) {
+        return kind == lab_core::ProcessorKind::Edges ? make() : lab_core::makeProcessor(kind);
+    };
+}
+
+// A finding "name: value" is a row of two; one without ": " fills the first column; an error is a row of its
+// own.
+TEST(LabWindow, ResultsAreNameAndValueRows) {
+    Lab lab([](LabDependencies& dependencies) {
+        edgesAre(dependencies, [] {
+            return std::make_unique<ScriptedProcessor>(
+                std::vector<std::string>{"document: not found", "corners: 4: estimated", "plain note"}, "",
+                nullptr);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    const QTreeWidget* tree = lab.resultsTree();
+    ASSERT_NE(tree, nullptr);
+    ASSERT_EQ(tree->columnCount(), 2);
+    EXPECT_TRUE(tree->isHeaderHidden());
+    ASSERT_EQ(tree->topLevelItemCount(), 3);
+    EXPECT_EQ(tree->topLevelItem(0)->text(0), QStringLiteral("document"));
+    EXPECT_EQ(tree->topLevelItem(0)->text(1), QStringLiteral("not found"));
+    EXPECT_EQ(tree->topLevelItem(1)->text(0), QStringLiteral("corners"));
+    EXPECT_EQ(tree->topLevelItem(1)->text(1), QStringLiteral("4: estimated"));
+    EXPECT_EQ(tree->topLevelItem(2)->text(0), QStringLiteral("plain note"));
+    EXPECT_TRUE(tree->topLevelItem(2)->text(1).isEmpty());
+}
+
+TEST(LabWindow, ProcessorErrorIsARow) {
+    Lab lab([](LabDependencies& dependencies) {
+        edgesAre(dependencies, [] {
+            return std::make_unique<ScriptedProcessor>(std::vector<std::string>{}, "it broke", nullptr);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    EXPECT_EQ(lab.results(), QStringList{QStringLiteral("error: it broke")});
+}
+
+// View → Results hides the panel; its width, dragged, and whether it shows are remembered.
+TEST(LabWindow, ResultsPanelHidesAndRemembersItsWidth) {
+    {
+        Lab lab;
+        auto* results = lab.window->findChild<QAction*>("resultsAction");
+        auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+        ASSERT_NE(results, nullptr);
+        ASSERT_NE(splitter, nullptr);
+        ASSERT_NE(lab.resultsTree(), nullptr);
+        EXPECT_TRUE(results->isChecked());
+        EXPECT_TRUE(lab.resultsTree()->isVisible());
+        EXPECT_EQ(splitter->sizes().at(1), 200); // the first time
+
+        const int total = splitter->sizes().at(0) + splitter->sizes().at(1);
+        splitter->setSizes({total - 260, 260});
+        emit splitter->splitterMoved(total - 260, 1);
+        results->trigger();
+
+        EXPECT_FALSE(lab.resultsTree()->isVisible());
+    }
+    Lab lab;
+    auto* results = lab.window->findChild<QAction*>("resultsAction");
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    EXPECT_FALSE(results->isChecked());
+    EXPECT_FALSE(lab.resultsTree()->isVisible());
+
+    results->trigger();
+
+    EXPECT_TRUE(lab.resultsTree()->isVisible());
+    EXPECT_EQ(splitter->sizes().at(1), 260);
+}
+
+// On Qt before 6.8 the View menu has no appearance in it, but it must still show, or a hidden results panel
+// could never come back.
+TEST(LabWindow, ViewMenuAlwaysShows) {
+    Lab lab;
+    auto* view = lab.window->findChild<QMenu*>("viewMenu");
+    ASSERT_NE(view, nullptr);
+
+    EXPECT_TRUE(view->menuAction()->isVisible());
+    ASSERT_FALSE(view->actions().isEmpty());
+    EXPECT_EQ(view->actions().front(), lab.window->findChild<QAction*>("resultsAction"));
+}
+
+// The picker says what Outline is; the settings keep lab_core's name, and the choice is found by kind.
+TEST(LabWindow, ProcessorLabelsAndRememberedKind) {
+    {
+        Lab lab;
+        EXPECT_EQ(lab.entries("processorCombo"), (QStringList{QStringLiteral("None"), QStringLiteral("Edges"),
+                                                              QStringLiteral("Outline (simple)")}));
+        lab.choose("processorCombo", QStringLiteral("Outline (simple)"));
+        EXPECT_EQ(QSettings().value(QStringLiteral("lab/processor")).toString(), QStringLiteral("Outline"));
+    }
+    Lab lab;
+
+    EXPECT_EQ(lab.combo("processorCombo")->currentText(), QStringLiteral("Outline (simple)"));
+    EXPECT_EQ(lab.combo("processorCombo")->currentData().toInt(),
+              static_cast<int>(lab_core::ProcessorKind::Outline));
+}
+
+// Loop, As fast as possible and Overlays are buttons whose icon shows whether they are on, whatever the style
+// draws for a checked button.
+TEST(LabWindow, TogglesShowTheirState) {
+    Lab lab;
+    for (const char* name : {"loopCheck", "asFastCheck", "overlaysCheck"}) {
+        auto* toggle = qobject_cast<QPushButton*>(lab.window->findChild<QAbstractButton*>(name));
+        ASSERT_NE(toggle, nullptr) << name;
+        EXPECT_TRUE(toggle->isCheckable()) << name;
+        ASSERT_FALSE(toggle->icon().isNull()) << name;
+        EXPECT_NE(toggle->icon().pixmap(QSize(24, 24), QIcon::Normal, QIcon::On).toImage(),
+                  toggle->icon().pixmap(QSize(24, 24), QIcon::Normal, QIcon::Off).toImage())
+            << name;
+        EXPECT_FALSE(toggle->toolTip().isEmpty()) << name;
+    }
+    EXPECT_FALSE(lab.window->findChild<QAbstractButton*>("loopCheck")->isChecked());
+    EXPECT_TRUE(lab.window->findChild<QAbstractButton*>("overlaysCheck")->isChecked());
 }
 
 // --- The status bar
@@ -635,6 +796,28 @@ TEST(LabWindow, OldCamerasFrameNeverReachesTheNewRun) {
     EXPECT_TRUE(lab.canvas()->hasImage());
 }
 
+// A camera frame's time counts from the run's first frame, as a replay's does, so a recording or a capture of
+// it says how far into the run it was.
+TEST(LabWindow, CameraFrameTimeFromTheFirstFrame) {
+    std::vector<std::chrono::nanoseconds> times;
+    Lab lab([&times](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        edgesAre(dependencies, [&times] {
+            return std::make_unique<ScriptedProcessor>(std::vector<std::string>{}, "", &times);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    startStop(lab)->click();
+
+    lab.backend->deliver(cameraFrame(120));
+    lab.pump();
+    lab.advance(40ms);
+    lab.backend->deliver(cameraFrame(130));
+    lab.pump();
+
+    EXPECT_EQ(times, (std::vector<std::chrono::nanoseconds>{0ms, 40ms}));
+}
+
 TEST(LabWindow, RemembersTheCameraAndItsFormat) {
     {
         Lab lab(twoCameras);
@@ -815,6 +998,29 @@ TEST(LabWindow, CaptureKeepsTheFrameOnScreen) {
     ASSERT_EQ(pngs.size(), 1U);
     EXPECT_TRUE(pngs[0].filename().string().ends_with(" frame 1.png")) << pngs[0];
     EXPECT_EQ(cv::norm(cv::imread(pngs[0].string()), first, cv::NORM_INF), 0.0);
+}
+
+// A capture keeps where the processor found what it found, not only its findings.
+TEST(LabWindow, CaptureKeepsTheOverlays) {
+    Lab lab;
+    lab.choose("processorCombo", QStringLiteral("Outline (simple)"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    button(lab, "captureButton")->click();
+
+    std::vector<std::filesystem::path> jsons;
+    for (const auto& entry : std::filesystem::directory_iterator(lab.folder.path() / "Captures")) {
+        if (entry.path().extension() == ".json") {
+            jsons.push_back(entry.path());
+        }
+    }
+    ASSERT_EQ(jsons.size(), 1U);
+    std::ifstream stream(jsons[0]);
+    const nlohmann::json json = nlohmann::json::parse(stream);
+    ASSERT_TRUE(json.contains("overlays")) << json.dump();
+    ASSERT_FALSE(json["overlays"].empty());
+    EXPECT_EQ(json["overlays"][0]["label"], "Document");
 }
 
 TEST(LabWindow, CapturesFolderIsPrivate) {

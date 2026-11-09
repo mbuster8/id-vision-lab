@@ -33,9 +33,10 @@ class QComboBox;
 class QEvent;
 class QLabel;
 class QLineEdit;
-class QListWidget;
 class QPushButton;
+class QSplitter;
 class QTimer;
+class QTreeWidget;
 
 namespace document_lab {
 
@@ -93,6 +94,7 @@ protected:
 
 private:
     void buildUi();
+    void showResultsPanel(bool shown);
     void beginRun();
     void takeResult();
     const cv::Mat* shownImage(visual_debug::ImageDescription& description) const;
@@ -158,8 +160,8 @@ private:
     QPushButton* m_step = nullptr;
     QPushButton* m_stepBack = nullptr;
     QPushButton* m_restart = nullptr;
-    QCheckBox* m_loop = nullptr;
-    QCheckBox* m_asFast = nullptr;
+    QPushButton* m_loop = nullptr;
+    QPushButton* m_asFast = nullptr;
     QAction* m_playPauseAction = nullptr;
     QAction* m_stepAction = nullptr;
     QAction* m_stepBackAction = nullptr;
@@ -174,10 +176,12 @@ private:
     QSet<QString> m_confirmedEndpoints; // the user said yes to sending there, this session
     QComboBox* m_processorCombo = nullptr;
     QComboBox* m_showCombo = nullptr;
-    QCheckBox* m_overlaysCheck = nullptr;
+    QPushButton* m_overlaysCheck = nullptr;
     ImageView* m_canvas = nullptr;
     QLabel* m_placeholder = nullptr;
-    QListWidget* m_results = nullptr;
+    QSplitter* m_splitter = nullptr;
+    QTreeWidget* m_results = nullptr;
+    QAction* m_resultsAction = nullptr;
     QLabel* m_status = nullptr;
     QTimer* m_statusTimer = nullptr;
 
@@ -187,7 +191,8 @@ private:
     std::vector<CameraInfo> m_cameras;   // as the camera picker lists them
     std::vector<CameraFormat> m_formats; // the chosen camera's, as the format picker lists them
     bool m_cameraRunning = false;
-    quint64 m_session = 0; // the camera session whose frames are taken
+    quint64 m_session = 0;                           // the camera session whose frames are taken
+    std::optional<Clock::time_point> m_firstFrameAt; // the run's first camera frame's arrival
     CameraGeometry m_geometry;
 
     bool m_running = false;                // a camera or a replay runs: its results are taken

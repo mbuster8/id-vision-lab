@@ -6,6 +6,7 @@
 #include "camera_formats.h"
 #include "image_tags_conversion.h"
 #include "live_drawing.h"
+#include "outline_icons.h"
 #include "private_files.h"
 
 #include <frame_io/capture.h>
@@ -30,7 +31,6 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -44,6 +44,7 @@
 #include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -61,6 +62,8 @@ const QString kFrameEntry = QStringLiteral("Frame");
 
 constexpr std::array kProcessors{lab_core::ProcessorKind::None, lab_core::ProcessorKind::Edges,
                                  lab_core::ProcessorKind::Outline};
+
+constexpr int kResultsMinimumWidth = 120;
 
 // A processor busy this long on one frame is named in the status bar.
 constexpr auto kBusyShownAfter = std::chrono::seconds(1);
@@ -87,6 +90,38 @@ QString hostOf(const QString& endpoint) {
 }
 
 QString timeStamp() { return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH.mm.ss")); }
+
+// What the picker says. Outline finds the largest bright quadrilateral, which a wall or a window can be too:
+// it says it is simple. The settings keep lab_core's names.
+QString processorLabel(lab_core::ProcessorKind kind) {
+    switch (kind) {
+    case lab_core::ProcessorKind::None:
+        return LabWindow::tr("None");
+    case lab_core::ProcessorKind::Edges:
+        return LabWindow::tr("Edges");
+    case lab_core::ProcessorKind::Outline:
+        return LabWindow::tr("Outline (simple)");
+    }
+    return qtString(lab_core::nameOf(kind));
+}
+
+// A checkable button whose icon shows whether it is on (the accent colour), whatever the style draws.
+QPushButton* makeToggle(const QString& text, qt_common::OutlineIcon icon, const QString& toolTip,
+                        const char* name, QWidget* parent) {
+    auto* toggle = new QPushButton(qt_common::makeOutlineIcon(icon), text, parent);
+    toggle->setObjectName(QString::fromLatin1(name));
+    toggle->setCheckable(true);
+    toggle->setToolTip(toolTip);
+    return toggle;
+}
+
+QPushButton* makeButton(const QString& text, const QIcon& icon, const QString& toolTip, const char* name,
+                        QWidget* parent) {
+    auto* button = new QPushButton(icon, text, parent);
+    button->setObjectName(QString::fromLatin1(name));
+    button->setToolTip(toolTip);
+    return button;
+}
 
 QString stateText(lab_core::EngineState state) {
     switch (state) {
@@ -172,15 +207,20 @@ LabWindow::~LabWindow() {
 
 void LabWindow::buildUi() {
     setWindowTitle(tr("Document Lab"));
-    // View holds the appearance only, which Qt before 6.8 cannot offer; Help, the About box.
+    // View: Results always, Appearance after it where Qt offers it (6.8 and newer); a hidden menu would leave
+    // a hidden results panel no way back. Help, the About box.
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
-    if (qt_common::addAppearanceMenu(viewMenu) == nullptr) {
-        viewMenu->menuAction()->setVisible(false);
-    }
+    viewMenu->setObjectName(QStringLiteral("viewMenu"));
+    m_resultsAction = viewMenu->addAction(tr("Results"));
+    m_resultsAction->setObjectName(QStringLiteral("resultsAction"));
+    m_resultsAction->setCheckable(true);
+    m_resultsAction->setChecked(m_settings.resultsShown());
+    qt_common::addAppearanceMenu(viewMenu);
     qt_common::addHelpMenu(menuBar(),
                            QCoreApplication::translate("About", qt_common::kDocumentLabDescription));
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
+    using qt_common::OutlineIcon;
 
     auto* sourceRow = new QHBoxLayout;
     sourceRow->addWidget(new QLabel(tr("Camera:"), central));
@@ -192,34 +232,35 @@ void LabWindow::buildUi() {
     m_formatCombo->setObjectName(QStringLiteral("formatCombo"));
     m_formatCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     sourceRow->addWidget(m_formatCombo);
-    m_startStop = new QPushButton(tr("Start"), central);
-    m_startStop->setObjectName(QStringLiteral("startStopButton"));
+    m_startStop = makeButton(tr("Start"), qt_common::makeColouredIcon(OutlineIcon::Play, qt_common::kGo),
+                             tr("Start the camera"), "startStopButton", central);
     m_startStop->setEnabled(false);
     sourceRow->addWidget(m_startStop);
-    m_openFile = new QPushButton(tr("Open File…"), central);
-    m_openFile->setObjectName(QStringLiteral("openFileButton"));
+    m_openFile = makeButton(tr("Open File…"), qt_common::makeOutlineIcon(OutlineIcon::Folder),
+                            tr("Replay a video or an image"), "openFileButton", central);
     sourceRow->addWidget(m_openFile);
-    m_openFolder = new QPushButton(tr("Open Folder…"), central);
-    m_openFolder->setObjectName(QStringLiteral("openFolderButton"));
+    m_openFolder = makeButton(tr("Open Folder…"), qt_common::makeOutlineIcon(OutlineIcon::Folder),
+                              tr("Replay a folder of images or a recording"), "openFolderButton", central);
     sourceRow->addWidget(m_openFolder);
     sourceRow->addStretch();
     layout->addLayout(sourceRow);
 
     auto* replayRow = new QHBoxLayout;
-    m_playPause = new QPushButton(tr("Play"), central);
-    m_playPause->setObjectName(QStringLiteral("playPauseButton"));
-    m_step = new QPushButton(tr("Step"), central);
-    m_step->setObjectName(QStringLiteral("stepButton"));
-    m_stepBack = new QPushButton(tr("Step Back"), central);
-    m_stepBack->setObjectName(QStringLiteral("stepBackButton"));
-    m_restart = new QPushButton(tr("Restart"), central);
-    m_restart->setObjectName(QStringLiteral("restartButton"));
-    m_loop = new QCheckBox(tr("Loop"), central);
-    m_loop->setObjectName(QStringLiteral("loopCheck"));
-    m_asFast = new QCheckBox(tr("As fast as possible"), central);
-    m_asFast->setObjectName(QStringLiteral("asFastCheck"));
+    m_playPause = makeButton(tr("Play"), qt_common::makeColouredIcon(OutlineIcon::Play, qt_common::kGo),
+                             tr("Play or pause the replay (Space)"), "playPauseButton", central);
+    m_stepBack = makeButton(tr("Step Back"), qt_common::makeOutlineIcon(OutlineIcon::StepBack),
+                            tr("The frame before (←)"), "stepBackButton", central);
+    m_step = makeButton(tr("Step"), qt_common::makeOutlineIcon(OutlineIcon::StepForward),
+                        tr("The next frame (→)"), "stepButton", central);
+    m_restart = makeButton(tr("Restart"), qt_common::makeOutlineIcon(OutlineIcon::Restart),
+                           tr("Back to the first frame"), "restartButton", central);
+    m_loop = makeToggle(tr("Loop"), OutlineIcon::Loop, tr("Play again from the start at the end"),
+                        "loopCheck", central);
+    m_asFast = makeToggle(tr("As fast as possible"), OutlineIcon::Fast,
+                          tr("Process every frame as soon as the last is done, not at the video's pace"),
+                          "asFastCheck", central);
     for (QWidget* control :
-         std::initializer_list<QWidget*>{m_playPause, m_step, m_stepBack, m_restart, m_loop, m_asFast}) {
+         std::initializer_list<QWidget*>{m_playPause, m_stepBack, m_step, m_restart, m_loop, m_asFast}) {
         replayRow->addWidget(control);
     }
     replayRow->addStretch();
@@ -237,10 +278,14 @@ void LabWindow::buildUi() {
     processingRow->addWidget(new QLabel(tr("Processor:"), central));
     m_processorCombo = new QComboBox(central);
     m_processorCombo->setObjectName(QStringLiteral("processorCombo"));
+    int remembered = 0;
     for (const lab_core::ProcessorKind kind : kProcessors) {
-        m_processorCombo->addItem(qtString(lab_core::nameOf(kind)));
+        if (qtString(lab_core::nameOf(kind)) == m_settings.processor()) {
+            remembered = m_processorCombo->count();
+        }
+        m_processorCombo->addItem(processorLabel(kind), static_cast<int>(kind));
     }
-    m_processorCombo->setCurrentIndex(std::max(0, m_processorCombo->findText(m_settings.processor())));
+    m_processorCombo->setCurrentIndex(remembered);
     processingRow->addWidget(m_processorCombo);
     processingRow->addWidget(new QLabel(tr("Show:"), central));
     m_showCombo = new QComboBox(central);
@@ -249,23 +294,27 @@ void LabWindow::buildUi() {
     m_showCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     m_wantedShow = m_settings.show();
     processingRow->addWidget(m_showCombo);
-    m_overlaysCheck = new QCheckBox(tr("Overlays"), central);
-    m_overlaysCheck->setObjectName(QStringLiteral("overlaysCheck"));
+    m_overlaysCheck =
+        makeToggle(tr("Overlays"), OutlineIcon::Overlays,
+                   tr("Draw what the processor found over the picture"), "overlaysCheck", central);
     m_overlaysCheck->setChecked(m_settings.overlays());
     processingRow->addWidget(m_overlaysCheck);
     processingRow->addStretch();
-    m_record = new QPushButton(tr("Record"), central);
-    m_record->setObjectName(QStringLiteral("recordButton"));
+    m_record = makeButton(tr("Record"), qt_common::makeColouredIcon(OutlineIcon::Record, qt_common::kHalt),
+                          tr("Record the frames processed from now on into the lab's folder"), "recordButton",
+                          central);
     m_record->setCheckable(true);
     processingRow->addWidget(m_record);
-    m_capture = new QPushButton(tr("Capture"), central);
-    m_capture->setObjectName(QStringLiteral("captureButton"));
+    m_capture = makeButton(tr("Capture"), qt_common::makeOutlineIcon(OutlineIcon::Camera),
+                           tr("Keep the frame on screen at full resolution, with what was found in it"),
+                           "captureButton", central);
     processingRow->addWidget(m_capture);
-    m_openLabFolder = new QPushButton(tr("Open Lab Folder"), central);
-    m_openLabFolder->setObjectName(QStringLiteral("openLabFolderButton"));
+    m_openLabFolder = makeButton(tr("Open Lab Folder"), qt_common::makeOutlineIcon(OutlineIcon::Folder),
+                                 tr("Show the recordings and captures"), "openLabFolderButton", central);
     processingRow->addWidget(m_openLabFolder);
-    m_chooseLabFolder = new QPushButton(tr("Choose Folder…"), central);
-    m_chooseLabFolder->setObjectName(QStringLiteral("chooseLabFolderButton"));
+    m_chooseLabFolder =
+        makeButton(tr("Choose Folder…"), QIcon(), tr("Choose where recordings and captures go"),
+                   "chooseLabFolderButton", central);
     processingRow->addWidget(m_chooseLabFolder);
     layout->addLayout(processingRow);
 
@@ -281,7 +330,9 @@ void LabWindow::buildUi() {
     layout->addLayout(sendRow);
 
     // The canvas, with the placeholder over it in the same cell, beside the results.
-    auto* splitter = new QSplitter(Qt::Horizontal, central);
+    m_splitter = new QSplitter(Qt::Horizontal, central);
+    m_splitter->setObjectName(QStringLiteral("resultsSplitter"));
+    QSplitter* splitter = m_splitter;
     auto* canvasArea = new QWidget(splitter);
     auto* canvasLayout = new QGridLayout(canvasArea);
     canvasLayout->setContentsMargins(0, 0, 0, 0);
@@ -297,12 +348,21 @@ void LabWindow::buildUi() {
     m_placeholder->setAutoFillBackground(true); // covers the picture of an earlier frame
     m_placeholder->hide();
     canvasLayout->addWidget(m_placeholder, 0, 0);
-    m_results = new QListWidget(splitter);
+    // Findings as rows of a name and a value; the panel keeps its width as the window grows, the canvas takes
+    // the rest.
+    m_results = new QTreeWidget(splitter);
     m_results->setObjectName(QStringLiteral("resultsList"));
+    m_results->setColumnCount(2);
+    m_results->setHeaderHidden(true);
+    m_results->setRootIsDecorated(false);
+    m_results->setMinimumWidth(kResultsMinimumWidth);
     splitter->addWidget(canvasArea);
     splitter->addWidget(m_results);
-    splitter->setStretchFactor(0, 4);
-    splitter->setStretchFactor(1, 1);
+    splitter->setChildrenCollapsible(false);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 0);
+    m_results->setVisible(m_resultsAction->isChecked());
+    splitter->setSizes({std::max(1, width() - m_settings.resultsWidth()), m_settings.resultsWidth()});
     layout->addWidget(splitter, 1);
     setCentralWidget(central);
 
@@ -322,8 +382,16 @@ void LabWindow::buildUi() {
     connect(m_stepBack, &QPushButton::clicked, this, [this] { m_engine->stepBack(); });
     connect(m_stepBackAction, &QAction::triggered, this, [this] { m_engine->stepBack(); });
     connect(m_restart, &QPushButton::clicked, this, [this] { m_engine->restart(); });
-    connect(m_loop, &QCheckBox::toggled, this, [this](bool on) { m_engine->setLoop(on); });
-    connect(m_asFast, &QCheckBox::toggled, this, [this](bool on) { m_engine->setAsFastAsPossible(on); });
+    connect(m_loop, &QPushButton::toggled, this, [this](bool on) { m_engine->setLoop(on); });
+    connect(m_asFast, &QPushButton::toggled, this, [this](bool on) { m_engine->setAsFastAsPossible(on); });
+    connect(m_resultsAction, &QAction::toggled, this, &LabWindow::showResultsPanel);
+    // The width the user dragged the panel to, not one squeezed by a narrow window or a hidden panel.
+    connect(m_splitter, &QSplitter::splitterMoved, this, [this] {
+        const int panel = m_splitter->sizes().value(1);
+        if (m_results->isVisible() && panel > 0) {
+            m_settings.setResultsWidth(panel);
+        }
+    });
     connect(m_record, &QPushButton::toggled, this, &LabWindow::toggleRecord);
     connect(m_capture, &QPushButton::clicked, this, &LabWindow::capture);
     connect(m_openLabFolder, &QPushButton::clicked, this, &LabWindow::openLabFolder);
@@ -344,13 +412,25 @@ void LabWindow::buildUi() {
     connect(m_formatCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseFormat);
     connect(m_processorCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseProcessor);
     connect(m_showCombo, &QComboBox::currentIndexChanged, this, &LabWindow::chooseShow);
-    connect(m_overlaysCheck, &QCheckBox::toggled, this, [this](bool shown) {
+    connect(m_overlaysCheck, &QPushButton::toggled, this, [this](bool shown) {
         m_canvas->setOverlaysShown(shown);
         m_settings.setOverlays(shown);
     });
     connect(m_canvas, &ImageView::scaleChanged, this, &LabWindow::redrawForView);
     connect(m_canvas, &ImageView::panned, this, &LabWindow::redrawForView);
     connect(m_statusTimer, &QTimer::timeout, this, &LabWindow::refreshStatus);
+}
+
+// Shown again at the width it had: the canvas gives it back.
+void LabWindow::showResultsPanel(bool shown) {
+    m_settings.setResultsShown(shown);
+    m_results->setVisible(shown);
+    if (shown) {
+        const QList<int> sizes = m_splitter->sizes();
+        const int total = sizes.value(0) + sizes.value(1);
+        const int panel = m_settings.resultsWidth();
+        m_splitter->setSizes({std::max(1, total - panel), panel});
+    }
 }
 
 void LabWindow::startReplay(lab_core::ReplayOpener open) {
@@ -402,6 +482,10 @@ void LabWindow::stop() {
 // waits to close.
 void LabWindow::updateStartStop() {
     m_startStop->setText(m_running ? tr("Stop") : tr("Start"));
+    m_startStop->setIcon(m_running
+                             ? qt_common::makeColouredIcon(qt_common::OutlineIcon::Stop, qt_common::kHalt)
+                             : qt_common::makeColouredIcon(qt_common::OutlineIcon::Play, qt_common::kGo));
+    m_startStop->setToolTip(m_running ? tr("Stop the camera or the replay") : tr("Start the camera"));
     m_startStop->setEnabled(!m_closing && (m_running || currentCamera() != nullptr));
     m_openFile->setEnabled(!m_closing);
     m_openFolder->setEnabled(!m_closing);
@@ -518,6 +602,7 @@ void LabWindow::startCameraGranted() {
     stop(); // a replay running stops first
     beginRun();
     m_cameraRunning = true;
+    m_firstFrameAt.reset();
     m_geometry = {.frontCamera = camera->front};
     m_engine->startLive(
         (format ? camera->name + QStringLiteral(" · ") + format->label() : camera->name).toStdString());
@@ -536,7 +621,12 @@ void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
     if (!m_cameraRunning || session != m_session) {
         return; // a frame of a camera or session that is over
     }
-    const std::chrono::nanoseconds at = now().time_since_epoch();
+    // From the run's first frame, as a replay's times are.
+    const Clock::time_point arrived = now();
+    if (!m_firstFrameAt) {
+        m_firstFrameAt = arrived;
+    }
+    const auto at = std::chrono::duration_cast<std::chrono::nanoseconds>(arrived - *m_firstFrameAt);
     m_engine->offer({[frame, geometry = m_geometry, at](std::string& error) {
         return toFrame(frame, geometry, at, error);
     }});
@@ -606,14 +696,20 @@ void LabWindow::updateShowEntries(const lab_core::LabResult& result) {
     }
 }
 
+// "name: value" as a row of two, split at the first ": "; a finding without one fills the first column.
 void LabWindow::showResults(const lab_core::LabResult& result) {
     m_results->clear();
     for (const std::string& finding : result.processed.findings) {
-        m_results->addItem(QString::fromStdString(finding));
+        const QString text = QString::fromStdString(finding);
+        const qsizetype split = text.indexOf(QStringLiteral(": "));
+        m_results->addTopLevelItem(new QTreeWidgetItem(
+            split < 0 ? QStringList{text} : QStringList{text.left(split), text.mid(split + 2)}));
     }
     if (!result.processorError.empty()) {
-        m_results->addItem(tr("error: %1").arg(QString::fromStdString(result.processorError)));
+        m_results->addTopLevelItem(
+            new QTreeWidgetItem(QStringList{tr("error"), QString::fromStdString(result.processorError)}));
     }
+    m_results->resizeColumnToContents(0);
 }
 
 // The picture Show names, with what is drawn over it; null when this result has none.
@@ -800,10 +896,10 @@ void LabWindow::refreshStatus() {
 }
 
 void LabWindow::chooseProcessor(int index) {
-    if (index < 0 || static_cast<std::size_t>(index) >= kProcessors.size()) {
+    if (index < 0) {
         return;
     }
-    const lab_core::ProcessorKind kind = kProcessors[static_cast<std::size_t>(index)];
+    const auto kind = static_cast<lab_core::ProcessorKind>(m_processorCombo->itemData(index).toInt());
     m_settings.setProcessor(qtString(lab_core::nameOf(kind)));
     m_engine->setProcessor(m_dependencies.makeProcessor(kind));
     forgetShowEntries();
@@ -887,7 +983,12 @@ void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
     const bool replay = m_running && !m_cameraRunning;
     const bool playing = status.state == lab_core::EngineState::Playing;
     m_playPause->setEnabled(replay);
-    m_playPause->setText(playing ? tr("Pause") : tr("Play"));
+    if (playing != (m_playPause->text() == tr("Pause"))) {
+        m_playPause->setText(playing ? tr("Pause") : tr("Play"));
+        m_playPause->setIcon(playing
+                                 ? qt_common::makeOutlineIcon(qt_common::OutlineIcon::Pause)
+                                 : qt_common::makeColouredIcon(qt_common::OutlineIcon::Play, qt_common::kGo));
+    }
     m_playPauseAction->setEnabled(replay);
     m_step->setEnabled(replay);
     m_stepAction->setEnabled(replay);
@@ -973,7 +1074,8 @@ void LabWindow::capture() {
     }
     const frame_io::Frame frame = m_onScreen->frame; // shares the pixels, which nothing changes
     const frame_io::CaptureInfo info{.source = m_engine->status().source,
-                                     .findings = m_onScreen->processed.findings};
+                                     .findings = m_onScreen->processed.findings,
+                                     .overlays = m_onScreen->processed.overlays};
     const std::string baseName = timeStamp().toStdString();
     const std::filesystem::path path = toPath(folder);
     auto write = [path, baseName, frame, info]() -> std::pair<std::filesystem::path, std::string> {

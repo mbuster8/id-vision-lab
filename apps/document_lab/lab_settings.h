@@ -25,6 +25,10 @@ public:
     void setSendToViewer(bool on);
     QString endpoint() const; // visual_debug::defaultEndpoint() unless another was entered
     void setEndpoint(const QString& endpoint);
+    int resultsWidth() const; // the results panel's, in pixels; 200 the first time
+    void setResultsWidth(int width);
+    bool resultsShown() const; // on unless View → Results turned it off
+    void setResultsShown(bool shown);
 
 private:
     QSettings m_settings;
