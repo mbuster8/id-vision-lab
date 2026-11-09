@@ -5,11 +5,13 @@ find_package(Threads REQUIRED)
 
 add_library(lab_core STATIC
     include/lab_core/document_outline.h
+    include/lab_core/engine.h
     include/lab_core/frame_processor.h
     include/lab_core/lab_result.h
     include/lab_core/processors.h
     include/lab_core/result_sender.h
     src/document_outline.cpp
+    src/engine.cpp
     src/processors.cpp
     src/result_sender.cpp)
 add_library(lab_core::lab_core ALIAS lab_core)
