@@ -88,6 +88,7 @@ id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
         lab_core/document_outline_test.cpp
+        lab_core/processors_test.cpp
     LIBRARIES
         lab_core::lab_core
         opencv_imgproc

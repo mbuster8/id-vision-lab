@@ -1,7 +1,12 @@
 # The Document Lab's vision side, free of Qt: the processors that run on each frame and, later, the engine that
 # moves frames through them. live_sender uses its edges and its document outline too.
 add_library(lab_core STATIC
-    src/document_outline.cpp)
+    include/lab_core/document_outline.h
+    include/lab_core/frame_processor.h
+    include/lab_core/lab_result.h
+    include/lab_core/processors.h
+    src/document_outline.cpp
+    src/processors.cpp)
 add_library(lab_core::lab_core ALIAS lab_core)
 
 target_include_directories(lab_core PUBLIC
