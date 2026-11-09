@@ -35,6 +35,10 @@ public:
                     const ImageDescription& description) noexcept override;
     SendResult sendLive(const cv::Mat& frame, std::string_view channel,
                         const ImageDescription& description) noexcept override;
+    // A ping, waiting up to replyTimeout: a viewer's answer, or Unavailable (starting the back-off as a
+    // failed send does). Only exactly "unsupported message type" counts as an older viewer.
+    ViewerState ping() noexcept override;
+    SendResult endLive(std::string_view channel) noexcept override;
 
 private:
     SendResult sendGuarded(const cv::Mat& image, std::string_view name, bool live,

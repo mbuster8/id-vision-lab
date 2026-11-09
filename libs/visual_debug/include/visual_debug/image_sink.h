@@ -21,6 +21,10 @@ public:
     // Called for every request the server answers with an error, with the reply's fixed ASCII reason (never
     // request bytes). Runs on the server's thread just before the reply is sent, so it must return at once.
     virtual void onRequestRejected(std::string_view /*reason*/) {}
+
+    // A sender has finished with its live channel `name`, which may or may not be open. Runs on the server's
+    // thread before the reply is sent, so it must return at once.
+    virtual void onLiveEnded(std::string_view /*name*/) {}
 };
 
 } // namespace visual_debug

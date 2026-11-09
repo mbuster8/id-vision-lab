@@ -23,4 +23,8 @@ SendResult sendImage(const cv::Mat& image, std::string_view name,
 SendResult sendLive(const cv::Mat& frame, std::string_view channel,
                     const ImageDescription& description) noexcept;
 
+// Whether a viewer answers at defaultEndpoint(), and the end of a live channel, through the same client.
+ViewerState ping() noexcept;
+SendResult endLive(std::string_view channel) noexcept;
+
 } // namespace visual_debug

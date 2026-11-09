@@ -52,4 +52,17 @@ SendResult sendLive(const cv::Mat& frame, std::string_view channel,
         [&](Client& client) { return client.sendLive(frame, channel, description); });
 }
 
+ViewerState ping() noexcept {
+    const std::lock_guard lock(sharedClientMutex());
+    try {
+        return sharedClient().ping();
+    } catch (...) {
+        return ViewerState::Unavailable; // only creating the client can throw
+    }
+}
+
+SendResult endLive(std::string_view channel) noexcept {
+    return sendThroughSharedClient([&](Client& client) { return client.endLive(channel); });
+}
+
 } // namespace visual_debug

@@ -108,7 +108,8 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   has no room for as not recorded. Hooks fire with no lock held. The canvas takes the viewer's glue (view
   counter, `LiveConverter` jobs numbered by result). Engine and window tests use the immediate modes,
   `pump()` and an injected clock unless they test the threads.
-- **Wire-format changes:** a new optional header field keeps `version` 2; changing or removing a field
+- **Wire-format changes:** a new optional header field keeps `version` 2, and so does a new message `type` (an
+  older viewer refuses it with `unsupported message type`, which still answers); changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender
   (`python/visual_debug.py`) with them: both encoders must write `tests/wire/header_cases.json`'s golden
   headers, and the Python side is checked only by the venv's pytest and CI's Ubuntu job, not by ctest.

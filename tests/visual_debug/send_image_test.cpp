@@ -58,6 +58,10 @@ TEST(SendImage, IsSafeFromMultipleThreads) {
     EXPECT_EQ(std::count_if(messages.begin(), messages.end(),
                             [&](const auto& m) { return m.description == description; }),
               10);
+    // The ping and the end share the client too.
+    EXPECT_EQ(visual_debug::ping(), visual_debug::ViewerState::Listening);
+    EXPECT_EQ(visual_debug::endLive("lab"), visual_debug::SendResult::Delivered);
+    EXPECT_EQ(sink.ended(), std::vector<std::string>{"lab"});
     test_support::unsetEnvironment(visual_debug::kEndpointEnvironmentVariable);
 }
 

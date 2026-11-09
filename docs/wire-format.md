@@ -52,7 +52,7 @@ existing viewers. Jupyter kernels use the same split (JSON frames plus binary bu
 |---|---|
 | `protocol` | exactly `"visual_debug"` |
 | `version` | the integer `2` (the 2013 binary layout is retrospectively version 1) |
-| `type` | exactly `"image"` |
+| `type` | exactly `"image"` (`"ping"` and `"end"` are the [control requests](#requests-ping-and-end)) |
 | `name` | a string of at most 1024 bytes of UTF-8 |
 | `rows`, `cols` | integers from 1 to 32768 |
 | `depth` | one of `"8U"`, `"8S"`, `"16U"`, `"16S"`, `"32S"`, `"32F"`, `"64F"` |
@@ -158,6 +158,32 @@ A 16-bit 3840×2160 frame of HLG video in a channel named `phone`, sent at the s
 {"protocol":"visual_debug","version":2,"type":"image","name":"phone","rows":2160,"cols":3840,"depth":"16U","channels":3,"live":true,"sentAt":1793366602517,"valueRange":[0,65535],"transfer":"hlg","primaries":"bt2020"}
 ```
 
+## Requests: ping and end
+
+Two control requests, each a JSON header and an **empty** second frame:
+
+```text
+{"protocol":"visual_debug","version":2,"type":"ping"}
+{"protocol":"visual_debug","version":2,"type":"end","name":"lab"}
+```
+
+- **ping** asks whether a viewer is listening. A viewer answers `{"status":"ok"}`, or the error `viewer paused`
+  while paused; it neither shows nor logs a ping, paused or not.
+- **end** tells the viewer that the sender has finished with the live channel `name` (a string of at most 1024
+  bytes of UTF-8, which the senders make valid and cut as they do image names). The viewer closes the channel as its
+  user's close button would, unless the user has frozen it, and logs that its sender ended it; ending a channel the
+  viewer does not show is not an error. A paused viewer refuses an end as any request.
+
+The viewer tells a control request from an image by its empty second frame (an image always has pixels) and reads
+only `protocol`, `version`, `type` and an end's `name`, with the reasons below. A header whose `type` is `image` with
+an empty second frame is an image, refused with `pixel frame has the wrong size`. Unknown fields are ignored.
+
+A viewer that predates them answers both with the error `unsupported message type`: a sender learns that a viewer is
+there, of an older version, which still takes images. The C++ sender has `Client::ping()` and `Client::endLive()`,
+and `visual_debug::ping()` and `visual_debug::endLive()` on `sendImage`'s client; `ping()` gives a `ViewerState`:
+`Listening`, `Paused`, `PredatesPing` (exactly that error), `Unavailable` (no answer, any other answer, or a retry
+back-off still running) or `InvalidEndpoint`. The Python sender has the same as `ping()` and `end_live()`.
+
 ## Validation
 
 The viewer rejects a message when:
@@ -205,7 +231,7 @@ hostile header cannot make the reply itself fail to encode.
 | `header is not a JSON object` | The header parsed but is an array, string or number. |
 | `unknown protocol` | `protocol` is missing or not `"visual_debug"`. |
 | `unsupported version` | `version` is missing, not an integer, or not `2`. |
-| `unsupported message type` | `type` is missing or not `"image"`. |
+| `unsupported message type` | `type` is missing or not `"image"` (or, in a control request, not `"ping"` or `"end"`). |
 | `name is missing or not a string` | |
 | `name too long` | `name` is over 1024 bytes. |
 | `rows out of range` | Missing, not an integer, or outside 1–32768. |
@@ -228,7 +254,7 @@ hostile header cannot make the reply itself fail to encode.
 | `could not decode message` | Any other failure while decoding. |
 | `viewer busy` | The viewer accepted the message but its display is too far behind (eight images waiting for longer than 200 ms). |
 | `too many live channels` | A live frame (`live: true`) for a new channel while the viewer already shows as many live channels as it can, or one whose size would take the live channels' frames past the viewer's memory budget. |
-| `viewer paused` | The viewer is paused: it keeps its port but takes no images until resumed. Sent for every request while paused, before any other check. |
+| `viewer paused` | The viewer is paused: it keeps its port but takes no images until resumed. Sent for every request while paused, before any other check; only a well-formed ping is read, so that it is not counted as a rejection. |
 | `internal error` | An unexpected failure in the viewer; it keeps running. |
 
 The C++ client reports any error reply as `SendResult::Rejected`, and the Python one as
@@ -240,6 +266,8 @@ cannot push a large message into the host application.
 ## Versioning rule
 
 - Adding an **optional** field does not change `version`; viewers that do not know it ignore it.
+- Adding a message **`type`** does not change `version` either: a viewer that does not know it answers
+  `unsupported message type`, which still tells the sender a viewer is there.
 - Changing or removing a field, or changing what a field means, **bumps `version`**.
 - Any change updates this document and `docs/user-guide.md` in the same commit.
 
