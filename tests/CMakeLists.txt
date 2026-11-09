@@ -100,6 +100,7 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/list_source.h
         lab_core/processors_test.cpp
         lab_core/result_sender_test.cpp
+        lab_core/viewer_link_test.cpp
     LIBRARIES
         lab_core::lab_core
         opencv_imgproc

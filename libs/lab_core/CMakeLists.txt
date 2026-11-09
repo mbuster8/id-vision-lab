@@ -10,10 +10,12 @@ add_library(lab_core STATIC
     include/lab_core/lab_result.h
     include/lab_core/processors.h
     include/lab_core/result_sender.h
+    include/lab_core/viewer_link.h
     src/document_outline.cpp
     src/engine.cpp
     src/processors.cpp
-    src/result_sender.cpp)
+    src/result_sender.cpp
+    src/viewer_link.cpp)
 add_library(lab_core::lab_core ALIAS lab_core)
 
 target_include_directories(lab_core PUBLIC
