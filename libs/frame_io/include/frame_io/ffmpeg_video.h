@@ -27,6 +27,9 @@ struct VideoInfo {
     visual_debug::Primaries primaries = visual_debug::Primaries::Bt709; // unknown is BT.709
     std::string decoder;        // "VideoToolbox", "D3D11VA" or "software"
     int dolbyVisionProfile = 0; // 0 without Dolby Vision
+    // Frames that can be found by time: the first frame has a timestamp, the rate is known, and the format
+    // keeps timestamps (a raw .h264 or .hevc stream does not).
+    bool seekable = false;
 };
 
 // A video file read with FFmpeg's libraries rather than OpenCV's videoio, which hands over 8-bit pictures
@@ -36,9 +39,19 @@ struct VideoInfo {
 // clipping.
 class FfmpegVideo {
 public:
+    struct Options {
+        bool allowHardware = true;
+        // A video of 8 bits or fewer tagged SDR comes as 8-bit BGR (CV_8UC3), video range stretched to full
+        // and full range kept, with no value range in its tags; anything deeper, or HLG or PQ, as 16-bit.
+        bool eightBitAsEightBit = false;
+    };
+
     // Hardware decoding (VideoToolbox on macOS, D3D11VA on Windows) when allowed and the video's codec has
     // it, software otherwise or when the hardware cannot decode the first frame. Nothing, with `error` set,
     // for a file that does not open or has no video stream that decodes.
+    static std::unique_ptr<FfmpegVideo> open(const std::string& path, const Options& options,
+                                             std::string& error);
+    // Every frame as 16-bit BGR.
     static std::unique_ptr<FfmpegVideo> open(const std::string& path, bool allowHardware, std::string& error);
 
     FfmpegVideo(const FfmpegVideo&) = delete;

@@ -200,13 +200,55 @@ Scaler makeScaler(AVPixelFormat format, cv::Size size, const Conversion& convers
     return scaler;
 }
 
-// Converts `source` into `target`, a CV_16UC3 matrix of its size.
-bool convert(SwsContext* scaler, const AVFrame* source, cv::Mat& target) {
+// The ordinary conversion of an 8-bit video to 8-bit BGR: video range stretched to full (16 to 0, 235 to
+// 255), full range kept.
+Scaler makeEightBitScaler(AVPixelFormat format, cv::Size size, int colourspace, bool fullRange) {
+    Scaler scaler(sws_alloc_context());
+    if (!scaler) {
+        return nullptr;
+    }
+    const auto threads = static_cast<std::int64_t>(std::max(1U, std::thread::hardware_concurrency()));
+    SwsContext* context = scaler.get();
+    if (av_opt_set_int(context, "srcw", size.width, 0) < 0 ||
+        av_opt_set_int(context, "srch", size.height, 0) < 0 ||
+        av_opt_set_int(context, "src_format", format, 0) < 0 ||
+        av_opt_set_int(context, "dstw", size.width, 0) < 0 ||
+        av_opt_set_int(context, "dsth", size.height, 0) < 0 ||
+        av_opt_set_int(context, "dst_format", AV_PIX_FMT_BGR24, 0) < 0 ||
+        av_opt_set_int(context, "threads", threads, 0) < 0 ||
+        sws_init_context(context, nullptr, nullptr) < 0) {
+        return nullptr;
+    }
+    const int* coefficients = sws_getCoefficients(colourspace);
+    if (sws_setColorspaceDetails(context, coefficients, fullRange ? 1 : 0, coefficients, 1, 0, kUnity,
+                                 kUnity) < 0) {
+        return nullptr;
+    }
+    return scaler;
+}
+
+// The full-range ("JPEG") formats FFmpeg still uses for MJPEG, whatever the range tag says.
+bool isFullRangeFormat(AVPixelFormat format) {
+    switch (format) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+    case AV_PIX_FMT_YUVJ411P:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Converts `source` into `target`, a matrix of its size in `targetFormat` (BGR48: CV_16UC3, BGR24: CV_8UC3).
+bool convert(SwsContext* scaler, const AVFrame* source, cv::Mat& target,
+             AVPixelFormat targetFormat = AV_PIX_FMT_BGR48) {
     const Frame frame(av_frame_alloc());
     if (!frame) {
         return false;
     }
-    frame->format = AV_PIX_FMT_BGR48;
+    frame->format = targetFormat;
     frame->width = target.cols;
     frame->height = target.rows;
     frame->data[0] = target.data;
@@ -341,6 +383,10 @@ struct FfmpegVideo::Impl {
     Frame transferred{av_frame_alloc()}; // from the hardware's memory
     bool draining = false;
     Conversion conversion;
+    // An 8-bit SDR video read as 8-bit: its own conversion instead of the 16-bit one.
+    bool eightBitOutput = false;
+    int eightBitColourspace = SWS_CS_ITU709;
+    bool eightBitFullRange = false;
     Scaler scaler;
     AVPixelFormat scalerFormat = AV_PIX_FMT_NONE;
     cv::Size scalerSize;
@@ -352,7 +398,8 @@ struct FfmpegVideo::Impl {
     std::string error;               // why the last read gave nothing; empty at the end
 
     // One attempt at opening `path`: with the hardware when `hardware` is set and the codec has it.
-    static std::unique_ptr<Impl> open(const std::string& path, bool hardware, std::string& error);
+    static std::unique_ptr<Impl> open(const std::string& path, bool hardware, bool eightBitAsEightBit,
+                                      std::string& error);
     const AVFrame* nextFrame();
     std::optional<VideoFrame> toVideoFrame(const AVFrame* frame);
     std::nullptr_t fail(const char* what, int code); // sets `error`
@@ -416,15 +463,17 @@ std::optional<VideoFrame> FfmpegVideo::Impl::toVideoFrame(const AVFrame* frame) 
     const auto format = static_cast<AVPixelFormat>(frame->format);
     const cv::Size size(frame->width, frame->height);
     if (!scaler || format != scalerFormat || size != scalerSize) {
-        scaler = makeScaler(format, size, conversion);
+        scaler = eightBitOutput ? makeEightBitScaler(format, size, eightBitColourspace,
+                                                     eightBitFullRange || isFullRangeFormat(format))
+                                : makeScaler(format, size, conversion);
         scalerFormat = format;
         scalerSize = size;
         if (!scaler) {
             return std::nullopt;
         }
     }
-    cv::Mat image(size, CV_16UC3);
-    if (!convert(scaler.get(), frame, image)) {
+    cv::Mat image(size, eightBitOutput ? CV_8UC3 : CV_16UC3);
+    if (!convert(scaler.get(), frame, image, eightBitOutput ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_BGR48)) {
         return std::nullopt;
     }
     if (quarterTurns != 0) {
@@ -452,7 +501,7 @@ std::optional<VideoFrame> FfmpegVideo::Impl::toVideoFrame(const AVFrame* frame) 
 }
 
 std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& path, bool hardware,
-                                                           std::string& error) {
+                                                           bool eightBitAsEightBit, std::string& error) {
     auto impl = std::make_unique<Impl>();
     if (!impl->packet || !impl->decoded || !impl->transferred) {
         error = "out of memory";
@@ -522,8 +571,10 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
     VideoInfo& info = impl->info;
     info.size = impl->quarterTurns % 2 == 0 ? cv::Size(first->width, first->height)
                                             : cv::Size(first->height, first->width);
-    const AVRational rate = stream->avg_frame_rate;
-    info.fps = rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0;
+    // The average rate, else the stream's base rate (some containers give only that).
+    const auto rateOf = [](AVRational rate) { return rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0; };
+    info.fps =
+        rateOf(stream->avg_frame_rate) > 0.0 ? rateOf(stream->avg_frame_rate) : rateOf(stream->r_frame_rate);
     info.frameCount = frameCountOf(*input, *stream);
     info.bitDepth = av_pix_fmt_desc_get(format)->comp[0].depth;
     info.valueRange = calibration->valueRange;
@@ -534,6 +585,21 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
             : Primaries::Bt709;
     info.decoder = impl->decoded->hw_frames_ctx ? kHardwareName : "software";
     info.dolbyVisionProfile = dolbyVisionProfileOf(parameters);
+    info.seekable = first->best_effort_timestamp != AV_NOPTS_VALUE && info.fps > 0.0 &&
+                    (input->iformat->flags & AVFMT_NOTIMESTAMPS) == 0;
+
+    // An 8-bit SDR video stays 8-bit when asked: its own matrix (an untagged one by its size, as players
+    // guess: BT.601 below 720 rows) and range; no value range, as 0–255 is its whole scale.
+    if (eightBitAsEightBit && info.bitDepth <= 8 && info.transfer == Transfer::Sdr) {
+        const AVColorSpace matrix = tagOf(first->colorspace, parameters->color_space, AVCOL_SPC_UNSPECIFIED);
+        impl->eightBitOutput = true;
+        impl->eightBitColourspace = matrix == AVCOL_SPC_UNSPECIFIED || matrix == AVCOL_SPC_RESERVED
+                                        ? (first->height < 720 ? SWS_CS_ITU601 : SWS_CS_ITU709)
+                                        : swsColourspaceOf(matrix);
+        impl->eightBitFullRange =
+            tagOf(first->color_range, parameters->color_range, AVCOL_RANGE_UNSPECIFIED) == AVCOL_RANGE_JPEG;
+        info.valueRange = {};
+    }
 
     impl->first = impl->toVideoFrame(first);
     if (!impl->first) {
@@ -543,16 +609,22 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
     return impl;
 }
 
-std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, bool allowHardware,
+std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, const Options& options,
                                                std::string& error) {
-    std::unique_ptr<Impl> impl = allowHardware ? Impl::open(path, true, error) : nullptr;
+    std::unique_ptr<Impl> impl =
+        options.allowHardware ? Impl::open(path, true, options.eightBitAsEightBit, error) : nullptr;
     if (!impl) {
-        impl = Impl::open(path, false, error); // the hardware could not decode it
+        impl = Impl::open(path, false, options.eightBitAsEightBit, error); // the hardware could not decode it
     }
     if (!impl) {
         return nullptr;
     }
     return std::unique_ptr<FfmpegVideo>(new FfmpegVideo(std::move(impl)));
+}
+
+std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, bool allowHardware,
+                                               std::string& error) {
+    return open(path, Options{.allowHardware = allowHardware, .eightBitAsEightBit = false}, error);
 }
 
 FfmpegVideo::FfmpegVideo(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
@@ -572,7 +644,7 @@ std::optional<VideoFrame> FfmpegVideo::read() {
     }
     std::optional<VideoFrame> converted = m_impl->toVideoFrame(frame);
     if (!converted) {
-        m_impl->error = "could not convert a frame to 16-bit BGR";
+        m_impl->error = "could not convert a frame to BGR";
     }
     return converted;
 }

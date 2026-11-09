@@ -287,3 +287,100 @@ TEST(FfmpegVideo, HardwareDecodingOnMacOS) {
 #endif
 
 } // namespace
+
+// --- 8-bit SDR as 8-bit BGR, as the lab replays an ordinary video
+// ----------------------------------------------------------------
+
+namespace {
+
+std::unique_ptr<FfmpegVideo> openEightBit(const std::string& path) {
+    std::string error;
+    std::unique_ptr<FfmpegVideo> video =
+        FfmpegVideo::open(path, {.allowHardware = false, .eightBitAsEightBit = true}, error);
+    EXPECT_NE(video, nullptr) << error;
+    return video;
+}
+
+// The first frame's top-left pixel of an 8-bit clip of one colour, read as 8-bit BGR.
+cv::Vec3b eightBitColourOf(const Clip& clip) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    EXPECT_TRUE(writeClip(path, clip));
+    const std::unique_ptr<FfmpegVideo> video = openEightBit(path);
+    if (!video) {
+        return {};
+    }
+    const std::optional<VideoFrame> frame = video->read();
+    if (!frame || frame->image.type() != CV_8UC3) {
+        ADD_FAILURE() << "no 8-bit frame";
+        return {};
+    }
+    return frame->image.at<cv::Vec3b>(0, 0);
+}
+
+Clip eightBit(int y, int u, int v, AVColorSpace matrix, AVColorRange range = AVCOL_RANGE_MPEG) {
+    return Clip{
+        .format = AV_PIX_FMT_YUV420P, .range = range, .matrix = matrix, .y = {y, y, y, y}, .u = u, .v = v};
+}
+
+void expectNear(const cv::Vec3b& pixel, const cv::Vec3b& expected, const char* what) {
+    for (int channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(pixel[channel], expected[channel], 3) << what << ", channel " << channel;
+    }
+}
+
+TEST(FfmpegVideo, EightBitStaysEightBit) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    ASSERT_TRUE(writeClip(path, eightBit(126, 128, 128, AVCOL_SPC_BT709)));
+    const std::unique_ptr<FfmpegVideo> video = openEightBit(path);
+    ASSERT_NE(video, nullptr);
+
+    const std::optional<VideoFrame> frame = video->read();
+
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(frame->image.type(), CV_8UC3);
+    EXPECT_EQ(video->info().bitDepth, 8);
+    EXPECT_TRUE(video->info().valueRange.empty());
+}
+
+// Red in each matrix, white and black at video range, and white kept where full range puts it.
+TEST(FfmpegVideo, EightBitColoursFollowTheMatrixAndRange) {
+    expectNear(eightBitColourOf(eightBit(81, 90, 240, AVCOL_SPC_SMPTE170M)), {0, 0, 254}, "BT.601 red");
+    expectNear(eightBitColourOf(eightBit(63, 102, 240, AVCOL_SPC_BT709)), {0, 1, 255}, "BT.709 red");
+    expectNear(eightBitColourOf(eightBit(235, 128, 128, AVCOL_SPC_BT709)), {255, 255, 255}, "video white");
+    expectNear(eightBitColourOf(eightBit(16, 128, 128, AVCOL_SPC_BT709)), {0, 0, 0}, "video black");
+    expectNear(eightBitColourOf(eightBit(235, 128, 128, AVCOL_SPC_BT709, AVCOL_RANGE_JPEG)), {235, 235, 235},
+               "full-range 235");
+}
+
+// An untagged video below 720 rows is standard definition: BT.601 (BT.709 would give green 24 here).
+TEST(FfmpegVideo, UnknownMatrixBySize) {
+    expectNear(eightBitColourOf(eightBit(81, 90, 240, AVCOL_SPC_UNSPECIFIED)), {0, 0, 254}, "untagged 64×48");
+}
+
+// An 8-bit HLG video keeps the 16-bit path, whose codes above white survive.
+TEST(FfmpegVideo, EightBitHlgKeepsSixteenBits) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    Clip clip = eightBit(126, 128, 128, AVCOL_SPC_BT2020_NCL);
+    clip.transfer = AVCOL_TRC_ARIB_STD_B67;
+    ASSERT_TRUE(writeClip(path, clip));
+    const std::unique_ptr<FfmpegVideo> video = openEightBit(path);
+    ASSERT_NE(video, nullptr);
+
+    const std::optional<VideoFrame> frame = video->read();
+
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(frame->image.type(), CV_16UC3);
+}
+
+TEST(FfmpegVideo, SeekableWhenTimestamped) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    ASSERT_TRUE(writeClip(path, Clip{}));
+
+    EXPECT_TRUE(openInSoftware(path)->info().seekable);
+}
+
+} // namespace
