@@ -4,6 +4,14 @@
 find_package(Threads REQUIRED)
 
 add_library(frame_io STATIC
+    include/frame_io/frame.h
+    include/frame_io/image_folder.h
+    include/frame_io/read_ahead.h
+    include/frame_io/replay_source.h
+    include/frame_io/video_file.h
+    src/file_sequence.h
+    src/frame.cpp
+    src/image_folder.cpp
     src/video_file.cpp)
 add_library(frame_io::frame_io ALIAS frame_io)
 

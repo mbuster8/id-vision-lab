@@ -61,7 +61,10 @@ if(TARGET PkgConfig::FFMPEG)
 endif()
 id_vision_lab_add_test_executable(frame_io_tests
     SOURCES
+        frame_io/frame_test.cpp
+        frame_io/image_folder_test.cpp
         frame_io/read_ahead_test.cpp
+        frame_io/scratch_folder.h
         frame_io/video_file_test.cpp
         ${frame_io_ffmpeg_tests}
     LIBRARIES
@@ -72,6 +75,8 @@ id_vision_lab_add_test_executable(frame_io_tests
         opencv_imgproc
         GTest::gtest_main)
 id_vision_lab_use_utf8_code_page(frame_io_tests)
+# latch.h: holding a reader's thread without timing (Qt-free, kept with the other test helpers).
+target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
 
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES

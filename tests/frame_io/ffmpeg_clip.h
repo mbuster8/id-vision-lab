@@ -10,28 +10,13 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
+#include "scratch_folder.h"
+
 #include <array>
-#include <filesystem>
 #include <optional>
 #include <string>
 
 namespace test_support {
-
-// A folder of its own under the system's temporary one, removed afterwards. Random, as test programs run in
-// parallel.
-class ScratchFolder {
-public:
-    ScratchFolder();
-    ScratchFolder(const ScratchFolder&) = delete;
-    ScratchFolder& operator=(const ScratchFolder&) = delete;
-    ~ScratchFolder();
-
-    std::string file(const std::string& name) const;
-    const std::filesystem::path& path() const;
-
-private:
-    std::filesystem::path m_path;
-};
 
 inline constexpr int kClipFrames = 4;
 

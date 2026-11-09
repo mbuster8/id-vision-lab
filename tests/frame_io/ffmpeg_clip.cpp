@@ -9,27 +9,9 @@ extern "C" {
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <random>
-#include <system_error>
 #include <vector>
 
 namespace test_support {
-
-ScratchFolder::ScratchFolder()
-    : m_path(std::filesystem::temp_directory_path() /
-             ("frame_io_ffmpeg_" + std::to_string(std::random_device{}()))) {
-    std::filesystem::create_directories(m_path);
-}
-
-ScratchFolder::~ScratchFolder() {
-    std::error_code ignored;
-    std::filesystem::remove_all(m_path, ignored);
-}
-
-std::string ScratchFolder::file(const std::string& name) const { return (m_path / name).string(); }
-
-const std::filesystem::path& ScratchFolder::path() const { return m_path; }
-
 namespace {
 
 struct FreeEncoder {
