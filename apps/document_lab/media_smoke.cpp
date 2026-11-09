@@ -31,7 +31,7 @@ bool check(bool passed, const std::string& what) {
 }
 
 // A short MJPG clip from OpenCV's own writer, which every build has, as frame_io's video_file tests write
-// theirs. (Written through the default backend instead, the macOS CI runner's frame_io read it short.)
+// theirs.
 bool writeClip(const std::string& path) {
     cv::VideoWriter writer(path, cv::CAP_OPENCV_MJPEG, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 25.0,
                            cv::Size(64, 48));
