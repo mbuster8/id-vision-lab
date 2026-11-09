@@ -40,11 +40,15 @@ enum class EngineState { Idle, Live, Playing, Paused, Ended, Stopped };
 
 struct EngineStatus {
     EngineState state = EngineState::Idle;
-    std::uint64_t generation = 0; // the current run's: a new source, a restart, a step back or a loop
+    std::uint64_t generation = 0; // the current run's: a new source, a restart, a seek or a loop
     std::string source;           // the camera's name, or the file's or the folder's
     std::optional<std::uint64_t> frameNumber;
     std::optional<std::uint64_t> frameCount;
+    std::optional<double> frameRate; // a replay's, to turn frame numbers into times
+    bool canSeek = false;            // a replay that can go to any frame
     bool canStepBack = false;
+    bool seeking = false;                    // a seek's frame is not shown yet
+    std::optional<std::uint64_t> seekTarget; // that frame
     bool loop = false;
     bool asFastAsPossible = false;
     std::uint64_t droppedBeforeProcessing = 0; // camera frames replaced by a newer one before processing
@@ -69,7 +73,8 @@ struct EngineHooks {
 // processing thread. The window posts commands, which the thread runs between frames, and never waits for it.
 // A camera offers its frames, the newest replacing one still waiting; a replay is read in order, every frame,
 // at its own pace or slower. Each source run has a generation: a new source, a restart, a step back and a
-// loop start one, and nothing of an older one reaches the slot, the recorder or the sender. Hooks are called
+// loop or a seek start one, and nothing of an older one reaches the slot, the recorder or the sender. Seeks
+// asked for faster than they are done add up to one. Hooks are called
 // on the processing thread (in Immediate mode, in pump()) with no lock held.
 class Engine {
 public:
@@ -93,7 +98,14 @@ public:
     void pause();
     // Paused: the next frame. Playing: pauses there. An image file: processes it again.
     void step();
-    // Folders and recordings: the frame before the one on screen, as a new generation, paused.
+    // A replay that can seek: frame `index` (the last if past it), as a new generation; playing on when
+    // playing, else paused showing it. It replaces a seek or steps still waiting.
+    void seek(std::uint64_t index);
+    // `frames` on (back when negative) from the frame on screen, or from a seek still running or waiting,
+    // within the first and the last frame. Added to steps still waiting, so holding ← makes one seek, not
+    // ten.
+    void seekBy(std::int64_t frames);
+    // seekBy(-1).
     void stepBack();
     // Back to frame 0, as a new generation.
     void restart();
@@ -102,8 +114,8 @@ public:
     // Null is None. The processor is reset() and, unless frames are coming, the frame on screen processed
     // again.
     void setProcessor(std::unique_ptr<FrameProcessor> processor);
-    // Records the frames processed from now on. A restart, a step back, a loop, another source and stop()
-    // also stop the recording; its counts are those since this call.
+    // Records the frames processed from now on. A restart, a seek, a loop, another source and stop() also
+    // stop the recording; its counts are those since this call.
     void startRecording(std::unique_ptr<frame_io::RecordingWriter> writer);
     // The recording's queue is written in the background; its progress shows in the status until finished.
     void stopRecording();
@@ -135,6 +147,12 @@ private:
         std::uint64_t notDrawn = 0;
         std::uint64_t notSent = 0;
     };
+    // The seek the window asked for and the processing thread has not done yet: an absolute frame, steps from
+    // it (or from the frame on screen), or both.
+    struct SeekRequest {
+        std::optional<std::uint64_t> absolute;
+        std::int64_t relative = 0;
+    };
     // What one turn of the processing loop found to wait for.
     struct Turn {
         bool did = false;
@@ -163,7 +181,7 @@ private:
     void doPlay();
     void doPause();
     void doStep();
-    void doStepBack();
+    void doSeek();
     void doRestart();
     void doSetLoop(bool on);
     void doSetAsFastAsPossible(bool on);
@@ -172,6 +190,7 @@ private:
     void doSetSender(std::unique_ptr<ResultSender> sender);
 
     void newGeneration();
+    void clearSeeking();
     void stopRecordingNow(const std::string& message = {});
     void stopWithError(const std::string& message);
     void setState(EngineState state);
@@ -196,8 +215,9 @@ private:
     bool m_asFast = false;
     bool m_oneFrame = false;
     bool m_stepWanted = false;
-    std::uint64_t m_nextIndex = 0;         // the number of the next frame the source will read
-    std::optional<frame_io::Frame> m_held; // read and not yet due
+    std::uint64_t m_nextIndex = 0;             // the number of the next frame the source will read
+    std::optional<std::uint64_t> m_seekTarget; // the frame a seek went to, until it is shown
+    std::optional<frame_io::Frame> m_held;     // read and not yet due
     std::optional<Clock::time_point> m_heldDue;
     std::optional<frame_io::Frame> m_onScreen; // the frame processed last
     std::optional<frame_io::Frame>
@@ -214,6 +234,7 @@ private:
     bool m_quit = false;
     std::deque<std::function<void()>> m_commands;
     std::optional<Pending> m_pending;
+    std::optional<SeekRequest> m_seekRequest; // a doSeek command is in the mailbox while there is one
     bool m_acceptLive = false;
     std::uint64_t m_offered = 0;
     std::uint64_t m_run = 0; // camera runs started, and stopped

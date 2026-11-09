@@ -298,6 +298,209 @@ TEST(Engine, RestartReopensAVideo) {
     EXPECT_EQ(counters.restarts, 1);
 }
 
+// --- Seeking
+// ------------------------------------------------------------------------------------------------
+
+// A replay as fast as possible, paused with frame `shown` on screen.
+void pausedAt(Harness& h, std::uint64_t shown) {
+    h.engine.setAsFastAsPossible(true);
+    for (std::uint64_t number = 0; number <= shown; ++number) {
+        ASSERT_EQ(h.nextNumber(), number);
+    }
+    h.engine.pause();
+    h.engine.pump();
+    ASSERT_EQ(h.engine.status().state, EngineState::Paused);
+}
+
+// Pumps until a result comes, or twenty pumps.
+std::optional<std::uint64_t> pumpUntilAResult(Harness& h) {
+    for (int pumps = 0; pumps < 20; ++pumps) {
+        if (const auto number = h.nextNumber()) {
+            return number;
+        }
+    }
+    return std::nullopt;
+}
+
+TEST(Engine, SeekWhilePausedShowsThatFrame) {
+    Harness h;
+    ListSource::Counters counters;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &counters));
+    pausedAt(h, 2);
+    const std::uint64_t generation = h.engine.status().generation;
+
+    h.engine.seek(7);
+    const auto result = h.next();
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->frame.number, 7U);
+    EXPECT_EQ(result->generation, generation + 1);
+    EXPECT_EQ(h.engine.status().state, EngineState::Paused);
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(7));
+}
+
+TEST(Engine, SeekWhilePlayingPlaysOn) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    EXPECT_EQ(h.nextNumber(), 0U);
+    EXPECT_EQ(h.nextNumber(), 1U);
+
+    h.engine.seek(7);
+
+    EXPECT_EQ(h.nextNumber(), 7U);
+    EXPECT_EQ(h.nextNumber(), 8U);
+    EXPECT_EQ(h.engine.status().state, EngineState::Playing);
+}
+
+TEST(Engine, SeekFromTheEndPauses) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    for (std::uint64_t number = 0; number < 3; ++number) {
+        EXPECT_EQ(h.nextNumber(), number);
+    }
+    h.engine.pump();
+    ASSERT_EQ(h.engine.status().state, EngineState::Ended);
+
+    h.engine.seek(1);
+
+    EXPECT_EQ(h.nextNumber(), 1U);
+    EXPECT_EQ(h.engine.status().state, EngineState::Paused);
+}
+
+// Holding ← makes Step Backs faster than a video can seek: those waiting add up to one seek.
+TEST(Engine, TenStepBacksMakeOneSeek) {
+    Harness h;
+    ListSource::Counters counters;
+    h.engine.startReplay(openerOf(framesApart(15, 40ms), true, &counters));
+    pausedAt(h, 12);
+
+    for (int i = 0; i < 10; ++i) {
+        h.engine.seekBy(-1);
+    }
+
+    EXPECT_EQ(pumpUntilAResult(h), 2U);
+    EXPECT_EQ(counters.seeks, 1);
+}
+
+// A seek replaces the steps waiting before it; steps after it count from its frame. Before the first frame or
+// after the last, a seek stops there.
+TEST(Engine, AbsoluteSeekThenSteps) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(15, 40ms)));
+    pausedAt(h, 12);
+
+    h.engine.seekBy(-3);
+    h.engine.seek(5);
+    h.engine.seekBy(+2);
+    EXPECT_EQ(pumpUntilAResult(h), 7U);
+
+    h.engine.seek(5);
+    h.engine.seekBy(-10);
+    EXPECT_EQ(pumpUntilAResult(h), 0U);
+
+    h.engine.seekBy(+100);
+    EXPECT_EQ(pumpUntilAResult(h), 14U);
+}
+
+// A recording is one unbroken run, as with a restart, and the status says why it stopped.
+TEST(Engine, SeekStopsTheRecording) {
+    const test_support::ScratchFolder folder;
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    h.engine.startRecording(recorderIn(folder.path()));
+    pausedAt(h, 2);
+    ASSERT_TRUE(h.engine.status().recording);
+
+    h.engine.seek(7);
+    EXPECT_EQ(h.nextNumber(), 7U);
+
+    EXPECT_FALSE(h.engine.status().recording);
+    EXPECT_EQ(h.engine.status().message, "recording stopped: the replay moved");
+}
+
+// A video's reading thread may take a while to find the frame: the status says so until it is shown.
+TEST(Engine, SeekingUntilTheFrameArrives) {
+    Harness h;
+    bool ready = true;
+    h.engine.startReplay([&ready](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<ListSource>(framesApart(10, 40ms), true, nullptr);
+        source->readyWhen = [&ready] { return ready; };
+        return source;
+    });
+    pausedAt(h, 2);
+    EXPECT_FALSE(h.engine.status().seeking);
+
+    ready = false;
+    h.engine.seek(7);
+    EXPECT_EQ(h.nextNumber(), std::nullopt);
+    EXPECT_TRUE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(7));
+
+    ready = true;
+    EXPECT_EQ(h.nextNumber(), 7U);
+    EXPECT_FALSE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
+}
+
+// A count worked out from a duration can be a frame too many: a seek to the last then finds the end.
+class OverstatedSource : public ListSource {
+public:
+    using ListSource::ListSource;
+    std::optional<std::uint64_t> frameCount() const override { return *ListSource::frameCount() + 1; }
+};
+
+TEST(Engine, SeekingClearsAtTheEnd) {
+    Harness h;
+    h.engine.startReplay([](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        return std::make_unique<OverstatedSource>(framesApart(5, 40ms), true, nullptr);
+    });
+    pausedAt(h, 1);
+
+    h.engine.seek(100);
+    h.engine.pump();
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Ended);
+    EXPECT_FALSE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
+}
+
+// A seek asked for before another source was opened is for the old one: the new one starts at its first
+// frame.
+TEST(Engine, PendingSeekDiesWithTheSource) {
+    Harness h;
+    ListSource::Counters first;
+    ListSource::Counters second;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &first));
+    pausedAt(h, 4);
+
+    h.engine.seekBy(-1);
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &second));
+
+    EXPECT_EQ(pumpUntilAResult(h), 0U);
+    EXPECT_EQ(first.seeks, 0);
+    EXPECT_EQ(second.seeks, 0);
+}
+
+TEST(Engine, StatusHasRateAndSeek) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    h.engine.pump();
+    EXPECT_EQ(h.engine.status().frameRate, std::optional<double>(30.0));
+    EXPECT_TRUE(h.engine.status().canSeek);
+
+    h.engine.startReplay(openerOf(framesApart(3, 40ms), false));
+    h.engine.pump();
+    EXPECT_FALSE(h.engine.status().canSeek);
+
+    h.engine.startLive("camera");
+    h.engine.pump();
+    EXPECT_EQ(h.engine.status().frameRate, std::nullopt);
+    EXPECT_FALSE(h.engine.status().canSeek);
+}
+
 // An image file is processed once; Step and Restart process it again, Play does nothing more, Loop stays off.
 TEST(Engine, OneFrameSource) {
     Harness h;

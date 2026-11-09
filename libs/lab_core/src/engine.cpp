@@ -19,6 +19,7 @@ constexpr std::chrono::milliseconds kWaitSlice{50};
 constexpr std::chrono::milliseconds kIdleWait{1000};
 
 constexpr char kLowDisk[] = "recording stopped: low disk space";
+constexpr char kReplayMoved[] = "recording stopped: the replay moved";
 const std::string kRecordingStopped = "recording stopped: ";
 
 bool isRunning(EngineState state) { return state == EngineState::Live || state == EngineState::Playing; }
@@ -97,6 +98,7 @@ void Engine::startLive(std::string name) {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_pending);
         m_pending.reset();
+        m_seekRequest.reset(); // for the replay this ends
         m_acceptLive = true;
         m_offered = 0;
         run = ++m_run;
@@ -127,6 +129,7 @@ void Engine::startReplay(ReplayOpener open) {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_pending);
         m_pending.reset();
+        m_seekRequest.reset(); // for the source this replaces
         m_acceptLive = false;
         ++m_run;
     }
@@ -139,6 +142,7 @@ void Engine::stop() {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_pending);
         m_pending.reset();
+        m_seekRequest.reset();
         m_acceptLive = false;
         ++m_run;
     }
@@ -157,11 +161,40 @@ void Engine::step() {
     post([this] { doStep(); });
 }
 
-void Engine::stepBack() {
-    post([this] { doStepBack(); });
+void Engine::seek(std::uint64_t index) {
+    bool first = false;
+    {
+        const std::lock_guard lock(m_mutex);
+        first = !m_seekRequest;
+        m_seekRequest = SeekRequest{.absolute = index, .relative = 0};
+    }
+    if (first) {
+        post([this] { doSeek(); });
+    }
 }
 
+void Engine::seekBy(std::int64_t frames) {
+    bool first = false;
+    {
+        const std::lock_guard lock(m_mutex);
+        first = !m_seekRequest;
+        if (first) {
+            m_seekRequest = SeekRequest{};
+        }
+        m_seekRequest->relative += frames;
+    }
+    if (first) {
+        post([this] { doSeek(); });
+    }
+}
+
+void Engine::stepBack() { seekBy(-1); }
+
 void Engine::restart() {
+    {
+        const std::lock_guard lock(m_mutex);
+        m_seekRequest.reset(); // for the run the restart ends
+    }
     post([this] { doRestart(); });
 }
 
@@ -385,6 +418,7 @@ void Engine::replayWork(Turn& turn) {
         case frame_io::ReadStatus::End:
             turn.did = true;
             m_stepWanted = false;
+            clearSeeking(); // a seek past the last frame, when the count said one more
             if (m_loop && !m_oneFrame && m_state == EngineState::Playing) {
                 newGeneration();
                 std::string error;
@@ -400,6 +434,7 @@ void Engine::replayWork(Turn& turn) {
         case frame_io::ReadStatus::Error:
             turn.did = true;
             m_stepWanted = false;
+            clearSeeking();
             stopWithError("stopped at frame " + std::to_string(m_nextIndex + 1) + ": " + read.error);
             return;
         case frame_io::ReadStatus::Frame:
@@ -422,6 +457,7 @@ void Engine::replayWork(Turn& turn) {
     m_heldDue.reset();
     m_stepWanted = false;
     process(std::move(frame), true);
+    clearSeeking(); // the seek's frame is on screen
     turn.did = true;
 }
 
@@ -617,6 +653,8 @@ void Engine::doStartReplay(const ReplayOpener& open) {
     }
     source->setWake([this] { signal(); });
     const std::optional<std::uint64_t> count = source->frameCount();
+    const std::optional<double> rate = source->frameRate();
+    const bool canSeek = source->canSeek();
     const std::string name = source->describe();
     m_source = std::move(source);
     m_oneFrame = count == std::uint64_t{1};
@@ -626,6 +664,8 @@ void Engine::doStartReplay(const ReplayOpener& open) {
         m_status.source = name;
         m_status.frameNumber.reset();
         m_status.frameCount = count;
+        m_status.frameRate = rate;
+        m_status.canSeek = canSeek;
         m_status.canStepBack = false;
         m_status.loop = m_loop && !m_oneFrame;
     }
@@ -671,14 +711,47 @@ void Engine::doStep() {
     }
 }
 
-void Engine::doStepBack() {
-    if (m_live || !m_source || !m_source->canSeek() || !m_onScreen || m_onScreen->number == 0) {
+// Steps count from the seek still running, else from the frame on screen; in signed arithmetic, so a step
+// back from frame 0 stays there rather than wrapping round to the last frame.
+void Engine::doSeek() {
+    std::optional<SeekRequest> request;
+    {
+        const std::lock_guard lock(m_mutex);
+        request.swap(m_seekRequest);
+    }
+    if (!request || m_live || !m_source || !m_source->canSeek()) {
         return;
     }
-    const std::uint64_t target = m_onScreen->number - 1;
+    const std::uint64_t from = request->absolute ? *request->absolute
+                               : m_seekTarget    ? *m_seekTarget
+                               : m_onScreen      ? m_onScreen->number
+                                                 : m_nextIndex;
+    std::int64_t wanted = std::max<std::int64_t>(0, static_cast<std::int64_t>(from) + request->relative);
+    const std::optional<std::uint64_t> count = m_source->frameCount();
+    if (count && *count > 0) {
+        wanted = std::min(wanted, static_cast<std::int64_t>(*count - 1));
+    }
+    const auto target = static_cast<std::uint64_t>(wanted);
+    // A step back at the first frame, paused: nothing to do, and no reason to end a recording.
+    if (m_state == EngineState::Paused && !m_seekTarget && m_onScreen && m_onScreen->number == target) {
+        return;
+    }
+    const bool playing = m_state == EngineState::Playing;
+    setMessage({});
+    stopRecordingNow(kReplayMoved);
     newGeneration();
     m_source->seek(target);
     m_nextIndex = target;
+    m_seekTarget = target;
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.seeking = true;
+        m_status.seekTarget = target;
+    }
+    m_notifyStatus = true;
+    if (playing) {
+        return; // plays on from the target; newGeneration() restarted the pacer
+    }
     setState(EngineState::Paused);
     m_stepWanted = true;
 }
@@ -782,6 +855,21 @@ void Engine::newGeneration() {
     m_heldDue.reset();
     m_stepWanted = false;
     m_pacer.restart();
+    clearSeeking();
+}
+
+// The seek's frame was shown, or will never be: the end, an error, a new run.
+void Engine::clearSeeking() {
+    if (!m_seekTarget) {
+        return;
+    }
+    m_seekTarget.reset();
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.seeking = false;
+        m_status.seekTarget.reset();
+    }
+    m_notifyStatus = true;
 }
 
 // Its counts are those since the recording started; the writer writes its queue in the background.
@@ -863,6 +951,10 @@ void Engine::closeSource() {
     m_oneFrame = false;
     m_stepWanted = false;
     m_nextIndex = 0;
+    clearSeeking();
+    const std::lock_guard lock(m_mutex);
+    m_status.frameRate.reset();
+    m_status.canSeek = false;
 }
 
 Engine::Totals Engine::totals() const {
