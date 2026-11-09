@@ -832,6 +832,11 @@ Invalid image
   `vd.Client(endpoint, reply_timeout=0.5, retry_interval=1.0)` (in seconds) has `send` and `send_live` and
   closes as a context manager; use one per thread. Pressing Ctrl+C during a send interrupts it, and the next
   send starts afresh.
+- **Is a viewer there?** `vd.ping()` (or `Client.ping()`) asks without sending an image and gives a
+  `vd.ViewerState`: `LISTENING`, `PAUSED`, `PREDATES_PING` (a viewer older than the ping, which still takes
+  images), `UNAVAILABLE` or `INVALID_ENDPOINT`. **Ending a live channel:** `vd.end_live("camera")` (or
+  `Client.end_live`) tells the viewer the channel is finished with, and it closes the channel unless its user
+  froze it. C++ has the same as `visual_debug::ping()` and `visual_debug::endLive()`, and on a `Client`.
 
 `python/examples/demo.py` sends a gradient, the ramp above, a card with overlays and a short live sequence:
 `python3 python/examples/demo.py`, with `--endpoint` for a viewer on another port.
