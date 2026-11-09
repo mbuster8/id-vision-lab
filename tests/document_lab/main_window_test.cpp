@@ -14,6 +14,7 @@
 #include <QComboBox>
 #include <QFile>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -25,6 +26,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
+#include <visual_debug/endpoint.h>
 
 #include <atomic>
 #include <chrono>
@@ -847,6 +849,112 @@ TEST(LabWindow, FormatChangeStopsTheRecording) {
     ASSERT_EQ(recordings.size(), 1U);
     EXPECT_EQ(recordingJson(recordings[0])["complete"], true);
     EXPECT_EQ(recordingJson(recordings[0])["source"]["kind"], "camera");
+}
+
+// --- Send to viewer
+// -----------------------------------------------------------------------------------------
+
+QLineEdit* endpointEdit(const Lab& lab) { return lab.window->findChild<QLineEdit*>("endpointEdit"); }
+
+void setEndpoint(const Lab& lab, const QString& endpoint) {
+    endpointEdit(lab)->setText(endpoint);
+    emit endpointEdit(lab)->editingFinished();
+}
+
+TEST(LabWindow, SendIsOffByDefault) {
+    Lab lab;
+
+    EXPECT_FALSE(button(lab, "sendCheck")->isChecked());
+    EXPECT_EQ(endpointEdit(lab)->text(), QString::fromStdString(visual_debug::defaultEndpoint()));
+}
+
+// The frame as "lab" with its overlays, each of the processor's pictures as "lab <name>".
+TEST(LabWindow, SendsLabChannels) {
+    std::atomic<test_support::RecordingSender*> made = nullptr;
+    Lab lab([&made](LabDependencies& dependencies) {
+        dependencies.senderMode = lab_core::ResultSender::Mode::Threaded;
+        dependencies.makeSender = [&made](const std::string&) {
+            auto sender = std::make_unique<test_support::RecordingSender>();
+            made = sender.get();
+            return sender;
+        };
+    });
+    setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7140"));
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    button(lab, "sendCheck")->click();
+    lab.replay(framesOf(test_support::cardFrame()));
+
+    lab.pump();
+
+    ASSERT_NE(made.load(), nullptr);
+    ASSERT_TRUE(made.load()->waitForCalls(2));
+    const auto calls = made.load()->calls();
+    EXPECT_EQ(calls[0].name, "lab");
+    EXPECT_EQ(calls[1].name, "lab edges");
+}
+
+// Another computer's viewer gets frames that may show real passports, unencrypted: asked once per endpoint.
+TEST(LabWindow, RemoteEndpointAsksOnce) {
+    QStringList questions;
+    Lab lab([&questions](LabDependencies& dependencies) {
+        dependencies.confirm = [&questions](const QString& question) {
+            questions << question;
+            return true;
+        };
+    });
+    setEndpoint(lab, QStringLiteral("tcp://192.168.1.20:7140"));
+
+    button(lab, "sendCheck")->click();
+    lab.pump();
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("sending to 192.168.1.20")))
+        << lab.status().toStdString();
+    button(lab, "sendCheck")->click();
+    button(lab, "sendCheck")->click();
+
+    ASSERT_EQ(questions.size(), 1);
+    EXPECT_TRUE(questions[0].contains(QStringLiteral("192.168.1.20")));
+    EXPECT_TRUE(questions[0].contains(QStringLiteral("real passports")));
+    EXPECT_TRUE(button(lab, "sendCheck")->isChecked());
+}
+
+TEST(LabWindow, RemoteRefusedTurnsSendOff) {
+    int senders = 0;
+    Lab lab([&senders](LabDependencies& dependencies) {
+        dependencies.confirm = [](const QString&) { return false; };
+        dependencies.makeSender = [&senders](const std::string&) {
+            ++senders;
+            return std::make_unique<test_support::RecordingSender>();
+        };
+    });
+    setEndpoint(lab, QStringLiteral("tcp://192.168.1.20:7140"));
+
+    button(lab, "sendCheck")->click();
+
+    EXPECT_FALSE(button(lab, "sendCheck")->isChecked());
+    EXPECT_EQ(senders, 0);
+}
+
+TEST(LabWindow, LoopbackNeverAsks) {
+    int questions = 0;
+    int senders = 0;
+    Lab lab([&](LabDependencies& dependencies) {
+        dependencies.confirm = [&questions](const QString&) {
+            ++questions;
+            return true;
+        };
+        dependencies.makeSender = [&senders](const std::string& endpoint) {
+            EXPECT_EQ(endpoint, "tcp://127.0.0.1:7140");
+            ++senders;
+            return std::make_unique<test_support::RecordingSender>();
+        };
+    });
+    setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7140"));
+
+    button(lab, "sendCheck")->click();
+
+    EXPECT_EQ(questions, 0);
+    EXPECT_EQ(senders, 1);
+    EXPECT_TRUE(button(lab, "sendCheck")->isChecked());
 }
 
 } // namespace

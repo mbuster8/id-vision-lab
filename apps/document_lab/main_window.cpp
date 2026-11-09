@@ -8,6 +8,8 @@
 #include <frame_io/capture.h>
 #include <frame_io/image_folder.h>
 #include <viewer_core/image_tags.h>
+#include <visual_debug/client.h>
+#include <visual_debug/endpoint.h>
 
 #include <QAbstractButton>
 #include <QAction>
@@ -24,7 +26,9 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMetaObject>
 #include <QPointer>
 #include <QPushButton>
@@ -67,6 +71,16 @@ std::filesystem::path toPath(const QString& path) { return std::filesystem::path
 
 QString fromPath(const std::filesystem::path& path) { return QString::fromStdU16String(path.u16string()); }
 
+// The machine an endpoint names: "192.168.1.20" of "tcp://192.168.1.20:7139", "[fe80::1]" of an IPv6 one.
+QString hostOf(const QString& endpoint) {
+    const QString rest = endpoint.section(QStringLiteral("://"), -1);
+    if (rest.startsWith(u'[')) {
+        return rest.section(u']', 0, 0) + u']';
+    }
+    const qsizetype colon = rest.lastIndexOf(u':');
+    return colon > 0 ? rest.left(colon) : rest;
+}
+
 QString timeStamp() { return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH.mm.ss")); }
 
 QString stateText(lab_core::EngineState state) {
@@ -102,6 +116,12 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     if (!m_dependencies.conversion) {
         m_dependencies.conversion = convertLiveFrame;
     }
+    if (!m_dependencies.makeSender) {
+        m_dependencies.makeSender =
+            [](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
+            return std::make_unique<visual_debug::Client>(visual_debug::ClientOptions{.endpoint = endpoint});
+        };
+    }
     buildUi();
 
     m_converter = std::make_unique<LiveConverter>(
@@ -119,6 +139,9 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     m_engine = std::make_unique<lab_core::Engine>(m_dependencies.engineMode, std::move(hooks));
 
     chooseProcessor(m_processorCombo->currentIndex());
+    if (m_send->isChecked()) {
+        startSending(); // as last time; another computer's endpoint is asked about again
+    }
 
     // The window is the context: frames reach it on its own thread, and none after it is gone.
     CameraBackend* cameras = m_dependencies.cameras.get();
@@ -234,6 +257,17 @@ void LabWindow::buildUi() {
     processingRow->addWidget(m_chooseLabFolder);
     layout->addLayout(processingRow);
 
+    auto* sendRow = new QHBoxLayout;
+    m_send = new QCheckBox(tr("Send to viewer"), central);
+    m_send->setObjectName(QStringLiteral("sendCheck"));
+    m_send->setChecked(m_settings.sendToViewer());
+    sendRow->addWidget(m_send);
+    m_endpoint = new QLineEdit(m_settings.endpoint(), central);
+    m_endpoint->setObjectName(QStringLiteral("endpointEdit"));
+    m_endpoint->setPlaceholderText(QString::fromStdString(visual_debug::defaultEndpoint()));
+    sendRow->addWidget(m_endpoint, 1);
+    layout->addLayout(sendRow);
+
     // The canvas, with the placeholder over it in the same cell, beside the results.
     auto* splitter = new QSplitter(Qt::Horizontal, central);
     auto* canvasArea = new QWidget(splitter);
@@ -282,6 +316,8 @@ void LabWindow::buildUi() {
     connect(m_capture, &QPushButton::clicked, this, &LabWindow::capture);
     connect(m_openLabFolder, &QPushButton::clicked, this, &LabWindow::openLabFolder);
     connect(m_chooseLabFolder, &QPushButton::clicked, this, &LabWindow::chooseLabFolder);
+    connect(m_send, &QCheckBox::toggled, this, &LabWindow::toggleSend);
+    connect(m_endpoint, &QLineEdit::editingFinished, this, &LabWindow::endpointChanged);
     connect(m_closeTimer, &QTimer::timeout, this, [this] {
         if (m_dependencies.engineMode == lab_core::Engine::Mode::Immediate) {
             m_engine->pump();
@@ -721,6 +757,14 @@ void LabWindow::refreshStatus() {
         m_record->setChecked(false);
     }
     updateReplayControls(status);
+    if (status.sending) {
+        if (!m_sendingHost.isEmpty()) {
+            parts << tr("sending to %1").arg(m_sendingHost);
+        }
+        if (status.sending->last) {
+            parts << tr("viewer: %1").arg(qtString(visual_debug::toString(*status.sending->last)));
+        }
+    }
     if (status.busyFrame && status.busySince && at - *status.busySince >= kBusyShownAfter) {
         parts << tr("processing frame %1 for %2 s")
                      .arg(*status.busyFrame + 1)
@@ -978,6 +1022,63 @@ bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
         }
     }
     return QMainWindow::eventFilter(watched, event);
+}
+
+// --- Send to viewer
+// -----------------------------------------------------------------------------------------
+
+void LabWindow::toggleSend(bool on) {
+    m_settings.setSendToViewer(on);
+    if (on) {
+        startSending();
+    } else {
+        stopSending();
+    }
+}
+
+// Another computer gets frames that may show real passports, unencrypted: only once the user has said yes to
+// that endpoint, once per session. Refused, Send to viewer goes off again.
+void LabWindow::startSending() {
+    const QString endpoint = m_endpoint->text().trimmed();
+    const std::string utf8 = endpoint.toStdString();
+    const bool loopback = visual_debug::isLoopbackEndpoint(utf8);
+    if (!loopback && !m_confirmedEndpoints.contains(endpoint)) {
+        const QString question = tr("Frames may show real passports and travel unencrypted to %1. Send them?")
+                                     .arg(hostOf(endpoint));
+        const bool yes = m_dependencies.confirm ? m_dependencies.confirm(question)
+                                                : QMessageBox::question(this, tr("Send to Another Computer"),
+                                                                        question) == QMessageBox::Yes;
+        if (!yes) {
+            const QSignalBlocker blocker(m_send);
+            m_send->setChecked(false);
+            m_settings.setSendToViewer(false);
+            stopSending();
+            return;
+        }
+        m_confirmedEndpoints.insert(endpoint);
+    }
+    m_sendingHost = loopback ? QString() : hostOf(endpoint);
+    m_engine->setSender(
+        std::make_unique<lab_core::ResultSender>(m_dependencies.senderMode, m_dependencies.makeSender(utf8)));
+    refreshStatus();
+}
+
+void LabWindow::stopSending() {
+    m_sendingHost.clear();
+    m_engine->setSender(nullptr);
+    refreshStatus();
+}
+
+// A new endpoint gets a sender of its own, asked about as any other.
+void LabWindow::endpointChanged() {
+    const QString endpoint = m_endpoint->text().trimmed();
+    if (endpoint == m_settings.endpoint()) {
+        return;
+    }
+    m_settings.setEndpoint(endpoint);
+    if (m_send->isChecked()) {
+        startSending();
+    }
 }
 
 } // namespace document_lab

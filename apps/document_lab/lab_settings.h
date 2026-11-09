@@ -21,6 +21,10 @@ public:
     void setFormatFor(const QByteArray& cameraId, const QString& label);
     QString labFolder() const; // chosen by the user; empty for the default
     void setLabFolder(const QString& folder);
+    bool sendToViewer() const; // off unless turned on
+    void setSendToViewer(bool on);
+    QString endpoint() const; // visual_debug::defaultEndpoint() unless another was entered
+    void setEndpoint(const QString& endpoint);
 
 private:
     QSettings m_settings;

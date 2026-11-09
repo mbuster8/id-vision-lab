@@ -13,6 +13,7 @@
 #include <visual_debug/image_sender.h>
 
 #include <QMainWindow>
+#include <QSet>
 #include <QString>
 
 #include <chrono>
@@ -31,6 +32,7 @@ class QCloseEvent;
 class QComboBox;
 class QEvent;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QTimer;
@@ -137,6 +139,12 @@ private:
     void chooseLabFolder();
     void openLabFolder();
 
+    // Send to viewer.
+    void toggleSend(bool on);
+    void startSending();
+    void stopSending();
+    void endpointChanged();
+
     LabDependencies m_dependencies;
     LabSettings m_settings;
 
@@ -159,6 +167,10 @@ private:
     QPushButton* m_openLabFolder = nullptr;
     QPushButton* m_chooseLabFolder = nullptr;
     QTimer* m_closeTimer = nullptr;
+    QCheckBox* m_send = nullptr;
+    QLineEdit* m_endpoint = nullptr;
+    QString m_sendingHost;              // another computer's, while sending there; empty for this one
+    QSet<QString> m_confirmedEndpoints; // the user said yes to sending there, this session
     QComboBox* m_processorCombo = nullptr;
     QComboBox* m_showCombo = nullptr;
     QCheckBox* m_overlaysCheck = nullptr;

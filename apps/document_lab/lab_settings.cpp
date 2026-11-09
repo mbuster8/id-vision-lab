@@ -1,5 +1,7 @@
 #include "lab_settings.h"
 
+#include <visual_debug/endpoint.h>
+
 namespace document_lab {
 
 namespace {
@@ -10,6 +12,8 @@ const QString kOverlays = QStringLiteral("lab/overlays");
 const QString kCamera = QStringLiteral("lab/camera");
 const QString kFormats = QStringLiteral("lab/formats/");
 const QString kLabFolder = QStringLiteral("lab/folder");
+const QString kSend = QStringLiteral("lab/send");
+const QString kEndpoint = QStringLiteral("lab/endpoint");
 
 } // namespace
 
@@ -41,5 +45,15 @@ void LabSettings::setFormatFor(const QByteArray& cameraId, const QString& label)
 QString LabSettings::labFolder() const { return m_settings.value(kLabFolder).toString(); }
 
 void LabSettings::setLabFolder(const QString& folder) { m_settings.setValue(kLabFolder, folder); }
+
+bool LabSettings::sendToViewer() const { return m_settings.value(kSend, false).toBool(); }
+
+void LabSettings::setSendToViewer(bool on) { m_settings.setValue(kSend, on); }
+
+QString LabSettings::endpoint() const {
+    return m_settings.value(kEndpoint, QString::fromStdString(visual_debug::defaultEndpoint())).toString();
+}
+
+void LabSettings::setEndpoint(const QString& endpoint) { m_settings.setValue(kEndpoint, endpoint); }
 
 } // namespace document_lab
