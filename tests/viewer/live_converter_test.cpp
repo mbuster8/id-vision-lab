@@ -59,7 +59,7 @@ TEST(LiveConverter, ImmediateConvertsBeforeReturning) {
     EXPECT_EQ(results[0].job.channel, "camera");
     EXPECT_EQ(results[0].job.frameNumber, 7U);
     EXPECT_TRUE(results[0].job.frame.empty()); // released: only its size travels on
-    EXPECT_EQ(converter.newestSize(), cv::Size(3, 2));
+    EXPECT_EQ(converter.newestDrawing(), (LiveDrawing{cv::Rect(0, 0, 3, 2), cv::Size(3, 2)}));
 }
 
 TEST(LiveConverter, ThreadedResultArrivesOnTheUiThread) {
@@ -254,6 +254,51 @@ TEST(LiveConverter, ConvertsAtTheDrawnSize) {
 
     EXPECT_EQ(result.picture.size(), QSize(30, 20));
     EXPECT_EQ(result.imageSize, QSize(60, 40));
+}
+
+// Zoomed in, only the part of the frame in view is converted, and it looks as that part of the whole frame's
+// picture: under Auto, with the whole frame's range, not the part's own.
+TEST(LiveConverter, ConvertsOnlyTheArea) {
+    cv::Mat frame(40, 60, CV_16UC1);
+    cv::randu(frame, cv::Scalar(1000), cv::Scalar(2000));
+    frame.at<std::uint16_t>(0, 0) = 0; // outside the area, widening the whole frame's range
+    frame.at<std::uint16_t>(39, 59) = 65535;
+    const cv::Rect area(10, 5, 25, 20);
+    const LiveJob job{
+        .channel = "camera", .frameNumber = 1, .frame = frame, .area = area, .drawnSize = area.size()};
+
+    const LiveResult result = convertLiveFrame(job);
+
+    const cv::Mat whole = viewer_core::toDisplayImage(frame);
+    EXPECT_EQ(result.picture, qt_common::toQImage(whole(area).clone()));
+    EXPECT_EQ(result.imageSize, QSize(60, 40));
+    EXPECT_EQ(result.job.area, area);
+}
+
+TEST(LiveConverter, ConvertsTheAreaAtItsDrawnSize) {
+    const LiveJob job{.channel = "camera",
+                      .frameNumber = 1,
+                      .frame = cv::Mat(40, 60, CV_16UC1, cv::Scalar(1000)),
+                      .area = cv::Rect(10, 10, 40, 20),
+                      .drawnSize = cv::Size(20, 10)};
+
+    EXPECT_EQ(convertLiveFrame(job).picture.size(), QSize(20, 10));
+}
+
+// What the view will show next, so a zoom or pan within it needs no new conversion.
+TEST(LiveConverter, KnowsTheNewestJobsDrawing) {
+    std::vector<LiveResult> results;
+    LiveConverter converter(
+        LiveConverter::Mode::Immediate,
+        [&results](LiveResult result) { results.push_back(std::move(result)); }, resultOf);
+    EXPECT_FALSE(converter.newestDrawing().has_value());
+
+    LiveJob job = jobFor("camera", 1);
+    job.area = cv::Rect(1, 0, 2, 2);
+    job.drawnSize = cv::Size(2, 2);
+    converter.submit(job);
+
+    EXPECT_EQ(converter.newestDrawing(), (LiveDrawing{cv::Rect(1, 0, 2, 2), cv::Size(2, 2)}));
 }
 
 } // namespace

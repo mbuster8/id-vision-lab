@@ -391,7 +391,8 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
     connect(m_infoBar, &ImageInfoBar::renameRequested, this, &MainWindow::renameImage);
     connect(m_imageView, &ImageView::pixelHovered, this, &MainWindow::showPixel);
     connect(m_imageView, &ImageView::hoverLeft, m_pixelLabel, &QLabel::clear);
-    connect(m_imageView, &ImageView::scaleChanged, this, &MainWindow::redrawLiveFrameForScale);
+    connect(m_imageView, &ImageView::scaleChanged, this, &MainWindow::redrawLiveFrameForView);
+    connect(m_imageView, &ImageView::panned, this, &MainWindow::redrawLiveFrameForView);
     connect(m_imageView, &ImageView::regionChanged, this, &MainWindow::showRegionStatistics);
     updateEditActions();
 
@@ -833,8 +834,8 @@ void MainWindow::showImage(viewer_core::ImageId id) {
 }
 
 void MainWindow::showPicture(const QImage& picture, ImageView::KeepView keep, QSize imageSize,
-                             const viewer_core::ImageTags& tags) {
-    m_imageView->setImage(picture, keep, imageSize, tags.overlays);
+                             const viewer_core::ImageTags& tags, QRect pictureArea) {
+    m_imageView->setImage(picture, keep, imageSize, tags.overlays, pictureArea);
     m_infoBar->setOverlayCount(static_cast<int>(tags.overlayList().size()));
 }
 
@@ -1107,8 +1108,8 @@ void MainWindow::showLiveChannel(const std::string& name) {
 void MainWindow::viewChanged() { ++m_viewCounter; }
 
 // Converted at the size it will be drawn when that is smaller than the frame: a 4K frame in a window costs no
-// more than the window's pixels. At 1:1 or closer, the whole frame. The job shares the frame's pixels and
-// copies the rest, so the converter's thread reads nothing of the window's.
+// more than the window's pixels. Zoomed in, only the part in view and a margin. The job shares the frame's
+// pixels and copies the rest, so the converter's thread reads nothing of the window's.
 void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
@@ -1118,6 +1119,7 @@ void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
     // Frames may change their channel count, or their tags.
     m_infoBar->displayControl()->setFrameKind(frame.channels() == 1, channel->shownTags.isHdr());
     const std::uint64_t frameNumber = channel->shownNumber;
+    const LiveDrawing drawing = liveDrawing(frame.size(), keep);
     std::optional<LiveJob> replaced =
         m_converter->submit({.viewCounter = m_viewCounter,
                              .channel = channel->name,
@@ -1125,7 +1127,8 @@ void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
                              .frame = frame,
                              .settings = settingsFor(channel->name, channel->shownTags),
                              .tags = channel->shownTags,
-                             .drawnSize = liveDrawnSize(frame.size(), keep),
+                             .area = drawing.area,
+                             .drawnSize = drawing.size,
                              .showClipping = m_showClipping,
                              .histogram = m_ui->actionShowHistogram->isChecked(),
                              .keep = keep});
@@ -1149,7 +1152,9 @@ void MainWindow::applyLiveResult(LiveResult result) {
     }
     ++m_liveResultCounts.applied;
     const ImageView::KeepView keep = result.job.keep;
-    showPicture(result.picture, keep, result.imageSize, result.job.tags);
+    const cv::Rect& area = result.job.area;
+    showPicture(result.picture, keep, result.imageSize, result.job.tags,
+                QRect(area.x, area.y, area.width, area.height));
     // Off since the job was made: a histogram on its way stays hidden.
     if (result.histogram && m_ui->actionShowHistogram->isChecked()) {
         m_histogramStrip->setHistogram(*result.histogram, result.markers);
@@ -1171,37 +1176,68 @@ void MainWindow::applyLiveResult(LiveResult result) {
     // The view fits only now: if the fitted view draws the frame at another size than the job assumed (the
     // window was resized meanwhile), draw it again at that size.
     if (keep == ImageView::KeepView::No) {
-        const cv::Size fitted = liveDrawnSize(cv::Size(result.imageSize.width(), result.imageSize.height()),
-                                              ImageView::KeepView::IfSameSize);
-        if (QSize(fitted.width, fitted.height) != result.picture.size()) {
+        const LiveDrawing fitted = liveDrawing(cv::Size(result.imageSize.width(), result.imageSize.height()),
+                                               ImageView::KeepView::IfSameSize);
+        if (fitted != LiveDrawing{area, cv::Size(result.picture.width(), result.picture.height())}) {
             submitLiveFrame(ImageView::KeepView::IfSameSize);
         }
     }
 }
 
-// The size a live frame is converted at for a draw with `keep`: the drawn size when that is smaller than the
-// frame, else the frame's own.
-cv::Size MainWindow::liveDrawnSize(cv::Size frameSize, ImageView::KeepView keep) const {
-    const double scale = m_imageView->deviceScaleFor(QSize(frameSize.width, frameSize.height), keep);
+namespace {
+
+// The size a part of a frame is converted at when drawn at `scale` device pixels per frame pixel: the drawn
+// size when that is smaller than the part, else the part's own.
+cv::Size drawnSizeOf(cv::Size part, double scale) {
     if (scale >= 1.0) {
-        return frameSize;
+        return part;
     }
-    return viewer_core::sizeWithin(frameSize,
-                                   cv::Size(static_cast<int>(std::ceil(frameSize.width * scale)),
-                                            static_cast<int>(std::ceil(frameSize.height * scale))));
+    return viewer_core::sizeWithin(part, cv::Size(static_cast<int>(std::ceil(part.width * scale)),
+                                                  static_cast<int>(std::ceil(part.height * scale))));
 }
 
-// After a zoom, a fit or a resize: a frame converted for the old scale, a frozen one above all, would stay
-// blurred or coarse. Only when the size it is converted at changes, though: past 1:1 that is the whole frame
-// at every step, and converting it again for each step of a trackpad zoom would only cost. Compared with the
-// newest job's size, not the picture on screen, which a job still converting is about to replace.
-void MainWindow::redrawLiveFrameForScale() {
+} // namespace
+
+// Zoomed in, the part of the frame in view and a quarter of its width and height on each side, so a small pan
+// shows converted pixels at once; the whole frame when that part would be most of it anyway, where cutting
+// saves little and every pan would cost a conversion.
+LiveDrawing MainWindow::liveDrawing(cv::Size frameSize, ImageView::KeepView keep) const {
+    constexpr double kMostOfTheFrame = 0.75;
+    const QSize imageSize(frameSize.width, frameSize.height);
+    const cv::Rect whole(0, 0, frameSize.width, frameSize.height);
+    cv::Rect area = whole;
+    if (const QRect visible = m_imageView->visibleAreaFor(imageSize, keep); !visible.isEmpty()) {
+        const int marginX = visible.width() / 4;
+        const int marginY = visible.height() / 4;
+        const cv::Rect cut = cv::Rect(visible.x() - marginX, visible.y() - marginY,
+                                      visible.width() + 2 * marginX, visible.height() + 2 * marginY) &
+                             whole;
+        if (!cut.empty() &&
+            static_cast<double>(cut.area()) < kMostOfTheFrame * static_cast<double>(whole.area())) {
+            area = cut;
+        }
+    }
+    return {area, drawnSizeOf(area.size(), m_imageView->deviceScaleFor(imageSize, keep))};
+}
+
+// After a zoom, a fit, a resize or a pan: a frame converted for the old view, a frozen one above all, would
+// stay blurred, coarse or cut short. Only when the newest job's picture no longer covers what is in view at
+// the size it is drawn, though: past 1:1 its size stays the area's at every step, and converting it again for
+// each step of a trackpad zoom, or each move of a pan within the margin, would only cost. Compared with the
+// newest job, not the picture on screen, which a job still converting is about to replace.
+void MainWindow::redrawLiveFrameForView() {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
         return;
     }
-    const cv::Size drawn = liveDrawnSize(channel->shown.size(), ImageView::KeepView::IfSameSize);
-    if (m_converter->newestSize() != std::optional<cv::Size>(drawn)) {
+    const QSize frameSize(channel->shown.cols, channel->shown.rows);
+    const QRect visible = m_imageView->visibleAreaFor(frameSize, ImageView::KeepView::IfSameSize);
+    const double scale = m_imageView->deviceScaleFor(frameSize, ImageView::KeepView::IfSameSize);
+    const std::optional<LiveDrawing> newest = m_converter->newestDrawing();
+    const bool covered =
+        newest &&
+        QRect(newest->area.x, newest->area.y, newest->area.width, newest->area.height).contains(visible);
+    if (!covered || newest->size != drawnSizeOf(newest->area.size(), scale)) {
         submitLiveFrame(ImageView::KeepView::IfSameSize);
     }
 }

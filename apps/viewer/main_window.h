@@ -144,9 +144,10 @@ private:
     // display settings of the entry's name. Only the view's shows clipping.
     QImage shownPicture(const viewer_core::ReceivedImage& entry, bool showClipping = false) const;
     // Every picture of a history image or a live frame reaches the view here, with its tags' overlays, so
-    // the view and the info strip's overlay count always describe the picture in view.
+    // the view and the info strip's overlay count always describe the picture in view. A live frame's picture
+    // may be of a part of it only (pictureArea, in frame pixels; empty for the whole).
     void showPicture(const QImage& picture, ImageView::KeepView keep, QSize imageSize,
-                     const viewer_core::ImageTags& tags);
+                     const viewer_core::ImageTags& tags, QRect pictureArea = {});
     void setShowClipping(bool show);
     // The histogram strip for the still in view, only while Show Histogram is on; nothing in view hides it. A
     // live channel's comes with each converted frame instead.
@@ -168,14 +169,15 @@ private:
     // Every change of what the view shows goes through here first, so a live result made for what was in view
     // before is recognised as stale and dropped.
     void viewChanged();
-    // The shown channel's frame to the converter, at the size it will be drawn; a frame whose job a newer
-    // frame's replaced before any of its pictures was drawn counts as skipped.
+    // The shown channel's frame to the converter: the part of it in view, at the size it will be drawn; a
+    // frame whose job a newer frame's replaced before any of its pictures was drawn counts as skipped.
     void submitLiveFrame(ImageView::KeepView keep);
     // A converted frame onto the view and the histogram strip, counted as drawn once per frame; dropped
     // unless its channel is still in view and nothing else took the view meanwhile.
     void applyLiveResult(LiveResult result);
-    cv::Size liveDrawnSize(cv::Size frameSize, ImageView::KeepView keep) const;
-    void redrawLiveFrameForScale();
+    // What to convert of a frame this size for a draw with `keep`: the area and the size to make it at.
+    LiveDrawing liveDrawing(cv::Size frameSize, ImageView::KeepView keep) const;
+    void redrawLiveFrameForView();            // after a zoom, a fit, a resize or a pan
     void showLiveText(Clock::time_point now); // the shown channel's info strip
     void updateLiveRow(const viewer_core::LiveChannel& channel, Clock::time_point now);
     void closeLiveChannel(const std::string& name); // the close button

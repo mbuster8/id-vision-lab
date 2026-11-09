@@ -220,6 +220,41 @@ TEST_F(ImageViewTest, ScaleChangesOnZoomFitAndResizeOnly) {
     EXPECT_EQ(changed.size(), 3);
 }
 
+// A pan moves what is in view without changing the scale: the window converts a zoomed-in live frame's area
+// in view, so it is told. Hovering and Shift + drag do not pan.
+TEST_F(ImageViewTest, PanningIsReported) {
+    sendWheelEvent(m_view, {100, 100}, 4 * 120);
+    QSignalSpy panned(&m_view, &ImageView::panned);
+
+    sendMouseEvent(m_view, QEvent::MouseMove, {50, 50}, Qt::NoButton);
+    drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
+    EXPECT_EQ(panned.size(), 0);
+
+    drag(m_view, {100, 100}, {150, 120});
+    EXPECT_EQ(panned.size(), 1);
+}
+
+// The image pixels a picture set with `keep` will have in view, so the window can convert only those.
+TEST_F(ImageViewTest, VisibleAreaForTellsTheAreaToCome) {
+    EXPECT_EQ(m_view.visibleAreaFor(QSize(100, 100), ImageView::KeepView::IfSameSize), QRect(0, 0, 100, 100));
+
+    sendWheelEvent(m_view, {100, 100}, 4 * 120);
+
+    const QRect zoomed = m_view.visibleAreaFor(QSize(100, 100), ImageView::KeepView::IfSameSize);
+    EXPECT_EQ(zoomed, m_view.visibleArea());
+    EXPECT_LT(zoomed.width(), 100);
+    EXPECT_TRUE(QRect(0, 0, 100, 100).contains(zoomed));
+    // Fitted: a picture set without keeping the view, or for another size.
+    EXPECT_EQ(m_view.visibleAreaFor(QSize(100, 100), ImageView::KeepView::No), QRect(0, 0, 100, 100));
+    EXPECT_EQ(m_view.visibleAreaFor(QSize(400, 300), ImageView::KeepView::IfSameSize), QRect(0, 0, 400, 300));
+}
+
+TEST(ImageViewWithoutSize, VisibleAreaForIsTheWholeImageBeforeTheViewIsShown) {
+    ImageView view;
+    EXPECT_EQ(view.visibleAreaFor(QSize(4000, 3000), ImageView::KeepView::IfSameSize),
+              QRect(0, 0, 4000, 3000));
+}
+
 // The view's pixel at (x, y) in widget coordinates.
 QColor pixelOf(ImageView& view, int x, int y) {
     const QImage grabbed = view.grab().toImage();
@@ -257,6 +292,36 @@ TEST_F(ImageViewTest, BackgroundFollowsPaletteChange) {
     m_view.update();
 
     EXPECT_EQ(pixelOf(m_view, 100, 10).rgb(), QColor(Qt::green).rgb());
+}
+
+// A zoomed-in live frame's picture covers only the area converted: its picture is stretched over that area of
+// the image, each side by its own factor, and the rest shows the background until the next picture.
+TEST_F(ImageViewTest, APictureOfPartOfTheImageIsDrawnOverThatPart) {
+    QImage picture(2, 2, QImage::Format_RGBA8888);
+    picture.setPixelColor(0, 0, Qt::red);
+    picture.setPixelColor(1, 0, Qt::blue);
+    picture.setPixelColor(0, 1, Qt::green);
+    picture.setPixelColor(1, 1, Qt::yellow);
+
+    // The top half of the 100×100 image, 100×50 image pixels: 50 per picture pixel across, 25 down.
+    m_view.setImage(picture, ImageView::KeepView::No, QSize(100, 100), {}, QRect(0, 0, 100, 50));
+
+    EXPECT_EQ(m_view.pictureArea(), QRect(0, 0, 100, 50));
+    EXPECT_EQ(pixelOf(m_view, 50, 30).rgb(), QColor(Qt::red).rgb());     // image (25, 15)
+    EXPECT_EQ(pixelOf(m_view, 150, 30).rgb(), QColor(Qt::blue).rgb());   // image (75, 15)
+    EXPECT_EQ(pixelOf(m_view, 50, 70).rgb(), QColor(Qt::green).rgb());   // image (25, 35)
+    EXPECT_EQ(pixelOf(m_view, 150, 70).rgb(), QColor(Qt::yellow).rgb()); // image (75, 35)
+    EXPECT_EQ(pixelOf(m_view, 100, 150).rgb(), m_view.palette().color(QPalette::Window).rgb());
+}
+
+TEST_F(ImageViewTest, APictureSetWithoutAnAreaCoversTheWholeImage) {
+    m_view.setImage(filledImage(50, 50), ImageView::KeepView::IfSameSize, QSize(100, 100), {},
+                    QRect(50, 50, 50, 50));
+
+    m_view.setImage(filledImage(100, 100), ImageView::KeepView::IfSameSize);
+
+    EXPECT_EQ(m_view.pictureArea(), QRect(0, 0, 100, 100));
+    EXPECT_EQ(pixelOf(m_view, 50, 50).rgb(), QColor(Qt::gray).rgb());
 }
 
 // --- Overlays (a 100×100 black image fills the 200×200 view at scale 2) ----------------------------------

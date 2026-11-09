@@ -158,9 +158,16 @@ image pixel for the coming draw, and below 1 `toDisplayImage` maps the values to
 that to the drawn size, and only then makes it RGBA or colour-maps it, so a NaN stays one dark pixel among its
 neighbours. The shrink is an exact whole-number `INTER_AREA` step, with a factor of its own across and down
 (from a crop to a multiple of each), followed by `INTER_LINEAR` for the rest, as `INTER_AREA` at a fractional
-factor is far slower. `ImageView` draws the picture into the image's rectangle (`setImage` takes the image's
-size beside the picture) and emits `scaleChanged` after a zoom, fit or resize, on which the window converts
-the frame again if the size it would convert at has changed. At 1:1 or closer the whole frame is converted. The readout, Copy Image, Save As and Snapshot use the original frame. A
+factor is far slower. Zoomed in, only the part of the frame in view is converted, with a quarter of the
+visible width and height on each side (`MainWindow::liveDrawing`), or the whole frame when that part would be
+three quarters of it or more. Under Auto, and HDR shown as Auto, the part is given the whole frame's range
+(`DisplayOptions::autoRange`), so it looks as it does fitted; every other setting reads only the pixels it
+converts. `ImageView` draws the picture into its area of the image (`setImage` takes the image's size and
+the picture's area beside the picture) and leaves the rest of the image to the background. It emits
+`scaleChanged` after a zoom, fit or resize and `panned` after a drag, on which the window converts the frame
+again unless the newest job's area still covers what is in view at the size it would convert at now. Past
+1:1 that size is the area's own, so zooming further converts nothing. The readout, Copy Image, Save As and
+the histogram use the original frame; Snapshot cuts what is in view from it. A
 500 ms timer, running only while channels exist, does the rest: it marks channels idle, redraws each row's
 picture (at the row's size, and only for a newer frame) and its rate, and refreshes the info strip.
 `LiveChannels` takes every time as an argument; `MainWindow` and the sink share one injectable
@@ -242,9 +249,10 @@ it never accepts images before its UI can take them. `MainWindow` declares its `
 
 **The live converter.** The UI thread takes live frames and applies pictures; it does not convert them.
 Every draw of the channel in view (a new frame, a settings change or histogram drag, Show Clipping, Show
-Histogram turned on, a zoom or resize that changes the drawn size, unfreezing, showing the channel) makes a
-`LiveJob` and submits it to the window's `LiveConverter`. A job copies what the conversion needs (settings,
-tags, drawn size, Show Clipping, whether the histogram is wanted, how the view keeps its zoom) and shares the
+Histogram turned on, a zoom, resize or pan that changes the area or size to convert, unfreezing, showing the
+channel) makes a `LiveJob` and submits it to the window's `LiveConverter`. A job copies what the conversion
+needs (settings, tags, area, drawn size, Show Clipping, whether the histogram is wanted, how the view keeps its
+zoom) and shares the
 frame's pixels, which nothing changes in place, so the converter's thread reads nothing of the window's. One
 job waits at a time: a newer one replaces it, and a fit the replaced job asked for carries into its
 replacement. Results are posted back with `QMetaObject::invokeMethod` to the converter, which lives on the UI
