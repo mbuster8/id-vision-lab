@@ -50,6 +50,29 @@ id_vision_lab_add_test_executable(viewer_core_tests
         opencv_imgproc
         GTest::gtest_main)
 
+# frame_io's readers, which write and read clips of their own; on Windows with the UTF-8 code page, as the
+# programs that use them run. FFmpeg's libraries are optional: the tests of its reader, and the clips they write
+# through it, only when CMake found them (the target is GLOBAL, made in libs/frame_io).
+set(frame_io_ffmpeg_tests "")
+set(frame_io_ffmpeg_libraries "")
+if(TARGET PkgConfig::FFMPEG)
+    set(frame_io_ffmpeg_tests frame_io/ffmpeg_clip.cpp frame_io/ffmpeg_clip.h frame_io/ffmpeg_video_test.cpp)
+    set(frame_io_ffmpeg_libraries PkgConfig::FFMPEG)
+endif()
+id_vision_lab_add_test_executable(frame_io_tests
+    SOURCES
+        frame_io/read_ahead_test.cpp
+        frame_io/video_file_test.cpp
+        ${frame_io_ffmpeg_tests}
+    LIBRARIES
+        frame_io::frame_io
+        ${frame_io_ffmpeg_libraries}
+        opencv_videoio
+        opencv_imgcodecs
+        opencv_imgproc
+        GTest::gtest_main)
+id_vision_lab_use_utf8_code_page(frame_io_tests)
+
 if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(pipeline_tests
         SOURCES
@@ -60,26 +83,13 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             GTest::gtest_main)
     # The examples' file reading, tested as the examples run: with the UTF-8 code page on Windows.
     id_vision_lab_use_utf8_code_page(pipeline_tests)
-    # video_file_test.cpp writes and reads clips, so these tests need OpenCV's videoio, as live_sender does.
-    find_package(OpenCV REQUIRED COMPONENTS videoio)
-    # FFmpeg's libraries are optional; the tests write their clips with them too. Listed before
-    # visual_debug, which live_sender_ffmpeg needs, so it is linked once.
-    set(live_sender_ffmpeg_tests "")
-    set(live_sender_ffmpeg_libraries "")
-    if(TARGET live_sender_ffmpeg)
-        set(live_sender_ffmpeg_tests examples/ffmpeg_video_test.cpp)
-        set(live_sender_ffmpeg_libraries live_sender_ffmpeg PkgConfig::FFMPEG)
-    endif()
     id_vision_lab_add_test_executable(live_sender_tests
         SOURCES
             examples/live_sender_test.cpp
-            examples/read_ahead_test.cpp
-            examples/video_file_test.cpp
-            ${live_sender_ffmpeg_tests}
+            examples/real_time_frames_test.cpp
         LIBRARIES
             live_sender_lib
-            live_sender_video
-            ${live_sender_ffmpeg_libraries}
+            frame_io::frame_io
             opencv_videoio
             opencv_imgproc
             opencv_imgcodecs

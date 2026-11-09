@@ -21,12 +21,13 @@ include(cmake/sanitizers.cmake)
 include(cmake/coverage.cmake)
 include(cmake/utf8_code_page.cmake)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
 find_package(cppzmq REQUIRED)
 find_package(nlohmann_json 3.11 REQUIRED)
 
 add_subdirectory(libs/visual_debug)
 add_subdirectory(libs/viewer_core)
+add_subdirectory(libs/frame_io)
 
 if(ID_VISION_LAB_BUILD_QT_APPS)
     add_subdirectory(apps)

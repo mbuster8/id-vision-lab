@@ -1,4 +1,4 @@
-#include "ffmpeg_video.h"
+#include "frame_io/ffmpeg_video.h"
 
 #include <opencv2/core.hpp>
 
@@ -22,7 +22,7 @@ extern "C" {
 #include <utility>
 #include <vector>
 
-namespace live_sender {
+namespace frame_io {
 namespace {
 
 using visual_debug::Primaries;
@@ -528,4 +528,4 @@ std::optional<VideoFrame> FfmpegVideo::read() {
     return m_impl->toVideoFrame(frame);
 }
 
-} // namespace live_sender
+} // namespace frame_io

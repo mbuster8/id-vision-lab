@@ -1,8 +1,8 @@
-#include "video_file.h"
+#include "frame_io/video_file.h"
 
 #include <opencv2/core/utils/logger.hpp>
 
-namespace live_sender {
+namespace frame_io {
 
 bool openVideoFile(cv::VideoCapture& capture, const std::string& path) {
 #if defined(__APPLE__)
@@ -19,4 +19,4 @@ bool openVideoFile(cv::VideoCapture& capture, const std::string& path) {
     return capture.open(path);
 }
 
-} // namespace live_sender
+} // namespace frame_io

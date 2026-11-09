@@ -1,5 +1,5 @@
+#include "frame_io/video_file.h"
 #include "live_sender.h"
-#include "video_file.h"
 
 #include "test_support.h"
 
@@ -697,7 +697,7 @@ TEST(LiveSenderMeasurement, DISABLED_OutlineOnAClip) {
     const std::string& clip = *clipVariable;
     const char* debug = debugVariable ? debugVariable->c_str() : nullptr;
     cv::VideoCapture capture;
-    ASSERT_TRUE(live_sender::openVideoFile(capture, clip)) << clip;
+    ASSERT_TRUE(frame_io::openVideoFile(capture, clip)) << clip;
 
     std::vector<cv::Mat> tiles; // every 15th frame, 320 pixels wide, for one contact sheet
     int frames = 0;

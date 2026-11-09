@@ -4,7 +4,7 @@
 
 #include <string>
 
-namespace live_sender {
+namespace frame_io {
 
 // Opens a video file for reading. On macOS it tries OpenCV's AVFoundation backend first, which decodes on the
 // Mac's media engine and keeps the colours of HDR (HLG) video close to QuickTime's: an iPhone's 4K HEVC
@@ -13,4 +13,4 @@ namespace live_sender {
 // nothing opens it.
 bool openVideoFile(cv::VideoCapture& capture, const std::string& path);
 
-} // namespace live_sender
+} // namespace frame_io

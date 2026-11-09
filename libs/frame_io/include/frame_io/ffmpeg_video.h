@@ -9,7 +9,7 @@
 #include <optional>
 #include <string>
 
-namespace live_sender {
+namespace frame_io {
 
 struct VideoFrame {
     cv::Mat image;                 // CV_16UC3 BGR on the 0–65535 scale, upright
@@ -53,4 +53,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace live_sender
+} // namespace frame_io

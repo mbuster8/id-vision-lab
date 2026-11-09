@@ -19,11 +19,11 @@
 // default). Exit code: 0 when every frame sent was delivered, 1 when any was not, 2 for bad arguments or an
 // unreadable source.
 
+#include "frame_io/read_ahead.h"
+#include "frame_io/video_file.h"
 #include "live_sender.h"
-#include "read_ahead.h"
-#include "video_file.h"
-#if defined(LIVE_SENDER_HAS_FFMPEG)
-#include "ffmpeg_video.h"
+#if defined(FRAME_IO_HAS_FFMPEG)
+#include "frame_io/ffmpeg_video.h"
 #endif
 
 #include "visual_debug/client.h"
@@ -146,7 +146,7 @@ bool open(cv::VideoCapture& capture, const live_sender::Arguments& arguments,
             return capture.open(camera->index);
         }
         const auto& file = std::get<live_sender::FileSource>(arguments.source);
-        if (!live_sender::openVideoFile(capture, file.path)) {
+        if (!frame_io::openVideoFile(capture, file.path)) {
             return false;
         }
         interval = intervalOf(capture.get(cv::CAP_PROP_FPS));
@@ -175,7 +175,7 @@ bool waitUntil(Clock::time_point due) {
     return !stopRequested;
 }
 
-#if defined(LIVE_SENDER_HAS_FFMPEG)
+#if defined(FRAME_IO_HAS_FFMPEG)
 const char* nameOf(visual_debug::Transfer transfer) {
     switch (transfer) {
     case visual_debug::Transfer::Hlg:
@@ -194,14 +194,14 @@ const char* nameOf(visual_debug::Primaries primaries) {
 
 // Opens a video for --hdr and says what it is, for example "clip.MOV: 3840x2160, 10-bit, HLG, BT.2020,
 // VideoToolbox". Nothing if it does not open, also said.
-std::unique_ptr<live_sender::FfmpegVideo> openHdrVideo(const std::string& path) {
+std::unique_ptr<frame_io::FfmpegVideo> openHdrVideo(const std::string& path) {
     std::string error;
-    std::unique_ptr<live_sender::FfmpegVideo> video = live_sender::FfmpegVideo::open(path, true, error);
+    std::unique_ptr<frame_io::FfmpegVideo> video = frame_io::FfmpegVideo::open(path, true, error);
     if (!video) {
         std::cerr << "cannot open " << path << ": " << error << '\n';
         return nullptr;
     }
-    const live_sender::VideoInfo& info = video->info();
+    const frame_io::VideoInfo& info = video->info();
     std::cout << live_sender::fileNameOf(path) << ": " << info.size.width << 'x' << info.size.height << ", "
               << info.bitDepth << "-bit, " << nameOf(info.transfer) << ", " << nameOf(info.primaries) << ", "
               << info.decoder << '\n';
@@ -228,7 +228,7 @@ int main(int argc, char* argv[]) {
     if (arguments->listCameras) {
         return listCameras();
     }
-#if !defined(LIVE_SENDER_HAS_FFMPEG)
+#if !defined(FRAME_IO_HAS_FFMPEG)
     if (arguments->hdr) {
         std::cerr << "live_sender was built without FFmpeg, so --hdr is not available\n";
         return kExitUsageError;
@@ -236,14 +236,14 @@ int main(int argc, char* argv[]) {
 #endif
 
     cv::VideoCapture capture;
-#if defined(LIVE_SENDER_HAS_FFMPEG)
-    std::unique_ptr<live_sender::FfmpegVideo> video; // --hdr's
+#if defined(FRAME_IO_HAS_FFMPEG)
+    std::unique_ptr<frame_io::FfmpegVideo> video; // --hdr's
 #endif
     std::optional<Clock::duration> interval;
     std::function<std::optional<cv::Mat>()> next;
     std::function<std::optional<TimedFrame>()> readTimed; // a file's
     std::optional<live_sender::FramePacer> pacer;         // the pattern's
-    std::optional<live_sender::ReadAhead<TimedFrame>>
+    std::optional<frame_io::ReadAhead<TimedFrame>>
         ahead; // a file's, after `capture` and `video`: it reads them
     std::optional<live_sender::RealTimeFrames> realTime; // a file's, played from `ahead`
     visual_debug::ImageDescription description;
@@ -256,17 +256,17 @@ int main(int argc, char* argv[]) {
             return live_sender::patternFrame(index++, size);
         };
     } else if (arguments->hdr) {
-#if defined(LIVE_SENDER_HAS_FFMPEG)
+#if defined(FRAME_IO_HAS_FFMPEG)
         video = openHdrVideo(std::get<live_sender::FileSource>(arguments->source).path);
         if (!video) {
             return kExitUsageError;
         }
-        const live_sender::VideoInfo& info = video->info();
+        const frame_io::VideoInfo& info = video->info();
         interval = intervalOf(info.fps);
         description = {.valueRange = info.valueRange, .transfer = info.transfer, .primaries = info.primaries};
         described = std::string(" (") + nameOf(info.transfer) + ", " + nameOf(info.primaries) + ")";
         readTimed = [&video]() -> std::optional<TimedFrame> {
-            std::optional<live_sender::VideoFrame> frame = video->read();
+            std::optional<frame_io::VideoFrame> frame = video->read();
             if (!frame) {
                 return std::nullopt;
             }

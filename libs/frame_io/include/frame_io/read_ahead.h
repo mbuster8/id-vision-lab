@@ -10,7 +10,7 @@
 #include <thread>
 #include <utility>
 
-namespace live_sender {
+namespace frame_io {
 
 // Runs `read` on a thread of its own, up to `depth` items ahead of take(), so decoding the next frames
 // overlaps sending this one. take() blocks until an item is ready, and returns nothing once `read` has (or
@@ -94,4 +94,4 @@ private:
     std::thread m_thread; // last, so it starts after everything it uses
 };
 
-} // namespace live_sender
+} // namespace frame_io

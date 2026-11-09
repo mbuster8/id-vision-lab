@@ -1,4 +1,4 @@
-#include "video_file.h"
+#include "frame_io/video_file.h"
 
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
@@ -64,7 +64,7 @@ TEST(VideoFile, OpensAClipAndReadsEveryFrame) {
     ASSERT_TRUE(writeClip(path, cv::CAP_OPENCV_MJPEG));
     cv::VideoCapture capture;
 
-    ASSERT_TRUE(live_sender::openVideoFile(capture, path));
+    ASSERT_TRUE(frame_io::openVideoFile(capture, path));
 
     EXPECT_EQ(framesIn(capture), 16);
 }
@@ -77,7 +77,7 @@ TEST(VideoFile, PrefersAVFoundationOnMacOS) {
     ASSERT_TRUE(writeClip(path, cv::CAP_OPENCV_MJPEG));
     cv::VideoCapture capture;
 
-    ASSERT_TRUE(live_sender::openVideoFile(capture, path));
+    ASSERT_TRUE(frame_io::openVideoFile(capture, path));
 
     EXPECT_EQ(capture.getBackendName(), "AVFOUNDATION");
 }
@@ -89,7 +89,7 @@ TEST(VideoFile, FallsBackWhenAVFoundationCannotRead) {
     ASSERT_TRUE(writeClip(path, cv::CAP_FFMPEG));
     cv::VideoCapture capture;
 
-    ASSERT_TRUE(live_sender::openVideoFile(capture, path));
+    ASSERT_TRUE(frame_io::openVideoFile(capture, path));
 
     EXPECT_EQ(capture.getBackendName(), "FFMPEG");
     EXPECT_EQ(framesIn(capture), 16);
@@ -100,7 +100,7 @@ TEST(VideoFile, ReportsAFileNothingOpens) {
     const ScratchFolder folder;
     cv::VideoCapture capture;
 
-    EXPECT_FALSE(live_sender::openVideoFile(capture, folder.file("missing.mov")));
+    EXPECT_FALSE(frame_io::openVideoFile(capture, folder.file("missing.mov")));
 }
 
 } // namespace
