@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QFontMetrics>
 #include <QImage>
 #include <QMouseEvent>
 #include <QPalette>
@@ -454,6 +455,10 @@ TEST_F(ImageViewTest, FarAwayAndHugeOverlaysPaint) {
     for (int notch = 0; notch < 40; ++notch) {
         sendWheelEvent(m_view, {100, 100}, 120);
     }
+    // The first text a process lays out loads the fonts: on a Windows runner the first such test of a run
+    // reads all of %WINDIR%\Fonts from a cold disk, seconds that are not painting. So the fonts load before
+    // the clock starts; the labels themselves are still laid out in the timed paint.
+    QFontMetrics(m_view.font()).horizontalAdvance(QStringLiteral("far"));
 
     QElapsedTimer timer;
     timer.start();

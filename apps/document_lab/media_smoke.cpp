@@ -30,9 +30,11 @@ bool check(bool passed, const std::string& what) {
     return passed;
 }
 
-// A short MJPG clip: OpenCV writes and reads it with its own codec, on every platform.
+// A short MJPG clip from OpenCV's own writer, which every build has, as frame_io's video_file tests write
+// theirs. (Written through the default backend instead, the macOS CI runner's frame_io read it short.)
 bool writeClip(const std::string& path) {
-    cv::VideoWriter writer(path, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 25.0, cv::Size(64, 48));
+    cv::VideoWriter writer(path, cv::CAP_OPENCV_MJPEG, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 25.0,
+                           cv::Size(64, 48));
     if (!writer.isOpened()) {
         return false;
     }
@@ -50,6 +52,13 @@ int framesIn(cv::VideoCapture& capture) {
     }
     return count;
 }
+
+// " (15 of 16)", so a failure says how far it got.
+std::string countOf(int frames) {
+    return " (" + std::to_string(frames) + " of " + std::to_string(kFrames) + ")";
+}
+
+std::string backendOf(const cv::VideoCapture& capture) { return " through " + capture.getBackendName(); }
 
 } // namespace
 
@@ -71,13 +80,18 @@ int main(int argc, char* argv[]) {
     passed = check(writeClip(path), "OpenCV wrote a clip") && passed;
 
     cv::VideoCapture throughFrameIo;
-    const bool readByFrameIo =
-        frame_io::openVideoFile(throughFrameIo, path) && framesIn(throughFrameIo) == kFrames;
-    passed = check(readByFrameIo, "frame_io read every frame") && passed;
+    const bool openedByFrameIo = frame_io::openVideoFile(throughFrameIo, path);
+    const int framesByFrameIo = openedByFrameIo ? framesIn(throughFrameIo) : 0;
+    passed = check(framesByFrameIo == kFrames, "frame_io read every frame" + countOf(framesByFrameIo) +
+                                                   (openedByFrameIo ? backendOf(throughFrameIo) : "")) &&
+             passed;
 
     cv::VideoCapture throughOpenCv(path);
-    const bool readByOpenCv = throughOpenCv.isOpened() && framesIn(throughOpenCv) == kFrames;
-    passed = check(readByOpenCv, "OpenCV read every frame") && passed;
+    const int framesByOpenCv = throughOpenCv.isOpened() ? framesIn(throughOpenCv) : 0;
+    passed =
+        check(framesByOpenCv == kFrames, "OpenCV read every frame" + countOf(framesByOpenCv) +
+                                             (throughOpenCv.isOpened() ? backendOf(throughOpenCv) : "")) &&
+        passed;
 
 #if defined(FRAME_IO_HAS_FFMPEG)
     std::string error;
@@ -87,7 +101,8 @@ int main(int argc, char* argv[]) {
         ++frames;
     }
     const std::string reason = error.empty() ? std::string() : ": " + error;
-    passed = check(frames == kFrames, "FFmpeg's libraries read every frame" + reason) && passed;
+    passed =
+        check(frames == kFrames, "FFmpeg's libraries read every frame" + countOf(frames) + reason) && passed;
 #endif
 
     return passed ? 0 : 1;
