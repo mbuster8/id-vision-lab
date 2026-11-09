@@ -18,6 +18,7 @@
 #include "palette_support.h"
 #include "server_controls.h"
 #include "shades.h"
+#include "snapshot_converter.h"
 #include "storage_worker.h"
 #include "thumbnail_model.h"
 #include "thumbnail_panel.h"
@@ -59,6 +60,7 @@
 #include <QToolButton>
 #include <QWheelEvent>
 
+#include "viewer_core/image_history.h"
 #include "visual_debug/client.h"
 
 #include <gtest/gtest.h>
@@ -2032,6 +2034,135 @@ TEST(MainWindowTest, SnapshotKeepsTheChannelsSettings) {
     EXPECT_EQ(buttonText(*window, "coloursButton"), QStringLiteral("Colours: Turbo ▾"));
 }
 
+// A frame whose every pixel is its column number, so a snapshot's first pixel tells where it was cut.
+cv::Mat columnsFrame() {
+    cv::Mat frame(200, 256, CV_8UC1);
+    for (int x = 0; x < frame.cols; ++x) {
+        frame.col(x).setTo(x);
+    }
+    return frame;
+}
+
+QSize listedImageSize(MainWindow& window, ImageId id) {
+    const QAbstractItemModel* model = panelOf(window)->model();
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const QModelIndex index = model->index(row, 0);
+        if (index.data(ThumbnailModel::IdRole).value<quint64>() == id) {
+            return index.data(ThumbnailModel::ImageSizeRole).toSize();
+        }
+    }
+    return {};
+}
+
+// Zoomed in, a snapshot is what is in view: those pixels of the original, at full resolution.
+TEST(MainWindowTest, SnapshotWhileZoomedInTakesTheAreaInView) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", columnsFrame());
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+    zoomIn(*view, QRectF(view->rect()).center());
+    zoomIn(*view, QRectF(view->rect()).center());
+    const QRect area = view->visibleArea();
+    ASSERT_LT(area.width(), 256);
+    ASSERT_GT(area.x(), 0);
+
+    action(*window, "actionSnapshot")->trigger();
+
+    ASSERT_EQ(panelOf(*window)->listedIds(), std::vector<ImageId>{1});
+    EXPECT_EQ(listedImageSize(*window, 1), area.size());
+    EXPECT_EQ(copiedPicture(*window, 1).pixelColor(0, 0).red(), area.x());
+    const LogEntry* logged = findEntry(
+        *logOf(*window), QStringLiteral("cut from the frame at %1, %2").arg(area.x()).arg(area.y()));
+    ASSERT_NE(logged, nullptr);
+    EXPECT_TRUE(logged->text.contains(QStringLiteral("(%1×%2").arg(area.width()).arg(area.height())))
+        << logged->text.toStdString();
+}
+
+TEST(MainWindowTest, SnapshotOfAFittedFrameTakesItWhole) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", columnsFrame());
+    QApplication::processEvents();
+
+    action(*window, "actionSnapshot")->trigger();
+
+    EXPECT_EQ(listedImageSize(*window, 1), QSize(256, 200));
+    EXPECT_EQ(findEntry(*logOf(*window), QStringLiteral("cut from the frame")), nullptr);
+}
+
+// The shapes over the frame stay over the same pixels of the cut.
+TEST(MainWindowTest, SnapshotWhileZoomedInMovesTheOverlaysWithTheCut) {
+    const auto window = makeTestWindow();
+    showSized(*window);
+    feedLive(*window, "camera", columnsFrame(), std::chrono::system_clock::now(), std::nullopt,
+             {.overlays = {visual_debug::Point{{128, 100}, "centre"}}});
+    QApplication::processEvents();
+    auto* view = window->findChild<ImageView*>();
+    zoomIn(*view, QRectF(view->rect()).center());
+    const QRect area = view->visibleArea();
+    ASSERT_LT(area.width(), 256);
+
+    action(*window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(panelOf(*window)->selectImage(1));
+
+    ASSERT_EQ(view->overlays().size(), 1U);
+    const auto& point = std::get<viewer_core::Point>(view->overlays()[0]);
+    EXPECT_EQ(point.at, cv::Point2d(128 - area.x(), 100 - area.y()));
+    EXPECT_EQ(point.label, "centre");
+}
+
+// The snapshot's picture is made on a thread of its own: the stream goes on meanwhile, and it is listed when
+// ready.
+TEST(MainWindowTest, ThreadedSnapshotLeavesTheStreamRunning) {
+    test_support::Latch latch;
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    window.setSnapshotConversionForTests([&latch](const SnapshotJob& job) {
+        latch.hold();
+        return viewer_core::historyDisplay(job.original, job.origin.tags);
+    });
+    showSized(window);
+    feedLive(window, "camera", liveFrame(50));
+    ASSERT_TRUE(QTest::qWaitFor([&window] { return viewedGrey(window) == 50; }));
+
+    action(window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(latch.waitUntilEntered());
+    EXPECT_TRUE(panelOf(window)->listedIds().empty());
+    feedLive(window, "camera", liveFrame(60));
+    EXPECT_TRUE(QTest::qWaitFor([&window] { return viewedGrey(window) == 60; }));
+    latch.release();
+
+    ASSERT_TRUE(QTest::qWaitFor([&window] { return panelOf(window)->listedIds().size() == 1; }));
+    EXPECT_EQ(copiedPicture(window, 1).pixelColor(0, 0).red(), 50); // the frame in view when it was taken
+}
+
+// A snapshot reaches the history a moment after it was taken: if a still took the view meanwhile, the
+// snapshot is listed without taking it.
+TEST(MainWindowTest, ASnapshotArrivingLaterNeverTakesTheView) {
+    test_support::Latch latch;
+    ClockedWindow clocked(LiveConversion::Threaded);
+    MainWindow& window = *clocked.window;
+    window.setSnapshotConversionForTests([&latch](const SnapshotJob& job) {
+        latch.hold();
+        return viewer_core::historyDisplay(job.original, job.origin.tags);
+    });
+    showSized(window);
+    window.addImage("still", cv::Mat(40, 40, CV_8UC1, cv::Scalar(100)));
+    feedLive(window, "camera", liveFrame(50));
+    QApplication::processEvents();
+    chooseLiveRow(window, QStringLiteral("camera"));
+
+    action(window, "actionSnapshot")->trigger();
+    ASSERT_TRUE(latch.waitUntilEntered());
+    ASSERT_TRUE(panelOf(window)->selectImage(1)); // the still takes the view
+    latch.release();
+    ASSERT_TRUE(QTest::qWaitFor([&window] { return panelOf(window)->listedIds().size() == 2; }));
+
+    EXPECT_EQ(window.shownImageId(), std::optional<ImageId>(1));
+    EXPECT_EQ(panelOf(window)->currentImageId(), std::optional<ImageId>(1));
+}
+
 // --- Image tags
 // ---------------------------------------------------------------------------------------------
 
@@ -3761,6 +3892,60 @@ TEST(MainWindowMeasurement, DISABLED_LiveFrameCost) {
         }
     }
     cv::setNumThreads(openCvThreads);
+}
+
+// A snapshot taken while 4K HLG frames stream at 30 fps into a threaded window with the histogram strip on,
+// zoomed past 1:1 (a cut; whole frames converted for the view) and fitted (the whole frame): how long the
+// Snapshot action holds the UI thread, how long until the snapshot is listed, and how many pictures the view
+// applied in the second after. Run by hand: --gtest_also_run_disabled_tests
+// --gtest_filter=*SnapshotWhileStreaming*
+TEST(MainWindowMeasurement, DISABLED_SnapshotWhileStreaming) {
+    const auto window = test_support::makeClockedTestWindow(&Clock::now, LiveConversion::Threaded);
+    showSized(*window);
+    showHistogram(*window);
+    cv::Mat frame(2160, 3840, CV_16UC3);
+    cv::randu(frame, cv::Scalar::all(0), cv::Scalar::all(65536));
+    feedLive(*window, "camera", frame, std::chrono::system_clock::now(), std::nullopt, kHlgDescription);
+    ASSERT_TRUE(waitForNextResult(*window));
+    std::atomic<bool> stop = false;
+    MainWindow* target = window.get();
+    std::thread feeder([&stop, target, &frame] {
+        while (!stop) {
+            feedLive(*target, "camera", frame, std::chrono::system_clock::now(), std::nullopt,
+                     kHlgDescription);
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+    });
+    auto* view = window->findChild<ImageView*>();
+    for (const bool zoomed : {true, false}) {
+        if (zoomed) {
+            for (int i = 0; i < 20 && view->picture().size() != QSize(3840, 2160); ++i) {
+                zoomIn(*view, QRectF(view->rect()).center());
+                QTest::qWait(200);
+            }
+        } else {
+            sendMouse(*view, QEvent::MouseButtonDblClick, QRectF(view->rect()).center(), Qt::NoModifier);
+        }
+        QTest::qWait(1000);
+        for (int i = 0; i < 3; ++i) {
+            const std::size_t listed = panelOf(*window)->listedIds().size();
+            const auto applied = window->liveResultCountsForTests().applied;
+            QElapsedTimer timer;
+            timer.start();
+            action(*window, "actionSnapshot")->trigger();
+            const double held = static_cast<double>(timer.nsecsElapsed()) / 1e6;
+            ASSERT_TRUE(
+                QTest::qWaitFor([&window, listed] { return panelOf(*window)->listedIds().size() > listed; }));
+            const double toListed = static_cast<double>(timer.nsecsElapsed()) / 1e6;
+            QTest::qWait(static_cast<int>(std::max(0.0, 1000 - toListed)));
+            std::cout << "[ snapshot ] " << (zoomed ? "zoomed in, " : "fitted, ")
+                      << "4K HLG streaming: UI thread held " << held << " ms, listed after " << toListed
+                      << " ms, " << window->liveResultCountsForTests().applied - applied
+                      << " pictures applied in the second from it\n";
+        }
+    }
+    stop = true;
+    feeder.join();
 }
 
 } // namespace

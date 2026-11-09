@@ -40,6 +40,8 @@ add_library(viewer_ui STATIC
     qt_image_sink.h
     server_controls.cpp
     server_controls.h
+    snapshot_converter.cpp
+    snapshot_converter.h
     storage_controller.cpp
     storage_controller.h
     storage_worker.cpp

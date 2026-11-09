@@ -88,7 +88,9 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   channel and the window's view counter still match. `viewer_core`'s classes (`LiveChannels`,
   `ImageHistory`, `DisplaySettingsStore`) are UI-thread only and have no locks; its free functions
   (`toDisplayImage`, `valueExtent`, `rangeMarkers`, `histogramOf`) keep no state and also run on the
-  converter's thread. Window tests use `LiveConversion::Immediate` unless they test the thread.
+  converter's thread. Snapshots' history pictures are made on `SnapshotConverter`'s thread, in a queue that
+  never drops one. Window tests use `LiveConversion::Immediate`, which makes both immediate, unless they test
+  the threads.
 - **Wire-format changes:** a new optional header field keeps `version` 2; changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender
   (`python/visual_debug.py`) with them: both encoders must write `tests/wire/header_cases.json`'s golden

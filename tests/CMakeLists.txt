@@ -139,6 +139,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             viewer/owner_only_test.cpp
             viewer/qt_image_sink_test.cpp
             viewer/server_controls_test.cpp
+            viewer/snapshot_converter_test.cpp
             viewer/storage_worker_test.cpp
             viewer/thumbnail_panel_test.cpp
         LIBRARIES

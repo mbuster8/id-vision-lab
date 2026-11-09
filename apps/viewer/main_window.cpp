@@ -141,6 +141,7 @@ MainWindow::MainWindow(visual_debug::ServerOptions serverOptions, const QString&
       m_liveConversion(conversion) {
     m_ui->setupUi(this);
     setLiveConversionForTests(convertLiveFrame);
+    setSnapshotConversionForTests(convertSnapshot);
     setWindowTitle(viewerWindowTitle(QString(), m_endpoint));
 
     DataFolder::Problem dataProblem = DataFolder::Problem::None;
@@ -575,6 +576,7 @@ void MainWindow::setLogOpen(bool open) {
 // and the focus signal, reaching into a destroyed history.
 MainWindow::~MainWindow() {
     m_converter.reset(); // waits for a frame being converted; no result arrives after this
+    m_snapshots.reset(); // the same for a snapshot; those still waiting are dropped
     qApp->removeEventFilter(this);
     disconnect(qApp, &QApplication::focusChanged, this, nullptr);
     m_sidebar->liveChannels()->disconnect(this);
@@ -630,31 +632,62 @@ bool MainWindow::addImage(std::string name, cv::Mat image, viewer_core::ImageOri
         log(LogKind::Error, tr("Cannot show image: %1").arg(error.what()));
         return false;
     }
+    listAdded(added, origin, std::nullopt);
+    return true;
+}
+
+// Its picture was made on the snapshot converter's thread.
+void MainWindow::addSnapshot(SnapshotResult result) {
+    SnapshotJob& job = result.job;
+    const QString name = singleLine(QString::fromStdString(job.name));
+    viewer_core::ImageHistory::AddResult added;
+    try {
+        if (result.display.empty()) {
+            throw std::runtime_error("its picture could not be made");
+        }
+        added = m_history.add(std::move(job.name), std::move(job.original), std::move(result.display),
+                              job.origin);
+    } catch (const std::exception& error) {
+        log(LogKind::Error,
+            tr("Could not take snapshot [%1]: %2").arg(name, QString::fromUtf8(error.what())));
+        return;
+    }
+    listAdded(added, job.origin, job.area);
+}
+
+void MainWindow::listAdded(const viewer_core::ImageHistory::AddResult& added,
+                           const viewer_core::ImageOrigin& origin, std::optional<cv::Rect> cutFrom) {
     // Timed when it arrived: for a received image, when the server thread finished decoding it. A snapshot is
-    // logged when it is taken; its entry keeps its frame's receive time.
+    // logged when it reaches the history; its entry keeps its frame's receive time.
     const auto& entry = *m_history.find(added.id);
-    QString what = tr("Received [%1] (%2)");
+    const QString name = singleLine(QString::fromStdString(entry.name));
+    const QString details = imageDetails(entry);
+    // Each in one pass of arg(), so a name holding "%3" is never filled in itself.
+    QString text = tr("Received [%1] (%2)").arg(name, details);
     if (origin.source == viewer_core::ImageSource::OpenedFile) {
-        what = tr("Opened [%1] (%2)");
+        text = tr("Opened [%1] (%2)").arg(name, details);
+    } else if (origin.source == viewer_core::ImageSource::LiveSnapshot && cutFrom) {
+        text = tr("Snapshot [%1] (%2), cut from the frame at %3, %4")
+                   .arg(name, details, QString::number(cutFrom->x), QString::number(cutFrom->y));
     } else if (origin.source == viewer_core::ImageSource::LiveSnapshot) {
-        what = tr("Snapshot [%1] (%2)");
+        text = tr("Snapshot [%1] (%2)").arg(name, details);
     }
     const bool timed = origin.arrivedAt != std::chrono::system_clock::time_point{} &&
                        origin.source != viewer_core::ImageSource::LiveSnapshot;
-    m_log->append({timed ? origin.arrivedAt : std::chrono::system_clock::now(), LogKind::Info,
-                   what.arg(singleLine(QString::fromStdString(entry.name)), imageDetails(entry))});
+    m_log->append({timed ? origin.arrivedAt : std::chrono::system_clock::now(), LogKind::Info, text});
     // While a rename is open, arrivals do not take the selection, so a burst cannot move the edit; while a
-    // live channel is shown, they do not take the view. One the search hides arrives quietly: it is listed
-    // later, if ever.
+    // live channel is shown, they do not take the view. A snapshot never does: it reaches the history a
+    // moment after it was taken, when something else may be in view. One the search hides arrives quietly: it
+    // is listed later, if ever.
     m_thumbnails->addImage(entry, false);
-    if (!m_infoBar->isRenaming() && !m_liveChannel && m_thumbnails->isListed(added.id)) {
+    if (!m_infoBar->isRenaming() && !m_liveChannel &&
+        origin.source != viewer_core::ImageSource::LiveSnapshot && m_thumbnails->isListed(added.id)) {
         m_thumbnails->selectImage(added.id);
     }
     m_storage->store(entry);
     removeEvicted(added.evicted);
     m_storage->sync(m_history.entries());
     updateEditActions();
-    return true;
 }
 
 std::optional<viewer_core::ImageId> MainWindow::shownImageId() const { return m_currentId; }
@@ -1299,8 +1332,11 @@ void MainWindow::setLiveFrozen(bool frozen) {
     showLiveText(now);
 }
 
-// The frame in view, frozen or not, into the history under "<channel> <its receive time>", with the channel's
-// display settings, so it looks as it did on screen. The channel stays in view.
+// What is in view of the frame, frozen or not, into the history under "<channel> <its receive time>", with
+// the channel's display settings, so it looks as it did on screen: zoomed in, the visible pixels cut from the
+// original at full resolution, the shapes over them moved with the cut; fitted, the whole frame. Its picture
+// is made on the snapshot converter's thread, so the stream in view never waits for it. The channel stays in
+// view.
 void MainWindow::takeSnapshot() {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
@@ -1319,11 +1355,22 @@ void MainWindow::takeSnapshot() {
     }
     const std::string snapshot = name.toStdString();
     setDisplaySettings(snapshot, m_displaySettings.find(channel->name));
-    addImage(snapshot, channel->shown,
-             {.source = viewer_core::ImageSource::LiveSnapshot,
-              .fileBytes = std::nullopt,
-              .arrivedAt = channel->shownReceivedAt,
-              .tags = channel->shownTags});
+    SnapshotJob job{.name = snapshot,
+                    .original = channel->shown,
+                    .origin = {.source = viewer_core::ImageSource::LiveSnapshot,
+                               .fileBytes = std::nullopt,
+                               .arrivedAt = channel->shownReceivedAt,
+                               .tags = channel->shownTags}};
+    const QRect visible = m_imageView->visibleArea();
+    const cv::Rect frame(0, 0, channel->shown.cols, channel->shown.rows);
+    const cv::Rect area = cv::Rect(visible.x(), visible.y(), visible.width(), visible.height()) & frame;
+    if (!area.empty() && area != frame) {
+        // Copied, so a small snapshot does not keep the whole frame alive.
+        job.original = channel->shown(area).clone();
+        job.origin.tags = viewer_core::tagsForCrop(channel->shownTags, area.tl());
+        job.area = area;
+    }
+    m_snapshots->submit(std::move(job));
 }
 
 QImage MainWindow::livePicture() const {
@@ -1521,6 +1568,15 @@ void MainWindow::setLiveConversionForTests(LiveConverter::Conversion conversion)
         m_liveConversion == LiveConversion::Threaded ? LiveConverter::Mode::Threaded
                                                      : LiveConverter::Mode::Immediate,
         [this](LiveResult result) { applyLiveResult(std::move(result)); }, std::move(conversion));
+}
+
+// The same for snapshots: one converter for the window's lifetime, made in the live converter's mode.
+void MainWindow::setSnapshotConversionForTests(SnapshotConverter::Conversion conversion) {
+    m_snapshots.reset();
+    m_snapshots = std::make_unique<SnapshotConverter>(
+        m_liveConversion == LiveConversion::Threaded ? SnapshotConverter::Mode::Threaded
+                                                     : SnapshotConverter::Mode::Immediate,
+        [this](SnapshotResult result) { addSnapshot(std::move(result)); }, std::move(conversion));
 }
 
 MainWindow::LiveResultCounts MainWindow::liveResultCountsForTests() const { return m_liveResultCounts; }

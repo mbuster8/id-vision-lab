@@ -8,6 +8,7 @@
 
 #include "image_view.h"
 #include "live_converter.h"
+#include "snapshot_converter.h"
 
 #include "viewer_core/display_settings.h"
 #include "viewer_core/image_history.h"
@@ -95,6 +96,8 @@ public:
     void setConfirmationForTests(std::function<bool(const QString&)> confirm);
     // Converts live frames with `conversion` from now on, in the same mode; before any frame is converted.
     void setLiveConversionForTests(LiveConverter::Conversion conversion);
+    // The same for snapshots' pictures; before any snapshot is taken.
+    void setSnapshotConversionForTests(SnapshotConverter::Conversion conversion);
     // Live results that reached the window, and those it showed rather than dropped as stale.
     struct LiveResultCounts {
         std::uint64_t received = 0;
@@ -124,6 +127,11 @@ private:
     void showLatestEntry();
     void setLogOpen(bool open);
     void onImageReceived(const visual_debug::ImageMessage& message);
+    void addSnapshot(SnapshotResult result);
+    // An entry just added: logged, listed, stored if kept, and whatever it evicted dropped. `cutFrom` is
+    // where a snapshot was cut from its frame, for the log.
+    void listAdded(const viewer_core::ImageHistory::AddResult& added, const viewer_core::ImageOrigin& origin,
+                   std::optional<cv::Rect> cutFrom);
     std::optional<viewer_core::ImageId> adoptRestored(const StoredImage& image);
     void onRestoreFinished(int restored, int skipped, int dropped);
     void setKeepImages(bool keep);
@@ -224,8 +232,9 @@ private:
     viewer_core::LiveChannels m_live;
     std::optional<std::string> m_liveChannel; // shown instead of m_currentId
     LiveConversion m_liveConversion;
-    // Reset first when closing: its thread may still be converting a frame.
+    // Reset first when closing: their threads may still be converting.
     std::unique_ptr<LiveConverter> m_converter;
+    std::unique_ptr<SnapshotConverter> m_snapshots;
     std::uint64_t m_viewCounter = 0; // bumped by viewChanged
     // Per channel, frames whose job a newer frame's replaced, not yet drawn: a job for one of them may still
     // be converting, so whether it was skipped is known only when a newer frame's picture is applied.

@@ -41,7 +41,10 @@ public:
     // Device pixels per image pixel that a picture of an image this size, set with `keep`, will be drawn at;
     // 1 while the view has no size yet.
     double deviceScaleFor(QSize imageSize, KeepView keep) const;
-    const QImage& picture() const;                             // as set; null for none
+    const QImage& picture() const; // as set; null for none
+    // Every image pixel at least partly in view, in image pixels: the whole image when fitted; empty for
+    // none.
+    QRect visibleArea() const;
     const std::vector<viewer_core::Overlay>& overlays() const; // empty for none
     // Shown at construction. Hiding them only repaints; the picture is not made again.
     void setOverlaysShown(bool shown);

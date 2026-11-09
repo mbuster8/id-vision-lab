@@ -214,7 +214,7 @@ build\windows-debug\apps\visual_debug_viewer.exe --endpoint tcp://127.0.0.1:7140
 | **Image → Show Overlays** (⇧⌘O, or O) | Draw the shapes a sender attached to the image or frame over it, or hide them; on at every start (see [Overlays](#overlays)). O works from anywhere but a text field. Also the info strip's **◩ overlays** button. |
 | **Image → Show Histogram** (⇧⌘H) | Show or hide a strip under the info strip with a histogram of the image or frame in view and the range in use drawn on it, whose ends you can drag (see [Display range and colours](#display-range-and-colours)). Off at the first start; the choice is kept. |
 | **Image → Freeze** (⇧⌘T, or Space) | Keep a live channel's frame in view while frames go on arriving; again to show the newest. Space freezes from anywhere but a text field or a button that has the keyboard focus, which Space presses instead. Only while a live channel is shown (see [Live channels](#live-channels)). |
-| **Image → Snapshot** (⌘T) | Copy the live frame in view into the history, as `camera 14:03:22.517`. Only while a live channel is shown. |
+| **Image → Snapshot** (⌘T) | Copy what is in view of the live frame into the history, as `camera 14:03:22.517`: zoomed in, the visible area; fitted, the whole frame. Only while a live channel is shown. |
 | **View → Appearance** | **System** (the default) follows the system's light or dark appearance; **Light** and **Dark** keep one whatever the system does. The choice is kept, and the example sender shares it (see [Running the example sender](#running-the-example-sender)). Needs Qt 6.8 or newer: built with older Qt, the menu is absent and both programs follow the system. |
 | **History → Keep Images Between Sessions** | Store the history on disk, for every viewer (see [Keeping images between sessions](#keeping-images-between-sessions)). |
 | **History → Clear History…** | Delete every image in this viewer, in memory and on disk, after asking. |
@@ -325,9 +325,13 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
   refresh twice a second.
 - **Freeze** (**Image → Freeze**, ⇧⌘T, Space, or the strip's **Freeze** button) keeps the frame in view while
   frames go on arriving and being counted; freezing again shows the newest. Each channel is frozen on its own.
-- **Snapshot** (**Image → Snapshot**, ⌘T, or the strip's **Snapshot** button) copies the frame in view, frozen
-  or not, into the history as `camera 14:03:22.517`, its arrival time to the millisecond, with the channel's
-  range and colours. The channel stays in view. Snapshots stay in memory, even with Keep Images Between
+- **Snapshot** (**Image → Snapshot**, ⌘T, or the strip's **Snapshot** button) copies what is in view of the
+  frame, frozen or not, into the history as `camera 14:03:22.517`, its arrival time to the millisecond, with the
+  channel's range and colours. Zoomed in, that is the area in view, every pixel at least partly visible, cut from
+  the original at full resolution with the shapes over it, and the log says where it was cut (`cut from the
+  frame at 812, 400`); its readout counts from the cut's corner. Fitted, it is the whole frame. The snapshot
+  is prepared beside the window, so the stream goes on meanwhile and the snapshot is listed a moment later,
+  without taking the view. The channel stays in view. Snapshots stay in memory, even with Keep Images Between
   Sessions on.
 - **Muting.** A channel you do not want to see, such as a second camera, can be muted: hover its row and
   click the eye with a stroke through it (it also shows on the row in view), or right-click the row and
