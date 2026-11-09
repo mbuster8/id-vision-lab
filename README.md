@@ -70,11 +70,20 @@ brought it back: ported to Qt 6 and OpenCV 5, restructured, tested and documente
 is [below](#what-changed-since-2013). Until October 2026 the repository was called `Image_processing`
 ([former names](docs/former-names.md)).
 
+## The Document Lab
+
+The workbench for document-reading code. A camera (an iPhone through Continuity Camera too) or a video,
+image, folder or recording runs through a processor on a thread of its own, and the result shows on the
+viewer's canvas, with what the processor found drawn over the frame and listed beside it. It replays every
+frame in order, records frames losslessly as PNG folders, captures one at full resolution, and sends its frames
+to the viewer when asked. Its first processors find edges and a document's outline; the processor hook is where
+document reading goes next. See [Running the Document Lab](docs/user-guide.md#running-the-document-lab).
+
 ## Coming next
 
-- **The Document Lab**, a desktop app for developing document reading: it finds an identity document in a
-  camera image, checks capture quality, reads the machine-readable zone (MRZ), and reads the passport's chip
-  (ICAO 9303: BAC, PACE, Passive and Active Authentication) through a PC/SC reader.
+- **Document reading in the Document Lab**: finding the identity document in a frame, checking capture
+  quality, reading the machine-readable zone (MRZ), and reading the passport's chip (ICAO 9303: BAC, PACE,
+  Passive and Active Authentication) through a PC/SC reader.
 
 ## How it works
 
@@ -183,6 +192,9 @@ build/debug/examples/pipeline_demo/pipeline_demo
 
 # The Visual Debug Example Sender: click Open… to pick an image, then Send image
 open build/debug/apps/example_sender/visual_debug_example_sender.app
+
+# The Document Lab: pick a camera and press Start, or Open File… for a video
+open build/debug/apps/document_lab/document_lab.app
 
 # The smallest sender: three thresholded images
 build/debug/examples/minimal_sender/minimal_sender
@@ -330,11 +342,14 @@ file: `photo.png #1`.
 id-vision-lab/
 ├── libs/
 │   ├── visual_debug/      the sender library and the viewer's server (no Qt)
-│   └── viewer_core/       the viewer's logic: display, history, live channels, pixel readout, zoom (no Qt)
+│   ├── viewer_core/       the viewer's logic: display, history, live channels, pixel readout, zoom (no Qt)
+│   ├── frame_io/          video, image and recording readers, the recorder, YUV conversion (no Qt)
+│   └── lab_core/          the Document Lab's processors, engine and result sender (no Qt)
 ├── apps/
 │   ├── viewer/            the Visual Debug Viewer (Qt 6)
 │   ├── example_sender/    the Visual Debug Example Sender (Qt 6)
-│   └── qt_common/         Qt helpers shared by both apps
+│   ├── document_lab/      the Document Lab (Qt 6, Qt Multimedia)
+│   └── qt_common/         Qt helpers shared by the apps, the canvas among them
 ├── examples/
 │   ├── pipeline_demo/     an OpenCV pipeline that sends every stage
 │   ├── minimal_sender/    the smallest use of sendImage()
@@ -362,9 +377,9 @@ id-vision-lab/
 Builds and passes all tests on macOS with Apple silicon. Continuous integration builds and tests every push
 on macOS and on Ubuntu 24.04 (with the distribution's OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest
 versions supported). On Windows 11 it builds with MSVC and vcpkg, warning-free, and passes all tests, also
-under AddressSanitizer; `cpack` makes a portable `.zip` and an `.msi` installer of the two apps
-([build guide](docs/build-guide.md#packages-for-windows)). Continuous integration has a Windows job too,
-which has not run on GitHub yet.
+under AddressSanitizer; `cpack` makes a portable `.zip` and an `.msi` installer of the three apps
+([build guide](docs/build-guide.md#packages-for-windows)). Continuous integration builds and tests on Windows
+too, and installs the release apps as the packages hold them.
 
 ## Licence
 

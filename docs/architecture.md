@@ -17,7 +17,8 @@ flowchart LR
     subgraph apps["Applications (Qt 6)"]
         viewer["viewer<br/>Visual Debug Viewer"]
         sender["example_sender<br/>Visual Debug Example Sender"]
-        qtcommon["qt_common<br/>shared Qt helpers"]
+        lab["document_lab<br/>Document Lab"]
+        qtcommon["qt_common<br/>shared Qt helpers, the canvas"]
     end
     subgraph examples["Examples (no Qt)"]
         pipeline["pipeline_demo"]
@@ -28,50 +29,64 @@ flowchart LR
     subgraph libs["Libraries (no Qt)"]
         vd["visual_debug<br/>wire format, Client, Server"]
         vc["viewer_core<br/>display, history, readout, zoom"]
+        fio["frame_io<br/>video, image and recording readers, recorder"]
+        lc["lab_core<br/>processors, engine, result sender"]
     end
     viewer --> qtcommon
     sender --> qtcommon
+    lab --> qtcommon
+    lab --> lc
+    lab -.-> qtmm["Qt Multimedia<br/>(cameras)"]
     viewer --> vd
     viewer --> vc
     sender --> vd
     sender --> vc
     qtcommon --> vd
     qtcommon --> vc
+    lc --> fio
+    fio --> vd
     pipeline --> vd
     minimal --> vd
     overlay --> vd
-    live --> vd
-    live -.-> ffmpeg["FFmpeg's libraries<br/>(optional, for --hdr)"]
+    live --> lc
+    live --> fio
+    fio -.-> ffmpeg["FFmpeg's libraries<br/>(optional, for 10-bit and HDR)"]
     vd --> deps1["OpenCV core, ZeroMQ, nlohmann/json"]
     vc --> deps2["OpenCV core, imgproc"]
+    fio --> deps3["OpenCV videoio, imgcodecs"]
 ```
 
 | Component | Responsibility |
 |---|---|
 | `libs/visual_debug` | Everything both ends of the channel share. `wire_format`: encodes an image into the two frames and decodes them back, validating everything and never throwing. `ImageDescription`: what a sender may say about an image beyond its pixels (its value range, a video's transfer and primaries, and its overlays: the `Polygon`, `Rectangle`, `Circle` and `Point` shapes of `overlay.h`), an optional extra argument of every send. `ImageSender`: the interface a host application depends on. `Client`: its ZeroMQ implementation. `sendImage()` and `sendLive()`: the one-line convenience calls, using one process-wide `Client`. `Server`: the viewer's receive loop on its own thread. `ImageSink`: the interface through which the server hands images to whoever displays them. `endpoint`: the default endpoint and the loopback check. |
 | `libs/viewer_core` | The viewer's logic, free of any UI toolkit, so it is unit-tested without Qt. `toDisplayImage`: any supported image to 8-bit RGBA, with a display range and colour map, at full size or at the size it is drawn (`sizeWithin`), with clipping marks if asked. `ImageTags`: an image's description as the viewer keeps it, its overlays (viewer_core's own copies of the shapes, in `overlay.h`) as one shared, unchanging list so that copying tags for every frame and draw copies a pointer, and `defaultSettings`, which makes HDR the default range for HLG and PQ. `toneMapToSdr`: the HDR range, HLG or PQ signal to sRGB; `toDisplayImage` takes HDR's black and white from the settings' range when it is set (`hdrBlackAndWhite`, dragged on the histogram), else from the sender. `regionStatistics`: per channel, the minimum, maximum, mean and standard deviation of a rectangle's values. `valueExtent`, `rangeMarkers` and `histogramOf` (in `histogram.h`): the whole image's finite extent and non-finite count, the range in use as markers, and per-channel counts across an axis spanning both, on an even grid of samples above `kHistogramSamples`; with the drag arithmetic, `axisFraction`, `axisValue`, `draggedRange` and `settingsForDrag`. `DisplaySettings` and `DisplaySettingsStore`: those choices, by name, for the session. `ImageHistory`: the bounded list of received images. `LiveChannels`: per live channel, the frame to show, its counters and rates, and whether it is idle or frozen; `kIdleAfter`, the one idle time for the window and the sink. `inspectPixel`: the readout text for one pixel of the original. `Viewport`: zoom and pan arithmetic. |
-| `apps/qt_common` | The Qt code both apps need: `toQImage` (an RGBA `cv::Mat` to a `QImage`), choosing and reading an image file, `application_identity` (the apps' names and descriptions; `setApplicationIdentity`, which names what `QSettings` and the standard paths use), `about` (Help → About, which names the OpenCV and Qt versions the app runs with), `appearance` (the shared System, Light or Dark setting and its menu), `outline_icons` (the line icons, drawn in the palette's colours), `controls` (the shared control height, framed buttons and the regular font), `overlay_painter` (`paintOverlays`: overlays in image pixels drawn through an image-to-widget transform, with the see-through fill, the solid edge and the label tab, at a fixed size on screen; kept here so a later lab app can draw them the same way) and `shades` (the panel, hover, selection and divider greys, blended from the palette's window and text colours; `usePanelGrey`, which keeps a widget on the panel grey as the appearance changes; and `DividerLine`). |
-| `apps/viewer` | The Visual Debug Viewer. `MainWindow` composes the parts; `ImageView` paints through a `Viewport`, and draws each picture's overlays above it (they come with the picture in `setImage`, so a picture never shows another's); `ImageSidebar` holds the search field, the sort options and `ThumbnailPanel`, which shows the history: a list view over `ThumbnailModel` (the history's rows, in history order), seen through `ThumbnailFilterModel` (the names the search matches, in the chosen sort) and drawn by `ThumbnailDelegate`, and `LiveChannelPanel`, the Live group's rows with their mute and close buttons and right-click menu, and a grip below them that sets how many rows show (`paintDivider` draws it as the splitters' handles) (the sidebar steps ↑ and ↓ across the live rows and the thumbnails as one list); `ImageInfoBar` is the strip above the view, with the overlays button, `DisplaySettingsControl` (the Range and Colours buttons) and Freeze and Snapshot; `QtImageSink` moves images and live frames from the server thread to the UI thread; `ActivityLog` is the activity log (a list model, stored in the endpoint's `DataFolder`) and `ActivityLogPanel` shows it; `DividerSplitter` is a splitter whose handles draw a divider line and a grip; `ImageStore` keeps images in files, `StorageWorker` drives it on its own thread, and `StorageController` owns that thread and the restore for the window. |
+| `libs/frame_io` | Frames from files and to disk, for the Document Lab and `live_sender`, free of Qt. `Frame`: an image (8- or 16-bit), its number, its time and its tags. `ReplaySource`: frames in order, from `openVideo` (OpenCV's videoio, AVFoundation first on macOS and kept only when it reads a first frame; FFmpeg's libraries through `FfmpegVideo` for more than 8 bits or HLG and PQ), `openImageFolder` and `openImageFile` (imgcodecs, natural name order), `openRecording`, and `openReplay`, which tells them apart; each reads ahead on a thread of its own and wakes its caller when a frame is ready. `ReadAhead`: that reading thread. `ReplayPacer`: when each frame of a replay is due, never skipping one. `yuvToBgr` and `p010ToBgr16`: a camera's planes to BGR by matrix (BT.601, BT.709, BT.2020) and range. `RecordingWriter`: a recording as a folder of PNGs and a `recording.json`, written by six threads from a queue bounded in bytes; `writeCapture`: one frame and its findings. |
+| `libs/lab_core` | The Document Lab's processing, free of Qt. `FrameProcessor`: the hook for vision code, and `makeProcessor` for A2's None, Edges and Outline (`edgesOf`, `documentOutline` and `OutlineHold`, which `live_sender` uses too). `Engine`: moves a source's frames through the processor to the window's slot, the recorder and the sender on one processing thread, with commands posted to a mailbox and a generation per run. `ResultSender`: a result to the viewer as live channels, on a thread of its own, newest first. |
+| `apps/qt_common` | The Qt code the apps share. The canvas: `ImageView` (one image or live frame: zoom, pan, overlays, pixel readout, Shift-drag regions where the app allows them), `LiveConverter` (a live frame's picture made on a thread of its own, newest first), `live_drawing` (what part of a frame to convert, and at what size, and whether a zoom or pan needs another picture), `image_tags_conversion` (visual_debug's descriptions to viewer_core's tags) and `private_files` (folders and files only their owner may read). And: `toQImage` (an RGBA `cv::Mat` to a `QImage`), choosing and reading an image file, `application_identity` (the apps' names and descriptions; `setApplicationIdentity`, which names what `QSettings` and the standard paths use), `about` (Help → About, which names the OpenCV and Qt versions the app runs with), `appearance` (the shared System, Light or Dark setting and its menu), `outline_icons` (the line icons, drawn in the palette's colours), `controls` (the shared control height, framed buttons and the regular font), `overlay_painter` (`paintOverlays`: overlays in image pixels drawn through an image-to-widget transform, with the see-through fill, the solid edge and the label tab, at a fixed size on screen; kept here so a later lab app can draw them the same way) and `shades` (the panel, hover, selection and divider greys, blended from the palette's window and text colours; `usePanelGrey`, which keeps a widget on the panel grey as the appearance changes; and `DividerLine`). |
+| `apps/viewer` | The Visual Debug Viewer. `MainWindow` composes the parts; `qt_common`'s `ImageView` paints through a `Viewport`, and draws each picture's overlays above it (they come with the picture in `setImage`, so a picture never shows another's); `ImageSidebar` holds the search field, the sort options and `ThumbnailPanel`, which shows the history: a list view over `ThumbnailModel` (the history's rows, in history order), seen through `ThumbnailFilterModel` (the names the search matches, in the chosen sort) and drawn by `ThumbnailDelegate`, and `LiveChannelPanel`, the Live group's rows with their mute and close buttons and right-click menu, and a grip below them that sets how many rows show (`paintDivider` draws it as the splitters' handles) (the sidebar steps ↑ and ↓ across the live rows and the thumbnails as one list); `ImageInfoBar` is the strip above the view, with the overlays button, `DisplaySettingsControl` (the Range and Colours buttons) and Freeze and Snapshot; `QtImageSink` moves images and live frames from the server thread to the UI thread; `ActivityLog` is the activity log (a list model, stored in the endpoint's `DataFolder`) and `ActivityLogPanel` shows it; `DividerSplitter` is a splitter whose handles draw a divider line and a grip; `ImageStore` keeps images in files, `StorageWorker` drives it on its own thread, and `StorageController` owns that thread and the restore for the window. |
 | `apps/example_sender` | The Visual Debug Example Sender, which shows how a Qt app uses the library. Its window takes a factory that makes an `ImageSender` for an endpoint, so it never knows which transport is behind it, and a new endpoint in its **Send to** field gets a new sender. |
+| `apps/document_lab` | The Document Lab. `LabWindow` runs a camera or a replay through the engine and draws the result on the shared canvas with the viewer's glue, Show picking the frame or a processor's picture; it records, captures and sends to a viewer. `CameraBackend` is the cameras behind an interface (`makeQtCameraBackend`: Qt Multimedia, a new `QCamera`, capture session and `QVideoSink` per start, numbered so a late frame of an earlier start is dropped); `toFrame` converts a `QVideoFrame` by its own pixel format, upright and unmirrored; `camera_formats` lists a camera's formats once each and picks the default; `LabDependencies` lets tests replace cameras, threads, dialogs and the clock. `media_smoke` checks that Qt Multimedia's backend loads beside frame_io's readers. |
 | `examples/pipeline_demo` | An ordinary OpenCV program that sends each stage of a pipeline. Its stages are a separate `pipeline` library so tests can check them. |
 | `examples/minimal_sender` | The smallest use of `sendImage`, compiled so the user guide's first example cannot go stale. |
 | `examples/overlay_sender` | An image sent with overlays, compiled so the user guide's overlay example cannot go stale. |
-| `examples/live_sender` | Streams a camera, a video file or a test pattern to live channels with `sendLive`, with an edge channel beside it. Everything but the reading of cameras and files is a separate `live_sender_lib`, so tests check it without a camera: the arguments, the pattern, the edges, `ReadAhead` (a file's frames read ahead on a thread of their own) and `Playback` (when each frame is due, and which are too late to send). Opening a video file (AVFoundation first on macOS, then OpenCV's default backend) is `live_sender_video`, which tests check with clips they write; only it and the executable link OpenCV's `videoio`. `live_sender_ffmpeg` (`FfmpegVideo`) reads a video with FFmpeg's libraries for `--hdr`, as 16-bit frames with their tags; it is built only when CMake finds FFmpeg's development files, and its tests write their clips through FFmpeg too. |
+| `examples/live_sender` | Streams a camera, a video file or a test pattern to live channels with `sendLive`, with an edge channel beside it. Everything but the reading of cameras and files is a separate `live_sender_lib`, so tests check it without a camera: the arguments, the pattern, and `RealTimeFrames` (when each frame is due, and which are too late to send). Video files are read through `frame_io` (`openVideoFile`, `ReadAhead`, and `FfmpegVideo` for `--hdr`, built only when CMake finds FFmpeg's development files); the edges and the document outline are `lab_core`'s. |
 
 ## The dependency rule
 
 Dependencies point one way: applications and examples depend on the libraries, never the reverse.
 
-- **Neither library includes a Qt header or links Qt.** A host application embedding `visual_debug` must
-  not inherit Qt, which is large and could clash with its own Qt version.
-- `visual_debug` and `viewer_core` do not depend on each other.
-- Only `qt_common` and the apps may use Qt.
-- Only `live_sender_ffmpeg` and its tests use FFmpeg's libraries; both libraries and the viewer never do.
+- **No library includes a Qt header or links Qt.** A host application embedding `visual_debug` must
+  not inherit Qt, which is large and could clash with its own Qt version; `frame_io` and `lab_core` stay free
+  of it so later steps' processing and its tests run without it.
+- `visual_debug` and `viewer_core` do not depend on each other. `lab_core` depends on `frame_io`, which depends
+  on `visual_debug` (for the tags); neither depends on `viewer_core`.
+- Only `qt_common` and the apps may use Qt, and only the Document Lab Qt Multimedia.
+- Only `frame_io` (`FfmpegVideo`, when CMake finds FFmpeg) and its tests use FFmpeg's libraries directly.
 
 CMake enforces this: each library's `CMakeLists.txt` links only OpenCV, ZeroMQ and nlohmann/json;
 `qt_standard_project_setup()` and automatic `moc`, `uic` and `rcc` are switched on in `apps/CMakeLists.txt`
-only; and configuring with `-DID_VISION_LAB_BUILD_QT_APPS=OFF` never looks for Qt, yet builds both
-libraries, the three examples and their tests. Library code that uses Qt fails to link in that build. A bare
+only; and configuring with `-DID_VISION_LAB_BUILD_QT_APPS=OFF` never looks for Qt, yet builds the four
+libraries, the examples and their tests. Library code that uses Qt fails to link in that build. A bare
 Qt `#include` may still compile, because Homebrew puts Qt's headers in the same shared include folder as
 ZeroMQ's, so code review has to catch those.
 
@@ -195,6 +210,9 @@ shown frame to the history as an ordinary image with
 | The viewer's snapshot thread | `SnapshotConverter`'s one `std::thread`: the history's picture of each snapshot (`historyDisplay`), a 4K HDR frame's being over 100 ms in a debug build. A queue, not a slot: every snapshot is converted, in the order taken, and added to the history on the UI thread when its picture is ready, without taking the view. |
 | The viewer's live converter thread | `LiveConverter`'s one `std::thread`: the picture of the live channel in view at its drawn size, and its histogram while the strip is shown, with `viewer_core`'s free functions (`toDisplayImage`, `valueExtent`, `rangeMarkers`, `histogramOf`), which keep no state. One job waits at a time; see below. |
 | The viewer's storage thread | `StorageWorker`, started by `StorageController`: writes, deletes and loads the images kept between sessions, and their index. Only a viewer with a data folder has one. |
+| The Document Lab's UI thread | All widgets. Per camera frame it only checks the session, stamps the time and hands the `QVideoFrame` to the engine in a closure; it takes results, submits pictures to the canvas's converter and applies them. darwin delivers camera frames here; Ubuntu's Qt 6.4 GStreamer camera waits for it for each frame. |
+| The Document Lab's processing thread | The `Engine`'s one `std::thread`: commands from the window's mailbox between frames, a camera frame's conversion (`toFrame`), the replay's reading and pacing, `FrameProcessor::process`, and pushing to the recorder and the sender. Every wait (a frame's time, the recorder's room, a source's read-ahead) wakes for a command. A processor that never returns is reported in the status bar and waited for at closing. |
+| The Document Lab's other threads | The canvas's `LiveConverter`; a replay's read-ahead (`ReadAhead` or `std::async` in a folder's reader); the recorder's six writer threads; the `ResultSender`'s thread; a retired sender's destruction on a `std::async` thread, so a slow viewer never holds anything up; a capture written on `QThreadPool`; and Qt Multimedia's own. |
 | `live_sender`'s threads | The main thread sends frames, played in real time by `RealTimeFrames`: a frame that was ready but is more than a frame late is skipped, as the sending fell behind; one it had to wait for is never skipped, as the reading fell behind, and the schedule starts again from it. A file's frames are decoded on `ReadAhead`'s thread, at most three ahead: it waits for room before it reads, so it never holds more. Each frame's edges are found on a `std::async` thread while the frame goes out. With `--hdr`, FFmpeg adds its own: frame threads for software decoding and slice threads in `sws_scale_frame`'s conversion. |
 
 `ImageSink::onImageReceived` is called **on the worker thread**; every sink is responsible for getting the
@@ -265,6 +283,21 @@ of its pictures was drawn counts as skipped, which "dropped" includes. The windo
 converter first, waiting for a frame being converted. Tests construct the window in `LiveConversion::Immediate`
 mode, which converts before `submit` returns, unless they test the thread, which they hold on a latch through
 `setLiveConversionForTests`.
+
+**The Document Lab's engine.** The window never waits for the engine: it posts commands (start a camera or a
+replay, stop, play, pause, step, step back, restart, loop, as fast as possible, the processor, the recording,
+the sender), which the processing thread runs between frames. A camera offers frames into a slot of one, the
+newest replacing one still waiting (counted as dropped); a replay is read in order, every frame, each due its
+gap after the one before was due, or when ready if that is later, so a slow processor slows the replay and
+skips nothing. Each run has a generation, bumped by a new source, a restart, a step back and a loop: the
+processor is reset, the recording stops (one recording is one unbroken run), and nothing of the old one reaches
+the result slot. A frame reaches the slot, the recorder and the sender only after `process` returns; in debug and
+sanitizer builds the engine compares the frame before and after, and reports a processor that wrote into it. A
+replay's frame that finds the recorder full waits for room; a camera's is left out and counted. The engine
+calls its hooks (a result is waiting, the status changed) without its lock, and the window posts them to its
+own thread. Closing stops the run, then waits, with the window open and the recording's progress shown, until
+`shutDown()` says every queued frame is written. Tests run the engine, the recorder, the sender and the
+canvas's converter in immediate modes, with an injected clock, unless they test the threads.
 
 ## Display rules
 
@@ -378,6 +411,14 @@ may read them:
   `owner_only.cpp` are
   the only files that include `<windows.h>`.
 
+The Document Lab keeps its recordings and captures in its own folder: the app's local data folder
+(`QStandardPaths::AppLocalDataLocation`, which iCloud and OneDrive do not sync) unless the user chooses
+another. Each recording is a new folder named by the local time (`2026-11-09 14.03.22`, with ` 2`, ` 3`… when
+taken), made private as above, holding `000000.png`, `000001.png`… and `recording.json` (the source, the tags,
+each frame's file and time, and the frames that did not reach every output), written at the start marked
+incomplete and again, complete, at the end, each time through a temporary file and a rename. Captures go to a
+private `Captures` folder beside them, a PNG and a JSON per frame.
+
 ## Extension points
 
 - **A new header field** (for example `timestamp` or `overlays`): add it in `encode` and read it in
@@ -392,3 +433,7 @@ may read them:
   see the [user guide](user-guide.md#4-add-a-stage-to-pipeline_demo).
 - **Viewer features** (histograms, overlays, filters): put the logic in `viewer_core` with unit tests, and
   keep the Qt side to drawing and input.
+- **A Document Lab processor** (document detection, MRZ reading, a sharp reference frame): implement
+  `lab_core::FrameProcessor` in `lab_core`, with tests on frames built in the test, add a `ProcessorKind` and
+  its name, and return overlays for the frame, debug pictures (each a Show entry and a `lab <name>` channel) and
+  findings. It runs on the processing thread, one frame at a time, and must not write into its frame.

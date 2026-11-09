@@ -2,8 +2,10 @@
 
 A 2013 thesis project revived in 2026, public under Apache-2.0: the `visual_debug` library sends a
 `cv::Mat` over ZeroMQ to the Visual Debug Viewer, a separate Qt 6 app with zoom, history and pixel readout;
-the Visual Debug Example Sender is a small Qt app that shows how to use the library. Read the linked
-documents rather than re-deriving them:
+the Visual Debug Example Sender is a small Qt app that shows how to use the library; the Document Lab is
+the workbench for document-reading code (a camera or a replayed video, image, folder or recording through a
+processor, drawn on the viewer's canvas, recorded, captured and optionally sent to the viewer). Read the
+linked documents rather than re-deriving them:
 
 - [`docs/architecture.md`](docs/architecture.md): components, dependency rule, threads, transport, extension points
 - [`docs/wire-format.md`](docs/wire-format.md): the message format (authoritative)
@@ -54,21 +56,26 @@ build\windows-release\CPackConfig.cmake -B build\windows-release\packages` makes
 Before a push or a pull request, run `scripts/check.sh` (the `local-ci` skill); to prepare a pull request,
 use the `pr-ready` skill.
 
-The apps build as `build/<preset>/apps/viewer/visual_debug_viewer` and
-`build/<preset>/apps/example_sender/visual_debug_example_sender` (`.app` bundles on macOS; on Windows
-`build\<preset>\apps\visual_debug_viewer.exe` and `visual_debug_example_sender.exe`, without the subfolder). Their shown names
-live in `apps/qt_common/application_identity.h` and `MACOSX_BUNDLE_BUNDLE_NAME`, and also name their settings
-and data folders: renaming an app moves them.
+The apps build as `build/<preset>/apps/viewer/visual_debug_viewer`,
+`build/<preset>/apps/example_sender/visual_debug_example_sender` and `build/<preset>/apps/document_lab/document_lab`
+(`.app` bundles on macOS; on Windows `build\<preset>\apps\visual_debug_viewer.exe`,
+`visual_debug_example_sender.exe` and `document_lab.exe`, without the subfolder). Their shown names live in
+`apps/qt_common/application_identity.h` and `MACOSX_BUNDLE_BUNDLE_NAME`, and also name their settings and data
+folders: renaming an app moves them. The Document Lab's bundle has its own `apps/document_lab/Info.plist.in`
+(`NSCameraUsageDescription`, Continuity Camera): macOS ends a camera app without it. Start it with `open` on
+macOS, so the camera prompt names the Document Lab rather than the terminal.
 
 ## Layout
 
-`libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `apps/viewer` ·
-`apps/example_sender` · `apps/qt_common` ·
+`libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `libs/frame_io` (videos,
+image folders, recordings and captures; YUV conversion; no Qt) · `libs/lab_core` (the Document Lab's engine,
+processors and sender; no Qt) · `apps/viewer` · `apps/example_sender` · `apps/document_lab` · `apps/qt_common`
+(what the apps share, the canvas among it: `ImageView`, `LiveConverter`, `live_drawing`, `overlay_painter`) ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
-`tests/{visual_debug,viewer_core,qt_common,viewer,example_sender,examples}` (`tests/qt_common` also holds
-the shared Qt test `main()` and helpers) · `tests/wire/header_cases.json` (golden headers both senders must
-write) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
+`tests/{visual_debug,viewer_core,frame_io,lab_core,qt_common,viewer,example_sender,document_lab,examples}`
+(`tests/qt_common` also holds the shared Qt test `main()` and helpers) · `tests/wire/header_cases.json` (golden
+headers both senders must write) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
 manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`
 (`check.sh`, `coverage.sh`, the Ubuntu package list, the pre-push hook) · `docker/` (the CI's Ubuntu job as a container) ·
 `.claude/skills/` (`local-ci`, `pr-ready`, `authorised-delivery`). Older commits use former names (`Image_processing`, Slovak
@@ -83,7 +90,7 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   fills its eight slots and the viewer reports busy. Live frames (`sendLive`) never wait and skip those
   slots: the sink keeps each channel's newest frame and the UI takes them all with `takeLiveFrames()`;
   live frames and snapshots never reach `StorageController`. The live channel in view is converted, and its
-  histogram counted, on `LiveConverter`'s one thread (`apps/viewer/live_converter.h`): a job copies or
+  histogram counted, on `LiveConverter`'s one thread (`apps/qt_common/live_converter.h`): a job copies or
   shares read-only all it needs, a newer job replaces the waiting one, and a result is applied only if its
   channel and the window's view counter still match. `viewer_core`'s classes (`LiveChannels`,
   `ImageHistory`, `DisplaySettingsStore`) are UI-thread only and have no locks; its free functions
@@ -91,6 +98,16 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   converter's thread. Snapshots' history pictures are made on `SnapshotConverter`'s thread, in a queue that
   never drops one. Window tests use `LiveConversion::Immediate`, which makes both immediate, unless they test
   the threads.
+- **The Document Lab's threads:** the UI thread does no per-frame work beyond checking the camera session,
+  stamping the time and handing the `QVideoFrame` to the `Engine` in a closure. The engine's one processing
+  thread converts it (`toFrame`), paces and reads replays, runs the `FrameProcessor` and pushes to the
+  recorder and the `ResultSender`; the window talks to it only through its mailbox of commands, and every wait
+  there wakes for a command. Each run has a generation: the window drops results of an older one, and of any
+  run once stopped. A camera frame waits in a slot of one (a newer replaces it); a replay never skips a frame
+  (`ReplayPacer`); the recorder never drops a replay's frame (it waits for room) but counts a camera frame it
+  has no room for as not recorded. Hooks fire with no lock held. The canvas takes the viewer's glue (view
+  counter, `LiveConverter` jobs numbered by result). Engine and window tests use the immediate modes,
+  `pump()` and an injected clock unless they test the threads.
 - **Wire-format changes:** a new optional header field keeps `version` 2; changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender
   (`python/visual_debug.py`) with them: both encoders must write `tests/wire/header_cases.json`'s golden
@@ -104,12 +121,16 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   through `test_support::environmentValue`: MSVC warns on `getenv`; in Python only `default_endpoint()`
   reads `VISUAL_DEBUG_ENDPOINT`, and `python/tests/conftest.py` points it at an unused port for every test); non-ASCII source is UTF-8 (MSVC gets
   `/utf-8`); OpenCV API must also exist in 4.x (OpenCV 5 moved some headers: guard them with
-  `__has_include`). On Windows `cv::imread`/`imwrite` take narrow paths, so in the apps a non-ASCII path
-  goes through Qt and `cv::imdecode`/`imencode`, while the examples (and their tests) get a UTF-8 code page
-  from `id_vision_lab_use_utf8_code_page()`; under it `std::filesystem::path` throws on bytes that are not
-  UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach access lists, so the viewer sets its folders' lists in
-  `apps/qt_common/private_files.cpp` and privacy tests use `tests/qt_common/owner_only.h`; those two `.cpp` files are
-  the only ones that include `<windows.h>`.
+  `__has_include`). On Windows `cv::imread`/`imwrite` and `cv::VideoCapture` take narrow paths, so in the
+  viewer and the example sender a non-ASCII path goes through Qt and `cv::imdecode`/`imencode`, while
+  `frame_io`'s users (the Document Lab, `media_smoke`, `live_sender`), the other examples and their tests get a
+  UTF-8 code page from `id_vision_lab_use_utf8_code_page()` and pass paths as UTF-8 (`u8string()`; the lab
+  makes them from `QString` through UTF-16); under it `std::filesystem::path` throws on bytes that are not
+  UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach
+  access lists, so the apps set their folders' lists in `apps/qt_common/private_files.cpp` and privacy tests
+  use `tests/qt_common/owner_only.h`; those two `.cpp` files are the only ones that include `<windows.h>`.
+  `frame_io` sets owner-only bits on the files it writes; on Windows they inherit the folder's list, so the
+  lab makes its recording and capture folders private through `private_files` before writing into them.
 - **Warnings:** zero from project code under `-Wall -Wextra -Wpedantic`, and under MSVC's `/W4`.
 - **UI tests run offscreen in the Fusion style**, so they cannot see macOS drawing (a `QToolBar`'s buttons
   lose their frames) or how a live appearance switch reaches child widgets (only as `PaletteChange`). Check
