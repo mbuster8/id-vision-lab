@@ -347,6 +347,22 @@ def _check_description(name, value_range, transfer, primaries, overlays) -> None
         raise TypeError("overlays are Polygon, Rectangle, Circle or Point")
 
 
+def encode_ping() -> bytes:
+    """The header of a ping, which asks whether a viewer is listening; it goes with an empty second frame."""
+    return f'{{"protocol":"visual_debug","version":{PROTOCOL_VERSION},"type":"ping"}}'.encode("utf-8")
+
+
+def encode_end(channel: str) -> bytes:
+    """The header of an end, which tells the viewer the live channel is finished with; it goes with an empty second
+    frame. The name is made valid and cut as an image's is. TypeError when the channel is not a str."""
+    if not isinstance(channel, str):
+        raise TypeError("channel must be a str")
+    name = _json_string(_cut_utf8(_valid_text(channel), MAX_NAME_BYTES))
+    return f'{{"protocol":"visual_debug","version":{PROTOCOL_VERSION},"type":"end","name":{name}}}'.encode(
+        "utf-8"
+    )
+
+
 def _header(
     rows, cols, channels, depth, name, live, sent_at, value_range, transfer, primaries, overlays
 ) -> bytes:

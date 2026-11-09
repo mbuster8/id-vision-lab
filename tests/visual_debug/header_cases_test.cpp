@@ -119,6 +119,14 @@ std::vector<Overlay> repeatedPolygons(const Json& repeat) {
 }
 
 std::string nameFrom(const Json& testCase) {
+    if (testCase.contains("nameRepeat")) {
+        std::string name;
+        const Json& repeat = testCase["nameRepeat"];
+        for (int i = 0; i < repeat.at("count").get<int>(); ++i) {
+            name += repeat.at("text").get<std::string>();
+        }
+        return name;
+    }
     if (!testCase.contains("nameHex")) {
         return testCase.value("name", std::string("x"));
     }
@@ -182,6 +190,18 @@ TEST(HeaderCases, EncodeWritesEveryGoldenHeader) {
     ASSERT_FALSE(cases.empty());
     for (const Json& testCase : cases) {
         const std::string id = testCase.at("id").get<std::string>();
+        // A control message: a header alone.
+        if (const std::string kind = testCase.value("type", std::string("image")); kind != "image") {
+            const std::string written =
+                kind == "ping" ? visual_debug::encodePing() : visual_debug::encodeEnd(nameFrom(testCase));
+            const std::string expected = testCase.at("header").get<std::string>();
+            if (expected == "?") {
+                ADD_FAILURE() << "GOLDEN\t" << id << "\t" << written;
+            } else {
+                EXPECT_EQ(written, expected) << id;
+            }
+            continue;
+        }
         const int type =
             CV_MAKETYPE(depthFrom(testCase.value("depth", std::string("8U"))), testCase.value("channels", 1));
         const cv::Mat image = cv::Mat::zeros(testCase.value("rows", 1), testCase.value("cols", 1), type);

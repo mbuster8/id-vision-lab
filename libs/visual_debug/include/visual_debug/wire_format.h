@@ -1,6 +1,7 @@
 #pragma once
 
 #include "visual_debug/image_message.h"
+#include "visual_debug/overlay.h"
 
 #include <opencv2/core/mat.hpp>
 
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 // Wire format version 2: a two-frame ZeroMQ message holding a JSON header and the raw pixels.
 // The authoritative description is docs/wire-format.md; change both together.
@@ -64,5 +66,25 @@ std::variant<EncodedMessage, EncodeError> encode(const cv::Mat& image, std::stri
 // Validates every header field and the pixel frame length before allocating. The returned image owns
 // its pixels. Never throws.
 std::variant<ImageMessage, DecodeError> decode(std::string_view header, std::span<const std::byte> pixels);
+
+// The control messages, sent as a header and an empty frame: a ping asks whether a viewer is listening; an
+// end tells it a live channel is finished with (docs/wire-format.md).
+std::string encodePing();
+// The name goes through sanitiseName.
+std::string encodeEnd(std::string_view channel);
+
+// What a header with an empty second frame asks for. Image: not a control message, to be decoded as an image.
+struct ControlMessage {
+    enum class Kind { Ping, End, Image };
+    Kind kind = Kind::Ping;
+    std::string name; // End's channel
+};
+// Reads only protocol, version, type and an end's name, with decode()'s reasons. Never throws, never copies
+// the header.
+std::variant<ControlMessage, DecodeError> decodeControl(std::string_view header);
+
+// The overlays as the header's "overlays" array carries them: those the viewer would accept, at most
+// kMaxOverlays, each number rounded to a thousandth; "[]" when none is left.
+std::string encodeOverlays(const std::vector<Overlay>& overlays);
 
 } // namespace visual_debug
