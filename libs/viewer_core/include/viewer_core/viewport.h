@@ -27,6 +27,9 @@ public:
     cv::Point2d viewToImage(cv::Point2d viewPoint) const;
     cv::Point2d imageToView(cv::Point2d imagePoint) const;
     cv::Rect2d visibleImageRect() const; // clipped to the image
+    // Every image pixel at least partly in view, the visible rectangle rounded outwards to whole pixels and
+    // kept within the image; empty without an image or a view.
+    cv::Rect visiblePixels() const;
 
 private:
     bool hasArea() const;

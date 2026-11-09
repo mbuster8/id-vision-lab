@@ -63,6 +63,18 @@ cv::Rect2d Viewport::visibleImageRect() const {
     return visible & cv::Rect2d(0, 0, m_imageSize.width, m_imageSize.height);
 }
 
+cv::Rect Viewport::visiblePixels() const {
+    if (!hasArea()) {
+        return {};
+    }
+    const cv::Rect2d visible = visibleImageRect();
+    const cv::Point topLeft(static_cast<int>(std::floor(visible.x)), static_cast<int>(std::floor(visible.y)));
+    const cv::Point bottomRight(static_cast<int>(std::ceil(visible.x + visible.width)),
+                                static_cast<int>(std::ceil(visible.y + visible.height)));
+    return cv::Rect(topLeft, bottomRight) &
+           cv::Rect(0, 0, static_cast<int>(m_imageSize.width), static_cast<int>(m_imageSize.height));
+}
+
 // Zero sizes (no image yet, a minimised window) would otherwise divide by zero and spread NaN everywhere.
 bool Viewport::hasArea() const {
     return m_imageSize.width > 0 && m_imageSize.height > 0 && m_viewSize.width > 0 && m_viewSize.height > 0;

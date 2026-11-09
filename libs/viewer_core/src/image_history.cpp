@@ -53,11 +53,17 @@ ImageHistory::ImageHistory(std::size_t capacity, std::size_t byteBudget, std::si
     }
 }
 
-// Converts before anything changes, so an unsupported image leaves the history as it was. Takes an id only
-// once the conversion has succeeded.
-ReceivedImage ImageHistory::makeEntry(std::string name, cv::Mat original, ImageOrigin origin) {
-    cv::Mat display =
-        toDisplayImage(original, defaultSettings(origin.tags), DisplayOptions{.tags = origin.tags});
+cv::Mat historyDisplay(const cv::Mat& original, const ImageTags& tags) {
+    return toDisplayImage(original, defaultSettings(tags), DisplayOptions{.tags = tags});
+}
+
+// Called once the picture exists, so an unsupported image or a wrong picture leaves the history as it was.
+// Takes an id only then.
+ReceivedImage ImageHistory::makeEntry(std::string name, cv::Mat original, cv::Mat display,
+                                      ImageOrigin origin) {
+    if (display.type() != CV_8UC4 || display.size() != original.size()) {
+        throw std::invalid_argument("ImageHistory: the picture is not 8-bit RGBA of the image's size");
+    }
     std::string summary = describeImage(original);
     if (origin.modifiedAt == Clock::time_point{}) {
         origin.modifiedAt = origin.arrivedAt;
@@ -66,13 +72,23 @@ ReceivedImage ImageHistory::makeEntry(std::string name, cv::Mat original, ImageO
                          std::move(display), std::move(summary), origin};
 }
 
-ImageHistory::AddResult ImageHistory::add(std::string name, cv::Mat original, ImageOrigin origin) {
-    m_entries.push_front(makeEntry(std::move(name), std::move(original), origin));
+ImageHistory::AddResult ImageHistory::addEntry(ReceivedImage entry) {
+    m_entries.push_front(std::move(entry));
     m_totalBytes += m_entries.front().byteSize();
 
     AddResult result{m_entries.front().id, {}, {}};
     evictUnprotected({result.id}, result);
     return result;
+}
+
+ImageHistory::AddResult ImageHistory::add(std::string name, cv::Mat original, ImageOrigin origin) {
+    cv::Mat display = historyDisplay(original, origin.tags);
+    return addEntry(makeEntry(std::move(name), std::move(original), std::move(display), origin));
+}
+
+ImageHistory::AddResult ImageHistory::add(std::string name, cv::Mat original, cv::Mat display,
+                                          ImageOrigin origin) {
+    return addEntry(makeEntry(std::move(name), std::move(original), std::move(display), origin));
 }
 
 std::optional<ImageHistory::AddResult> ImageHistory::addOldest(std::string name, cv::Mat original,
@@ -84,7 +100,8 @@ std::optional<ImageHistory::AddResult> ImageHistory::addOldest(std::string name,
     if (m_totalBytes + entryBytes(original) > m_byteBudget) {
         return std::nullopt;
     }
-    m_entries.push_back(makeEntry(std::move(name), std::move(original), origin));
+    cv::Mat display = historyDisplay(original, origin.tags);
+    m_entries.push_back(makeEntry(std::move(name), std::move(original), std::move(display), origin));
     m_totalBytes += m_entries.back().byteSize();
     return AddResult{m_entries.back().id, {}, {}};
 }
