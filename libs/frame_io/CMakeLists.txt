@@ -4,15 +4,22 @@
 find_package(Threads REQUIRED)
 
 add_library(frame_io STATIC
+    include/frame_io/capture.h
     include/frame_io/frame.h
     include/frame_io/image_folder.h
     include/frame_io/read_ahead.h
+    include/frame_io/recording.h
     include/frame_io/replay_source.h
     include/frame_io/video_file.h
     include/frame_io/video_source.h
+    src/capture.cpp
     src/file_sequence.h
     src/frame.cpp
     src/image_folder.cpp
+    src/recording_source.cpp
+    src/recording_writer.cpp
+    src/tags_json.cpp
+    src/tags_json.h
     src/video_file.cpp
     src/video_source.cpp)
 add_library(frame_io::frame_io ALIAS frame_io)
