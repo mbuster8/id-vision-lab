@@ -1,0 +1,147 @@
+#include "frame_io/video_source.h"
+
+#include "scratch_folder.h"
+#if defined(FRAME_IO_HAS_FFMPEG)
+#include "ffmpeg_clip.h"
+#include "frame_io/ffmpeg_video.h"
+#endif
+
+#include <gtest/gtest.h>
+#include <opencv2/core.hpp>
+#include <opencv2/videoio.hpp>
+
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace {
+
+using frame_io::ReadStatus;
+using test_support::ScratchFolder;
+
+// An MJPG clip OpenCV writes and reads with its own codec on every platform: `count` grey frames at 25 fps.
+std::string writeEightBitClip(const ScratchFolder& folder, int count) {
+    const std::string path = folder.file("clip.avi");
+    cv::VideoWriter writer(path, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 25.0, cv::Size(64, 48));
+    EXPECT_TRUE(writer.isOpened());
+    for (int i = 0; i < count; ++i) {
+        writer.write(cv::Mat(48, 64, CV_8UC3, cv::Scalar::all(i * 20)));
+    }
+    return path;
+}
+
+TEST(VideoSource, EightBitClipComesThroughOpenCv) {
+    const ScratchFolder folder;
+    const std::string path = writeEightBitClip(folder, 10);
+    std::string error;
+    const auto source = frame_io::openVideo(path, error);
+    ASSERT_NE(source, nullptr) << error;
+
+    for (std::uint64_t number = 0; number < 10; ++number) {
+        const frame_io::ReadResult result = source->next();
+        ASSERT_EQ(result.status, ReadStatus::Frame) << result.error;
+        EXPECT_EQ(result.frame.number, number);
+        EXPECT_EQ(result.frame.at, std::chrono::milliseconds(40) * number);
+        EXPECT_EQ(result.frame.image.depth(), CV_8U);
+    }
+    EXPECT_EQ(source->next().status, ReadStatus::End);
+    EXPECT_EQ(source->describe(), "clip.avi");
+}
+
+// A video file cannot step back, but Restart opens it again from its first frame.
+TEST(VideoSource, CannotSeekButRestartReopens) {
+    const ScratchFolder folder;
+    const std::string path = writeEightBitClip(folder, 5);
+    std::string error;
+    const auto source = frame_io::openVideo(path, error);
+    ASSERT_NE(source, nullptr) << error;
+    EXPECT_FALSE(source->canSeek());
+    source->next();
+    source->next();
+
+    ASSERT_TRUE(source->restart(error)) << error;
+
+    const frame_io::ReadResult first = source->next();
+    ASSERT_EQ(first.status, ReadStatus::Frame);
+    EXPECT_EQ(first.frame.number, 0U);
+    EXPECT_EQ(first.frame.at, std::chrono::nanoseconds(0));
+}
+
+TEST(VideoSource, MissingFileIsAnError) {
+    const ScratchFolder folder;
+    std::string error;
+
+    EXPECT_EQ(frame_io::openVideo(folder.path() / "missing.mov", error), nullptr);
+    EXPECT_FALSE(error.empty());
+}
+
+// A file cut short part-way (a copy that stopped, a full disk) stops the replay with an error, not as if the
+// video had ended: its header still says how many frames it should hold, and the reader comes back with
+// fewer. FFmpeg itself reports most damage as the end of the file, so the count is what tells them apart.
+TEST(VideoSource, ClipCutShortIsAnError) {
+    const ScratchFolder folder;
+    const std::string path = writeEightBitClip(folder, 30);
+    std::filesystem::resize_file(path, std::filesystem::file_size(path) / 2);
+    std::string error;
+    const auto source = frame_io::openVideo(path, error);
+    ASSERT_NE(source, nullptr) << error;
+    ASSERT_EQ(source->frameCount(), std::optional<std::uint64_t>(30));
+
+    frame_io::ReadResult result = source->next();
+    int frames = 0;
+    while (result.status == ReadStatus::Frame) {
+        ++frames;
+        result = source->next();
+    }
+
+    EXPECT_LT(frames, 30);
+    EXPECT_EQ(result.status, ReadStatus::Error);
+    EXPECT_NE(result.error.find("clip.avi"), std::string::npos) << result.error;
+    EXPECT_NE(result.error.find("of 30"), std::string::npos) << result.error;
+}
+
+#if defined(FRAME_IO_HAS_FFMPEG)
+
+// A 10-bit or HLG video goes through FFmpeg's libraries, as 16-bit frames with its tags.
+TEST(VideoSource, TenBitClipComesThroughFfmpeg) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("hlg.mkv");
+    ASSERT_TRUE(test_support::writeClip(path, test_support::Clip{.matrix = AVCOL_SPC_BT2020_NCL,
+                                                                 .transfer = AVCOL_TRC_ARIB_STD_B67,
+                                                                 .primaries = AVCOL_PRI_BT2020}));
+    std::string error;
+    const auto source = frame_io::openVideo(path, error);
+    ASSERT_NE(source, nullptr) << error;
+
+    int frames = 0;
+    for (frame_io::ReadResult result = source->next(); result.status == ReadStatus::Frame;
+         result = source->next()) {
+        EXPECT_EQ(result.frame.image.type(), CV_16UC3);
+        EXPECT_EQ(result.frame.tags.transfer, visual_debug::Transfer::Hlg);
+        EXPECT_EQ(result.frame.number, static_cast<std::uint64_t>(frames));
+        ++frames;
+    }
+    EXPECT_EQ(frames, test_support::kClipFrames);
+}
+
+// FFmpeg tells a failed read from the end of the file; only the end leaves lastError empty.
+TEST(FfmpegVideo, LastErrorEmptyAtTheEnd) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("plain.mkv");
+    ASSERT_TRUE(test_support::writeClip(path, test_support::Clip{}));
+    std::string error;
+    const auto video = frame_io::FfmpegVideo::open(path, false, error);
+    ASSERT_NE(video, nullptr) << error;
+
+    while (video->read()) {
+    }
+
+    EXPECT_TRUE(video->lastError().empty()) << video->lastError();
+}
+
+#endif
+
+} // namespace

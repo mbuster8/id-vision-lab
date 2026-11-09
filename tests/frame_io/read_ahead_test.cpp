@@ -79,6 +79,29 @@ TEST(ReadAhead, ReadyWhenAnItemWaitsOrTheStreamEnded) {
     EXPECT_EQ(ahead.take(), std::nullopt);
 }
 
+// The wake is called on the reading thread after each item and at the end, so a caller can wait for a frame
+// and for anything else on one condition of its own.
+TEST(ReadAhead, WakesWhenAnItemIsReadyAndAtTheEnd) {
+    std::promise<void> go;
+    const std::shared_future<void> released = go.get_future().share();
+    int next = 0; // only the reading thread touches it
+    ReadAhead<int> ahead(
+        [&released, &next]() -> std::optional<int> {
+            released.wait();
+            return next < 2 ? std::optional(next++) : std::nullopt;
+        },
+        4);
+    std::atomic<int> wakes{0};
+    ahead.setWake([&wakes] { ++wakes; });
+
+    go.set_value();
+    EXPECT_EQ(ahead.take(), std::optional(0));
+    EXPECT_EQ(ahead.take(), std::optional(1));
+    EXPECT_EQ(ahead.take(), std::nullopt);
+
+    EXPECT_EQ(wakes.load(), 3); // two items, then the end
+}
+
 // A reader that throws ends the stream instead of the program.
 TEST(ReadAhead, AThrowingReadEndsTheStream) {
     ReadAhead<int> ahead([]() -> std::optional<int> { throw std::runtime_error("decoder failed"); }, 2);

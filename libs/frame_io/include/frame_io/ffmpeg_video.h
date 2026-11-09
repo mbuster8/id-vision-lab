@@ -45,6 +45,8 @@ public:
 
     const VideoInfo& info() const;
     std::optional<VideoFrame> read(); // nothing at the end or on an error
+    // Why the last read() gave nothing: empty at the end of the file, the reason after anything else.
+    const std::string& lastError() const;
 
 private:
     struct Impl;

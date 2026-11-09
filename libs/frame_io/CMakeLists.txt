@@ -9,10 +9,12 @@ add_library(frame_io STATIC
     include/frame_io/read_ahead.h
     include/frame_io/replay_source.h
     include/frame_io/video_file.h
+    include/frame_io/video_source.h
     src/file_sequence.h
     src/frame.cpp
     src/image_folder.cpp
-    src/video_file.cpp)
+    src/video_file.cpp
+    src/video_source.cpp)
 add_library(frame_io::frame_io ALIAS frame_io)
 
 target_include_directories(frame_io PUBLIC

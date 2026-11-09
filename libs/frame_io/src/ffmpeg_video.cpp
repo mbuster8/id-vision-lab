@@ -327,27 +327,45 @@ struct FfmpegVideo::Impl {
     std::int64_t framesRead = 0;
     VideoInfo info;
     std::optional<VideoFrame> first; // decoded at open, to learn the frames' format
+    std::string error;               // why the last read gave nothing; empty at the end
 
     // One attempt at opening `path`: with the hardware when `hardware` is set and the codec has it.
     static std::unique_ptr<Impl> open(const std::string& path, bool hardware, std::string& error);
     const AVFrame* nextFrame();
     std::optional<VideoFrame> toVideoFrame(const AVFrame* frame);
+    std::nullptr_t fail(const char* what, int code); // sets `error`
 };
 
-// The next decoded frame in the computer's memory; nothing at the end or on an error.
+std::nullptr_t FfmpegVideo::Impl::fail(const char* what, int code) {
+    std::array<char, AV_ERROR_MAX_STRING_SIZE> text{};
+    av_strerror(code, text.data(), text.size());
+    error = std::string(what) + ": " + text.data();
+    return nullptr;
+}
+
+// The next decoded frame in the computer's memory; nothing at the end or on an error, which sets `error`.
 const AVFrame* FfmpegVideo::Impl::nextFrame() {
     for (;;) {
         const int received = avcodec_receive_frame(decoder.get(), decoded.get());
         if (received == 0) {
             break;
         }
-        if (received != AVERROR(EAGAIN) || draining) {
-            return nullptr; // the end, or an error
+        if (received == AVERROR_EOF) {
+            return nullptr; // the end: the decoder has handed over every frame it held
         }
-        if (av_read_frame(input.get(), packet.get()) < 0) {
+        if (received != AVERROR(EAGAIN)) {
+            return fail("could not decode a frame", received);
+        }
+        if (draining) {
+            return nullptr; // nothing more will come
+        }
+        if (const int read = av_read_frame(input.get(), packet.get()); read < 0) {
+            if (read != AVERROR_EOF) {
+                return fail("could not read the file", read);
+            }
             draining = true; // the end of the file: the decoder hands over the frames it still holds
-            if (avcodec_send_packet(decoder.get(), nullptr) < 0) {
-                return nullptr;
+            if (const int sent = avcodec_send_packet(decoder.get(), nullptr); sent < 0) {
+                return fail("could not finish decoding", sent);
             }
             continue;
         }
@@ -355,16 +373,19 @@ const AVFrame* FfmpegVideo::Impl::nextFrame() {
             packet->stream_index == stream ? avcodec_send_packet(decoder.get(), packet.get()) : 0;
         av_packet_unref(packet.get());
         if (sent < 0) {
-            return nullptr;
+            return fail("could not decode a packet", sent);
         }
     }
     if (!decoded->hw_frames_ctx) {
         return decoded.get();
     }
     av_frame_unref(transferred.get());
-    if (av_hwframe_transfer_data(transferred.get(), decoded.get(), 0) < 0 ||
-        av_frame_copy_props(transferred.get(), decoded.get()) < 0) {
-        return nullptr;
+    if (const int transferredData = av_hwframe_transfer_data(transferred.get(), decoded.get(), 0);
+        transferredData < 0) {
+        return fail("could not copy a frame from the hardware", transferredData);
+    }
+    if (const int copied = av_frame_copy_props(transferred.get(), decoded.get()); copied < 0) {
+        return fail("could not copy a frame from the hardware", copied);
     }
     return transferred.get();
 }
@@ -518,6 +539,7 @@ FfmpegVideo::~FfmpegVideo() = default;
 const VideoInfo& FfmpegVideo::info() const { return m_impl->info; }
 
 std::optional<VideoFrame> FfmpegVideo::read() {
+    m_impl->error.clear();
     if (m_impl->first) {
         return std::exchange(m_impl->first, std::nullopt);
     }
@@ -525,7 +547,13 @@ std::optional<VideoFrame> FfmpegVideo::read() {
     if (!frame) {
         return std::nullopt;
     }
-    return m_impl->toVideoFrame(frame);
+    std::optional<VideoFrame> converted = m_impl->toVideoFrame(frame);
+    if (!converted) {
+        m_impl->error = "could not convert a frame to 16-bit BGR";
+    }
+    return converted;
 }
+
+const std::string& FfmpegVideo::lastError() const { return m_impl->error; }
 
 } // namespace frame_io

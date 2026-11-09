@@ -33,6 +33,14 @@ public:
     ReadAhead(const ReadAhead&) = delete;
     ReadAhead& operator=(const ReadAhead&) = delete;
 
+    // Called on the reading thread after each item is ready and when the stream ends, so a caller can wait on
+    // a condition of its own for a frame and for anything else at once. Set it before the first item is ready
+    // to be called for every one.
+    void setWake(std::function<void()> wake) {
+        const std::lock_guard lock(m_mutex);
+        m_wake = std::move(wake);
+    }
+
     // Whether take() would return at once: an item waits, or the stream has ended.
     bool ready() const {
         const std::lock_guard lock(m_mutex);
@@ -69,6 +77,8 @@ private:
             } catch (const std::exception&) {
                 // A reader that fails ends the stream: the caller sees its end, not a terminated program.
             }
+            std::function<void()> wake;
+            const bool ended = !item;
             {
                 const std::lock_guard lock(m_mutex);
                 if (item) {
@@ -76,9 +86,13 @@ private:
                 } else {
                     m_ended = true;
                 }
+                wake = m_wake;
             }
             m_changed.notify_all();
-            if (!item) {
+            if (wake) {
+                wake(); // outside the lock: it may ask ready()
+            }
+            if (ended) {
                 return;
             }
         }
@@ -91,6 +105,7 @@ private:
     std::deque<T> m_items;
     bool m_ended = false;
     bool m_stopping = false;
+    std::function<void()> m_wake;
     std::thread m_thread; // last, so it starts after everything it uses
 };
 
