@@ -6,11 +6,12 @@ add_library(live_sender_lib STATIC
     live_sender.h)
 target_include_directories(live_sender_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(live_sender_lib PUBLIC opencv_core visual_debug::visual_debug Threads::Threads
-                                      PRIVATE opencv_imgproc)
+                                      PRIVATE lab_core::lab_core opencv_imgproc)
 id_vision_lab_set_warnings(live_sender_lib)
 
 add_executable(live_sender main.cpp)
-target_link_libraries(live_sender PRIVATE live_sender_lib frame_io::frame_io opencv_videoio)
+# lab_core before frame_io, which it links too, so the linker sees each static library once.
+target_link_libraries(live_sender PRIVATE live_sender_lib lab_core::lab_core frame_io::frame_io opencv_videoio)
 id_vision_lab_set_warnings(live_sender)
 id_vision_lab_add_sanitizer_defaults(live_sender)
 id_vision_lab_use_utf8_code_page(live_sender)

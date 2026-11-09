@@ -28,6 +28,7 @@ find_package(nlohmann_json 3.11 REQUIRED)
 add_subdirectory(libs/visual_debug)
 add_subdirectory(libs/viewer_core)
 add_subdirectory(libs/frame_io)
+add_subdirectory(libs/lab_core)
 
 if(ID_VISION_LAB_BUILD_QT_APPS)
     add_subdirectory(apps)

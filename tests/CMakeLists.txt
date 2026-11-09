@@ -73,6 +73,15 @@ id_vision_lab_add_test_executable(frame_io_tests
         GTest::gtest_main)
 id_vision_lab_use_utf8_code_page(frame_io_tests)
 
+id_vision_lab_add_test_executable(lab_core_tests
+    SOURCES
+        lab_core/card_frame.h
+        lab_core/document_outline_test.cpp
+    LIBRARIES
+        lab_core::lab_core
+        opencv_imgproc
+        GTest::gtest_main)
+
 if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(pipeline_tests
         SOURCES
@@ -89,6 +98,7 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             examples/real_time_frames_test.cpp
         LIBRARIES
             live_sender_lib
+            lab_core::lab_core
             frame_io::frame_io
             opencv_videoio
             opencv_imgproc
@@ -97,8 +107,9 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
             cppzmq
             nlohmann_json::nlohmann_json
             GTest::gtest_main)
-    # test_support.h: the collecting sink the delivery test uses.
-    target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+    # test_support.h: the collecting sink the delivery test uses; card_frame.h: the outline's synthetic card.
+    target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
+                                                         ${CMAKE_CURRENT_SOURCE_DIR}/lab_core)
     id_vision_lab_use_utf8_code_page(live_sender_tests)
 endif()
 
