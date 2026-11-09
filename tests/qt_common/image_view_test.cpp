@@ -99,6 +99,28 @@ TEST_F(ImageViewTest, SameSizeKeepsTheRegion) {
     EXPECT_EQ(changed.size(), 1);
 }
 
+// A window with no use for regions, such as the Document Lab's, switches them off: Shift + drag then pans,
+// and a region already drawn goes.
+TEST_F(ImageViewTest, RegionsCanBeSwitchedOff) {
+    EXPECT_TRUE(m_view.regionsEnabled());
+    drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
+    QSignalSpy changed(&m_view, &ImageView::regionChanged);
+    QSignalSpy panned(&m_view, &ImageView::panned);
+
+    m_view.setRegionsEnabled(false);
+    EXPECT_FALSE(m_view.regionsEnabled());
+    EXPECT_EQ(m_view.region(), std::nullopt);
+    EXPECT_EQ(changed.size(), 1);
+
+    sendWheelEvent(m_view, {100, 100}, 4 * 120); // zoomed in, so a drag can pan
+    changed.clear();
+    drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
+
+    EXPECT_EQ(m_view.region(), std::nullopt);
+    EXPECT_EQ(changed.size(), 0);
+    EXPECT_EQ(panned.size(), 1);
+}
+
 TEST_F(ImageViewTest, ClickClearsTheRegion) {
     drag(m_view, {20, 40}, {60, 100}, Qt::ShiftModifier);
     m_view.setRegionText({QStringLiteral("21×31 at 10, 20")});

@@ -60,6 +60,10 @@ public:
     // the same image size keeps it; another size, or a left click without a drag, clears it.
     std::optional<QRect> region() const;
     void clearRegion();
+    // On at construction. A window that has no use for regions turns them off: Shift + drag then pans, and a
+    // region shown is cleared.
+    void setRegionsEnabled(bool enabled);
+    bool regionsEnabled() const;
     // The lines of the region's label, drawn in a box above it (below when there is no room above).
     void setRegionText(const QStringList& lines);
     const QStringList& regionText() const;
@@ -100,4 +104,5 @@ private:
     viewer_core::ImageTags::Overlays m_overlays;
     qt_common::OverlayPainter m_overlayPainter; // keeps the labels laid out between paints
     bool m_overlaysShown = true;
+    bool m_regionsEnabled = true;
 };

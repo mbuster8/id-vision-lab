@@ -112,6 +112,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
             qt_common/image_tags_conversion_test.cpp
             qt_common/image_view_test.cpp
             qt_common/live_converter_test.cpp
+            qt_common/live_drawing_test.cpp
             qt_common/outline_icons_test.cpp
             qt_common/overlay_painter_test.cpp
             qt_common/qimage_conversion_test.cpp

@@ -17,6 +17,7 @@
 #include "image_tags_conversion.h"
 #include "image_view.h"
 #include "live_channel_panel.h"
+#include "live_drawing.h"
 #include "outline_icons.h"
 #include "qimage_conversion.h"
 #include "shades.h"
@@ -1129,7 +1130,7 @@ void MainWindow::submitLiveFrame(ImageView::KeepView keep) {
         keep = ImageView::KeepView::No;
     }
     m_fitPending = keep == ImageView::KeepView::No;
-    const LiveDrawing drawing = liveDrawing(frame.size(), keep);
+    const LiveDrawing drawing = liveDrawing(*m_imageView, frame.size(), keep);
     std::optional<LiveJob> replaced =
         m_converter->submit({.viewCounter = m_viewCounter,
                              .channel = channel->name,
@@ -1187,68 +1188,23 @@ void MainWindow::applyLiveResult(LiveResult result) {
     // was resized meanwhile), draw it again for that.
     if (keep == ImageView::KeepView::No) {
         m_fitPending = false;
-        const LiveDrawing fitted = liveDrawing(cv::Size(result.imageSize.width(), result.imageSize.height()),
-                                               ImageView::KeepView::IfSameSize);
+        const LiveDrawing fitted =
+            liveDrawing(*m_imageView, cv::Size(result.imageSize.width(), result.imageSize.height()),
+                        ImageView::KeepView::IfSameSize);
         if (fitted != LiveDrawing{area, cv::Size(result.picture.width(), result.picture.height())}) {
             submitLiveFrame(ImageView::KeepView::IfSameSize);
         }
     }
 }
 
-namespace {
-
-// The size a part of a frame is converted at when drawn at `scale` device pixels per frame pixel: the drawn
-// size when that is smaller than the part, else the part's own.
-cv::Size drawnSizeOf(cv::Size part, double scale) {
-    if (scale >= 1.0) {
-        return part;
-    }
-    return viewer_core::sizeWithin(part, cv::Size(static_cast<int>(std::ceil(part.width * scale)),
-                                                  static_cast<int>(std::ceil(part.height * scale))));
-}
-
-} // namespace
-
-// Zoomed in, the part of the frame in view and a quarter of its width and height on each side, so a small pan
-// shows converted pixels at once; the whole frame when that part would be most of it anyway, where cutting
-// saves little and every pan would cost a conversion.
-LiveDrawing MainWindow::liveDrawing(cv::Size frameSize, ImageView::KeepView keep) const {
-    constexpr double kMostOfTheFrame = 0.75;
-    const QSize imageSize(frameSize.width, frameSize.height);
-    const cv::Rect whole(0, 0, frameSize.width, frameSize.height);
-    cv::Rect area = whole;
-    if (const QRect visible = m_imageView->visibleAreaFor(imageSize, keep); !visible.isEmpty()) {
-        const int marginX = visible.width() / 4;
-        const int marginY = visible.height() / 4;
-        const cv::Rect cut = cv::Rect(visible.x() - marginX, visible.y() - marginY,
-                                      visible.width() + 2 * marginX, visible.height() + 2 * marginY) &
-                             whole;
-        if (!cut.empty() &&
-            static_cast<double>(cut.area()) < kMostOfTheFrame * static_cast<double>(whole.area())) {
-            area = cut;
-        }
-    }
-    return {area, drawnSizeOf(area.size(), m_imageView->deviceScaleFor(imageSize, keep))};
-}
-
 // After a zoom, a fit, a resize or a pan: a frame converted for the old view, a frozen one above all, would
-// stay blurred, coarse or cut short. Only when the newest job's picture no longer covers what is in view at
-// the size it is drawn, though: past 1:1 its size stays the area's at every step, and converting it again for
-// each step of a trackpad zoom, or each move of a pan within the margin, would only cost. Compared with the
-// newest job, not the picture on screen, which a job still converting is about to replace.
+// stay blurred, coarse or cut short; needsRedraw says when it would.
 void MainWindow::redrawLiveFrameForView() {
     const viewer_core::LiveChannel* channel = m_liveChannel ? m_live.find(*m_liveChannel) : nullptr;
     if (channel == nullptr || channel->shown.empty()) {
         return;
     }
-    const QSize frameSize(channel->shown.cols, channel->shown.rows);
-    const QRect visible = m_imageView->visibleAreaFor(frameSize, ImageView::KeepView::IfSameSize);
-    const double scale = m_imageView->deviceScaleFor(frameSize, ImageView::KeepView::IfSameSize);
-    const std::optional<LiveDrawing> newest = m_converter->newestDrawing();
-    const bool covered =
-        newest &&
-        QRect(newest->area.x, newest->area.y, newest->area.width, newest->area.height).contains(visible);
-    if (!covered || newest->size != drawnSizeOf(newest->area.size(), scale)) {
+    if (needsRedraw(*m_imageView, channel->shown.size(), m_converter->newestDrawing())) {
         submitLiveFrame(ImageView::KeepView::IfSameSize);
     }
 }

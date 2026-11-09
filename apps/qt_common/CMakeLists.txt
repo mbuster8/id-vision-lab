@@ -15,6 +15,8 @@ add_library(qt_common STATIC
     image_view.h
     live_converter.cpp
     live_converter.h
+    live_drawing.cpp
+    live_drawing.h
     outline_icons.cpp
     outline_icons.h
     overlay_painter.cpp

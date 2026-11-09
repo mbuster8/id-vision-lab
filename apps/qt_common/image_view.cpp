@@ -129,6 +129,15 @@ QRect ImageView::visibleArea() const {
 
 std::optional<QRect> ImageView::region() const { return m_region; }
 
+void ImageView::setRegionsEnabled(bool enabled) {
+    m_regionsEnabled = enabled;
+    if (!enabled) {
+        clearRegion();
+    }
+}
+
+bool ImageView::regionsEnabled() const { return m_regionsEnabled; }
+
 // Emits only when there was a region to clear.
 void ImageView::clearRegion() {
     m_regionStart.reset();
@@ -269,7 +278,7 @@ void ImageView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     m_pressPosition = event->position();
-    if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+    if (m_regionsEnabled && event->modifiers().testFlag(Qt::ShiftModifier)) {
         m_regionStart = imagePointAt(event->position());
         m_regionText.clear();
         m_region = regionBetween(*m_regionStart, *m_regionStart);
