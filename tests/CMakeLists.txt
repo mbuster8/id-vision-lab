@@ -185,4 +185,8 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
     # The shared Qt test helpers, such as palette_support.h and control_checks.h.
     target_include_directories(viewer_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
     target_include_directories(example_sender_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
+    # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of its
+    # own so that it also runs from the installed Windows package.
+    add_test(NAME media_smoke COMMAND media_smoke)
+    set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
 endif()

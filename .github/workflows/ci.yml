@@ -162,7 +162,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\Qt\${{ env.QT_VERSION }}
-          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-qtmultimedia-aqt${{ env.AQTINSTALL_COMMIT }}
 
       - name: Install Qt
         if: steps.qt-cache.outputs.cache-hit != 'true'
@@ -175,7 +175,7 @@ jobs:
             Write-Host "pipx attempt $attempt failed; trying again in $(30 * $attempt) seconds."
             Start-Sleep -Seconds (30 * $attempt)
           }
-          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir C:\Qt
+          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH -m qtmultimedia --outputdir C:\Qt
 
       # Saved straight away, so a later failure in the job does not lose it.
       - name: Save Qt
@@ -183,7 +183,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\Qt\${{ env.QT_VERSION }}
-          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-aqt${{ env.AQTINSTALL_COMMIT }}
+          key: qt-${{ env.QT_VERSION }}-${{ env.QT_ARCH }}-qtmultimedia-aqt${{ env.AQTINSTALL_COMMIT }}
 
       - name: Point the presets at Qt
         shell: pwsh
@@ -212,6 +212,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --preset windows-debug
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The FFmpeg DLLs next to the Document Lab's programs: all five vcpkg's (cmake/ffmpeg_dlls.cmake), so
+          # Qt Multimedia's plug-in never pairs them with Qt's own copies.
+          Get-ChildItem build\windows-debug\apps\av*.dll, build\windows-debug\apps\sw*.dll |
+            ForEach-Object { "$($_.Name): $($_.VersionInfo.ProductVersion)" }
 
       # Only when vcpkg added packages, so a run with nothing new does not store another copy.
       - name: Count vcpkg's cached packages again

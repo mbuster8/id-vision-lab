@@ -20,6 +20,7 @@ include(cmake/compiler_warnings.cmake)
 include(cmake/sanitizers.cmake)
 include(cmake/coverage.cmake)
 include(cmake/utf8_code_page.cmake)
+include(cmake/ffmpeg_dlls.cmake)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
 find_package(cppzmq REQUIRED)
