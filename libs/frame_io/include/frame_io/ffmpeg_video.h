@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -60,6 +61,12 @@ public:
 
     const VideoInfo& info() const;
     std::optional<VideoFrame> read(); // nothing at the end or on an error
+    // The next read() gives the first frame at or after `at` (from the first frame), less half a frame: from
+    // the keyframe before it, decoded forward, so it is exact. A time past the end makes the next read() the
+    // end. `abandon`, asked between frames, gives up at once when it says so, with no error. False when
+    // abandoned or when FFmpeg cannot seek (lastError() says why); the read position is then undefined, and
+    // the next call must be another seek.
+    bool seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon = {});
     // Why the last read() gave nothing: empty at the end of the file, the reason after anything else.
     const std::string& lastError() const;
 

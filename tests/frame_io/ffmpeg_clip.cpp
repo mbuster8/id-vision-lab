@@ -8,7 +8,9 @@ extern "C" {
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace test_support {
@@ -91,75 +93,128 @@ bool encode(AVCodecContext* encoder, const AVFrame* frame, AVFormatContext* outp
     }
 }
 
-} // namespace
+// What a clip is written with, whatever its frames hold.
+struct Settings {
+    const char* encoder;
+    AVPixelFormat format;
+    cv::Size size;
+    AVColorRange range = AVCOL_RANGE_MPEG;
+    AVColorSpace matrix = AVCOL_SPC_UNSPECIFIED;
+    AVColorTransferCharacteristic transfer = AVCOL_TRC_UNSPECIFIED;
+    AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
+    std::optional<double> rotation;
+    int fps = 30;
+    int gop = 12;
+    int bFrames = 0;
+};
 
-bool writeClip(const std::string& path, const Clip& clip) {
+Written writeFrames(const std::string& path, const Settings& settings, int frames,
+                    const std::function<void(AVFrame*, int)>& fillFrame) {
     av_log_set_level(AV_LOG_ERROR); // not FFV1's and MOV's notes on what they chose
-    const AVCodec* codec = avcodec_find_encoder_by_name(clip.encoder);
+    const AVCodec* codec = avcodec_find_encoder_by_name(settings.encoder);
+    if (!codec) {
+        return Written::NoEncoder;
+    }
     AVFormatContext* rawOutput = nullptr;
-    if (!codec || avformat_alloc_output_context2(&rawOutput, nullptr, nullptr, path.c_str()) < 0) {
-        return false;
+    if (avformat_alloc_output_context2(&rawOutput, nullptr, nullptr, path.c_str()) < 0) {
+        return Written::Failed;
     }
     const std::unique_ptr<AVFormatContext, CloseOutput> output(rawOutput);
     const std::unique_ptr<AVCodecContext, FreeEncoder> encoder(avcodec_alloc_context3(codec));
     if (!encoder) {
-        return false;
+        return Written::Failed;
     }
-    encoder->width = clip.size.width;
-    encoder->height = clip.size.height;
-    encoder->pix_fmt = clip.format;
-    encoder->time_base = {1, 30};
-    encoder->framerate = {30, 1};
-    encoder->color_range = clip.range;
-    encoder->colorspace = clip.matrix;
-    encoder->color_trc = clip.transfer;
-    encoder->color_primaries = clip.primaries;
+    encoder->width = settings.size.width;
+    encoder->height = settings.size.height;
+    encoder->pix_fmt = settings.format;
+    encoder->time_base = {1, settings.fps};
+    encoder->framerate = {settings.fps, 1};
+    encoder->gop_size = settings.gop;
+    encoder->max_b_frames = settings.bFrames;
+    encoder->color_range = settings.range;
+    encoder->colorspace = settings.matrix;
+    encoder->color_trc = settings.transfer;
+    encoder->color_primaries = settings.primaries;
     if (output->oformat->flags & AVFMT_GLOBALHEADER) {
         encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
     AVStream* stream = avformat_new_stream(output.get(), nullptr);
     if (!stream || avcodec_open2(encoder.get(), codec, nullptr) < 0 ||
         avcodec_parameters_from_context(stream->codecpar, encoder.get()) < 0) {
-        return false;
+        return Written::Failed;
     }
     stream->time_base = encoder->time_base;
-    if (clip.rotation) {
+    if (settings.rotation) {
         AVPacketSideData* matrix =
             av_packet_side_data_new(&stream->codecpar->coded_side_data, &stream->codecpar->nb_coded_side_data,
                                     AV_PKT_DATA_DISPLAYMATRIX, 9 * sizeof(std::int32_t), 0);
         if (!matrix) {
-            return false;
+            return Written::Failed;
         }
-        av_display_rotation_set(reinterpret_cast<std::int32_t*>(matrix->data), *clip.rotation);
+        av_display_rotation_set(reinterpret_cast<std::int32_t*>(matrix->data), *settings.rotation);
     }
     if (avio_open(&output->pb, path.c_str(), AVIO_FLAG_WRITE) < 0 ||
         avformat_write_header(output.get(), nullptr) < 0) {
-        return false;
+        return Written::Failed;
     }
 
     const std::unique_ptr<AVFrame, FreeFrame> frame(av_frame_alloc());
     const std::unique_ptr<AVPacket, FreePacket> packet(av_packet_alloc());
     if (!frame || !packet) {
-        return false;
+        return Written::Failed;
     }
-    frame->format = clip.format;
-    frame->width = clip.size.width;
-    frame->height = clip.size.height;
+    frame->format = settings.format;
+    frame->width = settings.size.width;
+    frame->height = settings.size.height;
     if (av_frame_get_buffer(frame.get(), 0) < 0) {
-        return false;
+        return Written::Failed;
     }
-    for (int index = 0; index < kClipFrames; ++index) {
+    for (int index = 0; index < frames; ++index) {
         if (av_frame_make_writable(frame.get()) < 0) {
-            return false;
+            return Written::Failed;
         }
-        fill(frame.get(), clip, index);
+        fillFrame(frame.get(), index);
         frame->pts = index;
         if (!encode(encoder.get(), frame.get(), output.get(), stream, packet.get())) {
-            return false;
+            return Written::Failed;
         }
     }
     return encode(encoder.get(), nullptr, output.get(), stream, packet.get()) &&
-           av_write_trailer(output.get()) == 0;
+                   av_write_trailer(output.get()) == 0
+               ? Written::Yes
+               : Written::Failed;
+}
+
+} // namespace
+
+bool writeClip(const std::string& path, const Clip& clip) {
+    const Settings settings{.encoder = clip.encoder,
+                            .format = clip.format,
+                            .size = clip.size,
+                            .range = clip.range,
+                            .matrix = clip.matrix,
+                            .transfer = clip.transfer,
+                            .primaries = clip.primaries,
+                            .rotation = clip.rotation};
+    return writeFrames(path, settings, kClipFrames,
+                       [&clip](AVFrame* frame, int index) { fill(frame, clip, index); }) == Written::Yes;
+}
+
+Written writeNumberedClip(const std::string& path, const NumberedClip& clip) {
+    const int shift = av_pix_fmt_desc_get(clip.format)->comp[0].depth - 8;
+    Clip frameClip{.encoder = clip.encoder, .format = clip.format, .size = clip.size};
+    frameClip.u = 128 << shift;
+    frameClip.v = 128 << shift;
+    const Settings settings{.encoder = clip.encoder,
+                            .format = clip.format,
+                            .size = clip.size,
+                            .fps = clip.fps,
+                            .gop = clip.gop,
+                            .bFrames = clip.bFrames};
+    return writeFrames(path, settings, clip.frames, [&frameClip, shift](AVFrame* frame, int index) {
+        frameClip.y.fill((16 + 3 * index) << shift);
+        fill(frame, frameClip, 0);
+    });
 }
 
 } // namespace test_support

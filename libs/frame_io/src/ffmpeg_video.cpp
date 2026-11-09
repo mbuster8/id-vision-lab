@@ -401,6 +401,9 @@ struct FfmpegVideo::Impl {
     static std::unique_ptr<Impl> open(const std::string& path, bool hardware, bool eightBitAsEightBit,
                                       std::string& error);
     const AVFrame* nextFrame();
+    const AVFrame* receiveFrame();
+    const AVFrame* inMemory(const AVFrame* frame);
+    bool seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon);
     std::optional<VideoFrame> toVideoFrame(const AVFrame* frame);
     std::nullptr_t fail(const char* what, int code); // sets `error`
 };
@@ -414,10 +417,17 @@ std::nullptr_t FfmpegVideo::Impl::fail(const char* what, int code) {
 
 // The next decoded frame in the computer's memory; nothing at the end or on an error, which sets `error`.
 const AVFrame* FfmpegVideo::Impl::nextFrame() {
+    const AVFrame* frame = receiveFrame();
+    return frame ? inMemory(frame) : nullptr;
+}
+
+// The next decoded frame, in the hardware's memory when the hardware decodes; nothing at the end or on an
+// error, which sets `error`.
+const AVFrame* FfmpegVideo::Impl::receiveFrame() {
     for (;;) {
         const int received = avcodec_receive_frame(decoder.get(), decoded.get());
         if (received == 0) {
-            break;
+            return decoded.get();
         }
         if (received == AVERROR_EOF) {
             return nullptr; // the end: the decoder has handed over every frame it held
@@ -445,18 +455,82 @@ const AVFrame* FfmpegVideo::Impl::nextFrame() {
             return fail("could not decode a packet", sent);
         }
     }
-    if (!decoded->hw_frames_ctx) {
-        return decoded.get();
+}
+
+// The decoded frame in the computer's memory: itself, or copied from the hardware's.
+const AVFrame* FfmpegVideo::Impl::inMemory(const AVFrame* frame) {
+    if (!frame->hw_frames_ctx) {
+        return frame;
     }
     av_frame_unref(transferred.get());
-    if (const int transferredData = av_hwframe_transfer_data(transferred.get(), decoded.get(), 0);
+    if (const int transferredData = av_hwframe_transfer_data(transferred.get(), frame, 0);
         transferredData < 0) {
         return fail("could not copy a frame from the hardware", transferredData);
     }
-    if (const int copied = av_frame_copy_props(transferred.get(), decoded.get()); copied < 0) {
+    if (const int copied = av_frame_copy_props(transferred.get(), frame); copied < 0) {
         return fail("could not copy a frame from the hardware", copied);
     }
     return transferred.get();
+}
+
+bool FfmpegVideo::Impl::seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon) {
+    error.clear();
+    first.reset();
+    if (!firstTimestamp) {
+        error = "its frames have no timestamps";
+        return false;
+    }
+    const AVRational nanoseconds{1, 1'000'000'000};
+    const std::int64_t target = *firstTimestamp + av_rescale_q(at.count(), nanoseconds, timeBase);
+    const std::int64_t half =
+        info.fps > 0.0 ? av_rescale_q(std::llround(0.5e9 / info.fps), nanoseconds, timeBase) : 0;
+    std::int64_t from = target;
+    std::int64_t back = av_rescale_q(1'000'000'000, nanoseconds, timeBase); // a second, doubled each try
+    for (;;) {
+        if (const int sought = av_seek_frame(input.get(), stream, from, AVSEEK_FLAG_BACKWARD); sought < 0) {
+            fail("could not seek", sought);
+            return false;
+        }
+        avcodec_flush_buffers(decoder.get());
+        draining = false;
+        bool firstDecoded = true;
+        bool tryEarlier = false;
+        while (!tryEarlier) {
+            if (abandon && abandon()) {
+                error.clear();
+                return false;
+            }
+            const AVFrame* frame = receiveFrame();
+            if (!frame) {
+                return error.empty(); // past the end: the next read gives the end
+            }
+            // Compared before any copy or conversion: the frames passed over cost only their decoding.
+            const std::int64_t timestamp = frame->best_effort_timestamp;
+            // The first frame decoded already past the target: the seek landed late (an index by decoding
+            // time, an open GOP's dropped leading frames), so try again from earlier, down to the first
+            // frame.
+            if (firstDecoded && timestamp != AV_NOPTS_VALUE && timestamp > target + half &&
+                from > *firstTimestamp) {
+                from = std::max(target - back, *firstTimestamp);
+                back *= 2;
+                tryEarlier = true;
+                continue;
+            }
+            firstDecoded = false;
+            if (timestamp == AV_NOPTS_VALUE || timestamp >= target - half) {
+                const AVFrame* kept = inMemory(frame);
+                if (!kept) {
+                    return false;
+                }
+                first = toVideoFrame(kept);
+                if (!first) {
+                    error = "could not convert a frame to BGR";
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
 }
 
 std::optional<VideoFrame> FfmpegVideo::Impl::toVideoFrame(const AVFrame* frame) {
@@ -650,5 +724,9 @@ std::optional<VideoFrame> FfmpegVideo::read() {
 }
 
 const std::string& FfmpegVideo::lastError() const { return m_impl->error; }
+
+bool FfmpegVideo::seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon) {
+    return m_impl->seek(at, abandon);
+}
 
 } // namespace frame_io

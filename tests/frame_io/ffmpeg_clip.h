@@ -41,4 +41,21 @@ struct Clip {
 // Writes the clip; the container follows the file name's extension.
 bool writeClip(const std::string& path, const Clip& clip);
 
+// A longer clip for seeking: frame i is a plain luma of 16 + 3·i (scaled to the format's depth) and neutral
+// chroma, so every frame differs; keyframes every `gop` frames, with `bFrames` B-frames between references.
+struct NumberedClip {
+    const char* encoder = "ffv1";
+    AVPixelFormat format = AV_PIX_FMT_YUV420P;
+    int frames = 60;
+    int gop = 12;
+    int bFrames = 0;
+    int fps = 30;
+    cv::Size size{64, 48};
+};
+
+enum class Written { Yes, NoEncoder, Failed };
+
+// NoEncoder when this FFmpeg has no encoder of that name; Failed when it has one that does not work here.
+Written writeNumberedClip(const std::string& path, const NumberedClip& clip);
+
 } // namespace test_support
