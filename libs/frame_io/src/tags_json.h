@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,11 @@ visual_debug::ImageDescription tagsFromJson(const nlohmann::json& json);
 bool writeOwnerOnly(const std::filesystem::path& file, const std::vector<unsigned char>& bytes,
                     std::string& error);
 bool writeOwnerOnly(const std::filesystem::path& file, const std::string& text, std::string& error);
+
+// Closes `stream`, which wrote `file`, and says whether every byte reached it: a full disk often refuses them
+// only as the buffer is flushed on closing. On failure, `error` names the file and the file is removed if
+// this write `created` it and it is a regular file (never a device such as /dev/full).
+bool finishWrite(std::ofstream& stream, const std::filesystem::path& file, bool created, std::string& error);
 
 // A file's name as UTF-8, whatever the platform's encoding of paths.
 std::string utf8Name(const std::filesystem::path& path);

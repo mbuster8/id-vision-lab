@@ -63,14 +63,18 @@ visual_debug::ImageDescription tagsFromJson(const nlohmann::json& json) {
 namespace {
 
 bool writeBytes(const std::filesystem::path& file, const char* data, std::size_t size, std::string& error) {
-    {
-        std::ofstream stream(file, std::ios::binary | std::ios::trunc);
-        if (!stream || !stream.write(data, static_cast<std::streamsize>(size))) {
-            error = utf8Name(file) + ": could not be written";
-            return false;
-        }
+    std::error_code ignored;
+    const bool created = !std::filesystem::exists(file, ignored);
+    std::ofstream stream(file, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        error = utf8Name(file) + ": could not be written";
+        return false;
     }
-    std::error_code ignored; // Windows keeps the folder's access list, which these bits do not reach
+    stream.write(data, static_cast<std::streamsize>(size));
+    if (!finishWrite(stream, file, created, error)) {
+        return false;
+    }
+    // Windows keeps the folder's access list, which these bits do not reach.
     std::filesystem::permissions(file,
                                  std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
                                  std::filesystem::perm_options::replace, ignored);
@@ -78,6 +82,21 @@ bool writeBytes(const std::filesystem::path& file, const char* data, std::size_t
 }
 
 } // namespace
+
+bool finishWrite(std::ofstream& stream, const std::filesystem::path& file, bool created, std::string& error) {
+    if (stream.is_open()) {
+        stream.close(); // flushes: a full disk refuses the buffer here
+    }
+    if (stream) {
+        return true;
+    }
+    error = utf8Name(file) + ": could not be written";
+    std::error_code ignored;
+    if (created && std::filesystem::is_regular_file(file, ignored)) {
+        std::filesystem::remove(file, ignored);
+    }
+    return false;
+}
 
 bool writeOwnerOnly(const std::filesystem::path& file, const std::vector<unsigned char>& bytes,
                     std::string& error) {
