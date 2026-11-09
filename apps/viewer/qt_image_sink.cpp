@@ -122,6 +122,22 @@ void QtImageSink::closeLiveChannel(const std::string& name) {
     std::erase_if(m_liveChannels, [&name](const LiveChannel& open) { return open.name == name; });
 }
 
+void QtImageSink::onLiveEnded(std::string_view name) {
+    bool tell = false;
+    {
+        const std::lock_guard lock(m_mutex);
+        std::erase_if(m_liveChannels, [name](const LiveChannel& open) { return open.name == name; });
+        std::vector<std::string>& ended = m_liveNews.ended;
+        if (std::find(ended.begin(), ended.end(), name) == ended.end()) {
+            ended.emplace_back(name);
+        }
+        tell = noteLiveNews();
+    }
+    if (tell) {
+        emit liveFramesWaiting();
+    }
+}
+
 void QtImageSink::protectLiveChannel(std::optional<std::string> name) {
     const std::lock_guard lock(m_mutex);
     m_protected = std::move(name);

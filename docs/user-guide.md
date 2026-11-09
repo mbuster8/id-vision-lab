@@ -347,7 +347,10 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
 - **Closing.** A channel that has gone idle shows a close button (✕) on its row, frozen or muted or not; the
   right-click menu's **Close** is enabled at the same time. One that still streams has none: stop its sender,
   and 3 seconds later it is idle. Closing the channel in view shows the image you looked at before it, if it
-  is still in the history.
+  is still in the history. A sender can also end its channel itself (the Document Lab's ■ does, and
+  `visual_debug::endLive` or Python's `end_live`): the viewer closes it as the button would and logs
+  `Live channel [lab] ended by its sender`, except a channel you froze, which stays until you close it. A still image
+  a sender sends while a live channel is shown goes to the history without taking the view.
 - **Limits.** At most 8 channels, whose newest frames may hold 1 GiB together. A ninth channel takes the place
   of the one that has been idle longest, never the one in view; with all 8 active, its frames are refused,
   and its sender gets `Rejected` (`too many live channels`). So does any frame that would take the channels

@@ -209,6 +209,38 @@ TEST(QtImageSink, ClosingFreesThePlaceAndDropsTheWaitingFrame) {
     EXPECT_EQ(names.back(), "c8");
 }
 
+// A sender that ends its channel frees the place, as closing does, and the UI hears of it as live news.
+TEST(QtImageSink, EndFreesThePlaceDropsTheFrameAndIsNews) {
+    QtImageSink sink;
+    QSignalSpy news(&sink, &QtImageSink::liveFramesWaiting);
+    openChannels(sink, QtImageSink::kMaxLiveChannels);
+    (void)sink.takeLiveFrames();
+
+    // A frame waiting when its channel ends is dropped.
+    ASSERT_EQ(sink.onImageReceived(liveFrame("c3", 7)), Acceptance::Taken);
+    sink.onLiveEnded("c3");
+    const auto batch = sink.takeLiveFrames();
+    EXPECT_EQ(batch.ended, std::vector<std::string>{"c3"});
+    EXPECT_TRUE(batch.frames.empty());
+
+    // An end alone is news.
+    news.clear();
+    sink.onLiveEnded("c5");
+    EXPECT_EQ(news.count(), 1);
+    EXPECT_EQ(sink.takeLiveFrames().ended, std::vector<std::string>{"c5"});
+    EXPECT_EQ(sink.onImageReceived(liveFrame("c8")), Acceptance::Taken);
+}
+
+TEST(QtImageSink, EndTwiceIsOneName) {
+    QtImageSink sink;
+    sink.onImageReceived(liveFrame("camera"));
+
+    sink.onLiveEnded("camera");
+    sink.onLiveEnded("camera");
+
+    EXPECT_EQ(sink.takeLiveFrames().ended, std::vector<std::string>{"camera"});
+}
+
 // Header-only Mats over a small buffer: the sink counts bytes from the header and never reads the pixels.
 TEST(QtImageSink, RefusesBeyondTheByteBudget) {
     unsigned char buffer[16] = {};
