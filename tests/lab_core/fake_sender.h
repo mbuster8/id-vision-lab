@@ -19,12 +19,32 @@
 
 namespace test_support {
 
+// The calls of several senders, in the order they were made, as "<kind> <name>" ("live lab", "end lab"), for
+// tests in which an old sender and a new one send from threads of their own.
+class SendLog {
+public:
+    void add(std::string line) {
+        const std::lock_guard lock(m_mutex);
+        m_lines.push_back(std::move(line));
+    }
+    std::vector<std::string> lines() const {
+        const std::lock_guard lock(m_mutex);
+        return m_lines;
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    std::vector<std::string> m_lines;
+};
+
 class RecordingSender : public visual_debug::ImageSender {
 public:
+    enum class Kind { Image, Live, Ping, End };
+
     struct Call {
-        std::string name;
-        bool live = false;
-        cv::Mat image;
+        std::string name; // empty for a ping
+        Kind kind = Kind::Live;
+        cv::Mat image{};
         visual_debug::ImageDescription description{};
     };
 
@@ -34,8 +54,18 @@ public:
         Latch* holdLive = nullptr)
         : m_answer(std::move(answer)), m_holdLive(holdLive) {}
 
+    // What ping() answers; Listening when empty.
+    std::function<visual_debug::ViewerState()> pingAnswer{};
+    // Where each call is also written, if anywhere.
+    SendLog* log = nullptr;
+
     visual_debug::SendResult send(const cv::Mat& image, std::string_view name) override {
-        return record({std::string(name), false, image, {}});
+        return send(image, name, {});
+    }
+
+    visual_debug::SendResult send(const cv::Mat& image, std::string_view name,
+                                  const visual_debug::ImageDescription& description) override {
+        return answered({std::string(name), Kind::Image, image, description});
     }
 
     visual_debug::SendResult sendLive(const cv::Mat& frame, std::string_view channel) override {
@@ -47,7 +77,16 @@ public:
         if (m_holdLive) {
             m_holdLive->hold();
         }
-        return record({std::string(channel), true, frame, description});
+        return answered({std::string(channel), Kind::Live, frame, description});
+    }
+
+    visual_debug::ViewerState ping() override {
+        record({std::string(), Kind::Ping, {}, {}});
+        return pingAnswer ? pingAnswer() : visual_debug::ViewerState::Listening;
+    }
+
+    visual_debug::SendResult endLive(std::string_view channel) override {
+        return answered({std::string(channel), Kind::End, {}, {}});
     }
 
     std::vector<Call> calls() const {
@@ -62,12 +101,33 @@ public:
     }
 
 private:
-    visual_debug::SendResult record(Call call) {
+    static const char* nameOf(Kind kind) {
+        switch (kind) {
+        case Kind::Image:
+            return "image";
+        case Kind::Live:
+            return "live";
+        case Kind::Ping:
+            return "ping";
+        case Kind::End:
+            return "end";
+        }
+        return "?";
+    }
+
+    visual_debug::SendResult answered(Call call) {
         const visual_debug::SendResult result = m_answer(call.name);
+        record(std::move(call));
+        return result;
+    }
+
+    void record(Call call) {
+        if (log) {
+            log->add(std::string(nameOf(call.kind)) + " " + call.name);
+        }
         const std::lock_guard lock(m_mutex);
         m_calls.push_back(std::move(call));
         m_called.notify_all();
-        return result;
     }
 
     std::function<visual_debug::SendResult(std::string_view)> m_answer;

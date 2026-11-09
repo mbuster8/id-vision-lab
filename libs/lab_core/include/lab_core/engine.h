@@ -61,6 +61,7 @@ struct EngineStatus {
     // The recording's, or once stopped the last one's, also while it finishes writing its queue.
     std::optional<frame_io::RecordingWriter::Progress> recordingProgress;
     std::optional<ResultSender::Stats> sending; // while sending
+    bool endingChannels = false;                // a stopped sender is still ending the lab's channels
 };
 
 struct EngineHooks {
@@ -121,7 +122,14 @@ public:
     void stopRecording();
     // Null: not sending. A replaced sender is destroyed on a thread of its own, so a send in progress to a
     // slow viewer never holds up the processing or the window.
+    // While nothing runs (paused, ended, one picture), a new sender gets the frame on screen at once.
     void setSender(std::unique_ptr<ResultSender> sender);
+    // ⏸: the viewer keeps the lab's channels showing the last frame sent. Resumed while nothing runs, the
+    // frame on screen goes out again. Without a sender, nothing.
+    void pauseSending(bool paused);
+    // ■: the sender is retired as setSender(nullptr) retires it; with `endChannels`, it first ends the lab's
+    // channels in the viewer, and status().endingChannels is true from this call until it has.
+    void stopSending(bool endChannels);
     // The canvas's replaced pictures since the window opened, for recording.json.
     void reportNotDrawn(std::uint64_t total);
 
@@ -140,6 +148,11 @@ private:
         PendingFrame frame;
         std::uint64_t number = 0;
         std::uint64_t run = 0;
+    };
+    // A sender retired on a thread of its own, ending its channels first or not.
+    struct Retired {
+        std::future<void> done;
+        bool endingChannels = false;
     };
     struct Totals {
         std::uint64_t dropped = 0;
@@ -188,6 +201,9 @@ private:
     void doSetProcessor(std::unique_ptr<FrameProcessor> processor);
     void doStartRecording(std::unique_ptr<frame_io::RecordingWriter> writer, Totals base);
     void doSetSender(std::unique_ptr<ResultSender> sender);
+    void doPauseSending(bool paused);
+    void doStopSending(bool endChannels);
+    void retireSender(bool endChannels);
 
     void newGeneration();
     void clearSeeking();
@@ -222,6 +238,7 @@ private:
     std::optional<frame_io::Frame> m_held;     // read and not yet due
     std::optional<Clock::time_point> m_heldDue;
     std::optional<frame_io::Frame> m_onScreen; // the frame processed last
+    std::optional<LabResult> m_lastResult;     // its result, until the source closes
     std::optional<frame_io::Frame>
         m_waitingToRecord; // a replay's frame the full recorder has no room for yet
     Totals m_recordingBase;
@@ -248,7 +265,8 @@ private:
     std::vector<std::unique_ptr<frame_io::RecordingWriter>> m_finishing;
     std::optional<frame_io::RecordingWriter::Progress> m_lastRecording;
     std::unique_ptr<ResultSender> m_sender;
-    mutable std::vector<std::future<void>> m_retiring;
+    mutable std::vector<Retired> m_retiring;
+    int m_endsAsked = 0; // stopSending(true) calls whose command has not run yet
 
     std::thread m_thread; // last, so it starts after everything it uses
 };

@@ -66,7 +66,7 @@ Engine::~Engine() {
     }
     std::vector<std::unique_ptr<frame_io::RecordingWriter>> finishing;
     std::unique_ptr<ResultSender> sender;
-    std::vector<std::future<void>> retiring;
+    std::vector<Retired> retiring;
     std::deque<std::function<void()>> commands;
     std::optional<Pending> pending;
     {
@@ -83,8 +83,8 @@ Engine::~Engine() {
     }
     finishing.clear(); // each writes its queue first
     sender.reset();    // waits for a send in progress
-    for (std::future<void>& done : retiring) {
-        done.wait();
+    for (Retired& retired : retiring) {
+        retired.done.wait();
     }
 }
 
@@ -228,6 +228,20 @@ void Engine::setSender(std::unique_ptr<ResultSender> sender) {
     post([this, sender = held(std::move(sender))] { doSetSender(std::move(*sender)); });
 }
 
+void Engine::pauseSending(bool paused) {
+    post([this, paused] { doPauseSending(paused); });
+}
+
+void Engine::stopSending(bool endChannels) {
+    if (endChannels) {
+        // From the call, not from when the processing thread gets to it: the window disables ▶ at once.
+        const std::lock_guard lock(m_mutex);
+        ++m_endsAsked;
+        m_status.endingChannels = true;
+    }
+    post([this, endChannels] { doStopSending(endChannels); });
+}
+
 void Engine::reportNotDrawn(std::uint64_t total) {
     const std::lock_guard lock(m_mutex);
     m_notDrawn = total;
@@ -266,12 +280,12 @@ bool Engine::shutDown() const {
             return false;
         }
     }
-    for (const std::future<void>& retired : m_retiring) {
-        if (retired.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    for (const Retired& retired : m_retiring) {
+        if (retired.done.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             return false;
         }
     }
-    return true;
+    return m_endsAsked == 0;
 }
 
 bool Engine::pump() {
@@ -548,6 +562,7 @@ void Engine::process(frame_io::Frame frame, bool record) {
     if (m_sender) {
         m_sender->submit(result);
     }
+    m_lastResult = result;             // for a sender set or resumed while nothing runs
     std::optional<LabResult> replaced; // destroyed without the lock
     const std::lock_guard lock(m_mutex);
     m_status.busyFrame.reset();
@@ -645,13 +660,19 @@ void Engine::pruneFinished() {
             ++writer;
         }
     }
+    bool ending = m_endsAsked > 0;
     for (auto sender = m_retiring.begin(); sender != m_retiring.end();) {
-        if (sender->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            retired.push_back(std::move(*sender));
+        if (sender->done.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            retired.push_back(std::move(sender->done));
             sender = m_retiring.erase(sender);
         } else {
+            ending = ending || sender->endingChannels;
             ++sender;
         }
+    }
+    if (ending != m_status.endingChannels) {
+        m_status.endingChannels = ending;
+        m_notifyStatus = true;
     }
 }
 
@@ -867,12 +888,43 @@ void Engine::doStartRecording(std::unique_ptr<frame_io::RecordingWriter> writer,
     m_notifyStatus = true;
 }
 
+// While nothing runs (paused, ended, one picture) the new sender gets the frame on screen at once.
 void Engine::doSetSender(std::unique_ptr<ResultSender> sender) {
+    retireSender(false);
+    {
+        const std::lock_guard lock(m_mutex);
+        m_sender = std::move(sender);
+    }
+    if (m_sender && !isRunning(m_state) && m_lastResult) {
+        m_sender->submit(*m_lastResult);
+    }
+}
+
+void Engine::doPauseSending(bool paused) {
+    if (!m_sender) {
+        return;
+    }
+    m_sender->setPaused(paused);
+    if (!paused && !isRunning(m_state) && m_lastResult) {
+        m_sender->submit(*m_lastResult);
+    }
+}
+
+void Engine::doStopSending(bool endChannels) {
+    retireSender(endChannels);
+    if (endChannels) {
+        const std::lock_guard lock(m_mutex);
+        --m_endsAsked; // the retiree, if there was one, now says whether it is ending
+    }
+}
+
+// The sender goes on a thread of its own, after ending its channels when asked, so a send in progress to a
+// slow viewer never holds up the processing or the window.
+void Engine::retireSender(bool endChannels) {
     std::unique_ptr<ResultSender> old;
     {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_sender);
-        m_sender = std::move(sender);
         if (old) {
             m_notSentRetired += old->stats().notSent;
         }
@@ -882,11 +934,17 @@ void Engine::doSetSender(std::unique_ptr<ResultSender> sender) {
     }
     try {
         std::future<void> retiring =
-            std::async(std::launch::async, [retired = std::move(old)]() mutable { retired.reset(); });
+            std::async(std::launch::async, [retired = std::move(old), endChannels]() mutable {
+                if (endChannels) {
+                    retired->endChannels();
+                }
+                retired.reset();
+            });
         const std::lock_guard lock(m_mutex);
-        m_retiring.push_back(std::move(retiring));
+        m_retiring.push_back({.done = std::move(retiring), .endingChannels = endChannels});
     } catch (const std::system_error&) {
-        // No thread to spare: the sender went with the task that could not start, here, after its send.
+        // No thread to spare: the sender went with the task that could not start, here, after its send, and
+        // without ending its channels.
     }
 }
 
@@ -1003,6 +1061,7 @@ void Engine::closeSource() {
     m_oneFrame = false;
     m_stepWanted = false;
     m_nextIndex = 0;
+    m_lastResult.reset(); // the source's: not for a sender set after it
     clearSeeking();
     const std::lock_guard lock(m_mutex);
     m_status.frameRate.reset();

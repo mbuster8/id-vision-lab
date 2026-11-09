@@ -896,6 +896,97 @@ TEST(Engine, ReplacingTheSenderDoesNotWait) {
     EXPECT_TRUE(gone);
 }
 
+// Pumps, a millisecond apart, until the condition holds or ten seconds pass; whether it held.
+bool pumpUntil(Harness& h, const std::function<bool()>& condition) {
+    const auto until = std::chrono::steady_clock::now() + 10s;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() > until) {
+            return false;
+        }
+        h.engine.pump();
+        std::this_thread::sleep_for(1ms);
+    }
+    return true;
+}
+
+// A sender the engine takes over, with pointers the test keeps.
+struct KeptSender {
+    explicit KeptSender(test_support::Latch* holdLive = nullptr, test_support::SendLog* log = nullptr,
+                        lab_core::ResultSender::Mode mode = lab_core::ResultSender::Mode::Immediate) {
+        auto fake = std::make_unique<test_support::RecordingSender>(
+            [](std::string_view) { return visual_debug::SendResult::Delivered; }, holdLive);
+        fake->log = log;
+        recording = fake.get();
+        owned = std::make_unique<lab_core::ResultSender>(mode, std::move(fake));
+        sender = owned.get();
+    }
+    std::unique_ptr<lab_core::ResultSender> owned;
+    lab_core::ResultSender* sender = nullptr;
+    test_support::RecordingSender* recording = nullptr;
+};
+
+// The window disables ▶ from the click of ■ until the old sender has ended its channels, so a new stream's
+// "lab" is never ended by the old sender's late end.
+TEST(Engine, EndingChannelsFromTheCall) {
+    test_support::Latch latch;
+    Harness h;
+    KeptSender kept(&latch, nullptr, lab_core::ResultSender::Mode::Threaded);
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    h.engine.pump();
+    ASSERT_TRUE(latch.waitUntilEntered()); // frame 0 held in its send
+
+    h.engine.stopSending(true);
+    EXPECT_TRUE(h.engine.status().endingChannels); // before the command runs
+    h.engine.pump();
+    EXPECT_TRUE(h.engine.status().endingChannels); // the old sender waits for its send
+    latch.release();
+
+    EXPECT_TRUE(pumpUntil(h, [&] { return !h.engine.status().endingChannels; }));
+}
+
+// ▶ on a paused replay sends the frame on screen at once rather than nothing until the next frame.
+TEST(Engine, NewSenderGetsTheLastResultWhilePaused) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(5, 40ms)));
+    pausedAt(h, 2);
+    KeptSender kept;
+    lab_core::ResultSender* sender = kept.sender;
+    test_support::RecordingSender* recording = kept.recording;
+
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.pump();
+
+    EXPECT_TRUE(sender->pump());
+    const auto calls = recording->calls();
+    ASSERT_FALSE(calls.empty());
+    EXPECT_EQ(calls[0].name, "lab");
+    EXPECT_EQ(calls[0].image.at<cv::Vec3b>(0, 0)[0], 2);
+}
+
+// ⏸ then ▶ while the replay is paused sends the frame on screen again.
+TEST(Engine, ResumeResubmitsWhilePaused) {
+    Harness h;
+    KeptSender kept;
+    lab_core::ResultSender* sender = kept.sender;
+    test_support::RecordingSender* recording = kept.recording;
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.startReplay(openerOf(framesApart(5, 40ms)));
+    h.engine.pauseSending(true);
+    pausedAt(h, 2);
+    EXPECT_FALSE(sender->pump()); // nothing while paused
+    EXPECT_TRUE(sender->stats().paused);
+
+    h.engine.pauseSending(false);
+    h.engine.pump();
+
+    EXPECT_TRUE(sender->pump());
+    const auto calls = recording->calls();
+    ASSERT_FALSE(calls.empty());
+    EXPECT_EQ(calls.back().name, "lab");
+    EXPECT_EQ(calls.back().image.at<cv::Vec3b>(0, 0)[0], 2);
+}
+
 // --- The processing thread
 // ----------------------------------------------------------------------------------
 
@@ -956,6 +1047,27 @@ TEST(Engine, OpensOnTheProcessingThread) {
     }));
     const std::lock_guard lock(mutex);
     EXPECT_NE(*openedOn, std::this_thread::get_id());
+}
+
+// ■ ends the lab's channels in the viewer, after its last frame.
+TEST(Engine, StopSendingEndsChannels) {
+    test_support::SendLog log;
+    Signals signals;
+    Engine engine(Engine::Mode::Threaded, {.resultReady = [&] { signals.notify(); },
+                                           .statusChanged = [&] { signals.notify(); },
+                                           .now = nullptr});
+    KeptSender kept(nullptr, &log, lab_core::ResultSender::Mode::Threaded);
+    test_support::RecordingSender* recording = kept.recording;
+    engine.setSender(std::move(kept.owned));
+    engine.startReplay(openerOf(framesApart(3, 0ms)));
+    ASSERT_TRUE(recording->waitForCalls(1));
+
+    engine.stopSending(true);
+
+    ASSERT_TRUE(signals.waitFor([&] { return !engine.status().endingChannels; }));
+    const std::vector<std::string> lines = log.lines();
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.back(), "end lab");
 }
 
 } // namespace

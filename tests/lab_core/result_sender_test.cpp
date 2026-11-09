@@ -6,9 +6,13 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -58,13 +62,13 @@ TEST(ResultSender, SendsTheFrameAndEveryImage) {
     const auto calls = fake.sender->calls();
     ASSERT_EQ(calls.size(), 2U);
     EXPECT_EQ(calls[0].name, "lab");
-    EXPECT_TRUE(calls[0].live);
+    EXPECT_EQ(calls[0].kind, RecordingSender::Kind::Live);
     EXPECT_EQ(calls[0].image.at<cv::Vec3b>(0, 0), cv::Vec3b(7, 7, 7));
     EXPECT_EQ(calls[0].description.valueRange, (visual_debug::ValueRange{0, 255}));
     ASSERT_EQ(calls[0].description.overlays.size(), 1U);
     EXPECT_EQ(std::get<visual_debug::Polygon>(calls[0].description.overlays[0]).label, "Document");
     EXPECT_EQ(calls[1].name, "lab edges");
-    EXPECT_TRUE(calls[1].live);
+    EXPECT_EQ(calls[1].kind, RecordingSender::Kind::Live);
     EXPECT_EQ(calls[1].image.type(), CV_8UC1);
     EXPECT_FALSE(sender.pump()); // nothing waits
     EXPECT_EQ(sender.stats().sent, 1U);
@@ -119,6 +123,71 @@ TEST(ResultSender, SendsOnItsOwnThreadNewestFirst) {
     EXPECT_EQ(calls[0].image.at<cv::Vec3b>(0, 0), cv::Vec3b(1, 1, 1));
     EXPECT_EQ(calls[2].image.at<cv::Vec3b>(0, 0), cv::Vec3b(3, 3, 3));
     EXPECT_EQ(calls[2].name, "lab");
+}
+
+// ⏸ keeps the viewer's channels and sends nothing; what is dropped meanwhile was never meant to go out, so it
+// is not counted as not sent.
+TEST(ResultSender, PausedDropsWithoutCounting) {
+    Fake fake;
+    ResultSender sender(ResultSender::Mode::Immediate, std::move(fake.owned));
+    sender.submit(resultOf(1)); // waiting when the pause comes
+
+    sender.setPaused(true);
+    sender.submit(resultOf(2));
+
+    EXPECT_FALSE(sender.pump());
+    EXPECT_TRUE(sender.stats().paused);
+    EXPECT_EQ(sender.stats().notSent, 0U);
+    EXPECT_TRUE(fake.sender->calls().empty());
+
+    sender.setPaused(false);
+    sender.submit(resultOf(3));
+    EXPECT_TRUE(sender.pump());
+    EXPECT_FALSE(sender.stats().paused);
+    EXPECT_EQ(sender.stats().sent, 1U);
+}
+
+// ■ ends every channel the lab sent on, once each, in the order first sent, after the last send.
+TEST(ResultSender, EndChannelsInFirstSentOrderOnce) {
+    Fake fake;
+    ResultSender sender(ResultSender::Mode::Immediate, std::move(fake.owned));
+    sender.submit(resultOf(1));
+    sender.pump();
+    sender.submit(resultOf(2));
+    sender.pump();
+
+    sender.endChannels();
+
+    const auto calls = fake.sender->calls();
+    ASSERT_EQ(calls.size(), 6U);
+    EXPECT_EQ(calls[4].kind, RecordingSender::Kind::End);
+    EXPECT_EQ(calls[4].name, "lab");
+    EXPECT_EQ(calls[5].kind, RecordingSender::Kind::End);
+    EXPECT_EQ(calls[5].name, "lab edges");
+}
+
+// The ends wait for a send in progress, so a late frame never brings a channel back after its end.
+TEST(ResultSender, EndChannelsWaitsForTheSendInProgress) {
+    test_support::Latch latch;
+    test_support::SendLog log;
+    Fake fake([](std::string_view) { return SendResult::Delivered; }, &latch);
+    fake.sender->log = &log;
+    ResultSender sender(ResultSender::Mode::Threaded, std::move(fake.owned));
+    sender.submit(resultOf(1));
+    ASSERT_TRUE(latch.waitUntilEntered());
+
+    std::atomic<bool> ended = false;
+    std::thread ending([&] {
+        sender.endChannels();
+        ended = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(ended);
+    latch.release();
+    ending.join();
+
+    EXPECT_EQ(log.lines(),
+              (std::vector<std::string>{"live lab", "live lab edges", "end lab", "end lab edges"}));
 }
 
 } // namespace
