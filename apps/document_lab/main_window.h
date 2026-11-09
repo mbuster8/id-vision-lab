@@ -9,6 +9,7 @@
 #include <frame_io/recording.h>
 #include <lab_core/engine.h>
 #include <lab_core/processors.h>
+#include <lab_core/viewer_link.h>
 #include <visual_debug/image_description.h>
 #include <visual_debug/image_sender.h>
 
@@ -27,7 +28,6 @@
 #include <vector>
 
 class QAction;
-class QCheckBox;
 class QCloseEvent;
 class QComboBox;
 class QEvent;
@@ -46,7 +46,10 @@ using Clock = std::chrono::steady_clock;
 // threads, dialogs or a disk that fills up.
 struct LabDependencies {
     std::unique_ptr<CameraBackend> cameras;
+    // The stream's sender, and the viewer link's own (pings, Send Frame); null: a visual_debug::Client.
     std::function<std::unique_ptr<visual_debug::ImageSender>(const std::string& endpoint)> makeSender;
+    lab_core::ViewerLink::MakeSender makeLinkSender;
+    lab_core::ViewerLink::Mode linkMode = lab_core::ViewerLink::Mode::Threaded;
     std::function<std::unique_ptr<lab_core::FrameProcessor>(lab_core::ProcessorKind)>
         makeProcessor; // null: lab_core's
     lab_core::Engine::Mode engineMode = lab_core::Engine::Mode::Threaded;
@@ -142,11 +145,18 @@ private:
     void chooseLabFolder();
     void openLabFolder();
 
-    // Send to viewer.
-    void toggleSend(bool on);
-    void startSending();
-    void stopSending();
+    // The viewer row.
+    QString endpointText() const;
+    bool mayAsk(const QString& endpoint) const; // loopback, or another computer the user said yes to
+    bool confirmFor(const QString& endpoint);   // mayAsk, after asking for another computer if need be
+    void applyEndpoint();                       // the link pings the endpoint, when it may
+    bool olderViewer() const;
+    void startStream();
+    void pauseStream();
+    void stopStream();
+    void sendFrame();
     void endpointChanged();
+    void updateViewerRow(const lab_core::EngineStatus& status);
 
     LabDependencies m_dependencies;
     LabSettings m_settings;
@@ -170,9 +180,16 @@ private:
     QPushButton* m_openLabFolder = nullptr;
     QPushButton* m_chooseLabFolder = nullptr;
     QTimer* m_closeTimer = nullptr;
-    QCheckBox* m_send = nullptr;
     QLineEdit* m_endpoint = nullptr;
-    QString m_sendingHost;              // another computer's, while sending there; empty for this one
+    QLabel* m_viewerIndicator = nullptr;
+    QLabel* m_viewerState = nullptr;
+    QPushButton* m_streamButton = nullptr;
+    QPushButton* m_pauseStream = nullptr;
+    QPushButton* m_stopStream = nullptr;
+    QPushButton* m_sendFrame = nullptr;
+    enum class Stream { Off, On, Paused };
+    Stream m_stream = Stream::Off;
+    QString m_sendingHost;              // another computer's, while streaming there; empty for this one
     QSet<QString> m_confirmedEndpoints; // the user said yes to sending there, this session
     QComboBox* m_processorCombo = nullptr;
     QComboBox* m_showCombo = nullptr;
@@ -213,10 +230,11 @@ private:
     std::deque<Clock::time_point> m_taken; // results taken in the last second
     std::deque<Clock::time_point> m_drawn; // pictures drawn in the last second
 
-    // Destroyed in this order, from the bottom: the converter's thread and the engine's stop before anything
-    // they call back into goes.
+    // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop
+    // before anything they call back into goes.
     std::unique_ptr<LiveConverter> m_converter;
     std::unique_ptr<lab_core::Engine> m_engine;
+    std::unique_ptr<lab_core::ViewerLink> m_link;
 };
 
 } // namespace document_lab

@@ -12,7 +12,6 @@ const QString kOverlays = QStringLiteral("lab/overlays");
 const QString kCamera = QStringLiteral("lab/camera");
 const QString kFormats = QStringLiteral("lab/formats/");
 const QString kLabFolder = QStringLiteral("lab/folder");
-const QString kSend = QStringLiteral("lab/send");
 const QString kEndpoint = QStringLiteral("lab/endpoint");
 const QString kResultsWidth = QStringLiteral("lab/resultsWidth");
 const QString kResultsShown = QStringLiteral("lab/resultsShown");
@@ -48,10 +47,6 @@ void LabSettings::setFormatFor(const QByteArray& cameraId, const QString& label)
 QString LabSettings::labFolder() const { return m_settings.value(kLabFolder).toString(); }
 
 void LabSettings::setLabFolder(const QString& folder) { m_settings.setValue(kLabFolder, folder); }
-
-bool LabSettings::sendToViewer() const { return m_settings.value(kSend, false).toBool(); }
-
-void LabSettings::setSendToViewer(bool on) { m_settings.setValue(kSend, on); }
 
 QString LabSettings::endpoint() const {
     return m_settings.value(kEndpoint, QString::fromStdString(visual_debug::defaultEndpoint())).toString();

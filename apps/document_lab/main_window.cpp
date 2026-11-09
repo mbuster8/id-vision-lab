@@ -18,7 +18,6 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
-#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
@@ -49,6 +48,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <string_view>
@@ -178,10 +178,25 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     hooks.now = m_dependencies.clock;
     m_engine = std::make_unique<lab_core::Engine>(m_dependencies.engineMode, std::move(hooks));
 
-    chooseProcessor(m_processorCombo->currentIndex());
-    if (m_send->isChecked()) {
-        startSending(); // as last time; another computer's endpoint is asked about again
+    // The link's hook comes on its thread: it only posts to this window's. No stream starts by itself: it can
+    // show passports, so it starts on a click.
+    if (!m_dependencies.makeLinkSender) {
+        m_dependencies.makeLinkSender =
+            [](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
+            return std::make_unique<visual_debug::Client>(visual_debug::ClientOptions{.endpoint = endpoint});
+        };
     }
+    m_link = std::make_unique<lab_core::ViewerLink>(
+        m_dependencies.linkMode, m_dependencies.makeLinkSender,
+        lab_core::ViewerLink::Hooks{.changed =
+                                        [this] {
+                                            QMetaObject::invokeMethod(
+                                                this, [this] { refreshStatus(); }, Qt::QueuedConnection);
+                                        },
+                                    .now = m_dependencies.clock});
+    applyEndpoint();
+
+    chooseProcessor(m_processorCombo->currentIndex());
 
     // The window is the context: frames reach it on its own thread, and none after it is gone.
     CameraBackend* cameras = m_dependencies.cameras.get();
@@ -197,6 +212,7 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
 
 LabWindow::~LabWindow() {
     qApp->removeEventFilter(this);
+    m_link.reset(); // joins: no hook comes after; closing waited for it to be idle
     // The camera first: no frame reaches a window whose engine is gone.
     m_dependencies.cameras->disconnect(this);
     m_dependencies.cameras->stop();
@@ -318,16 +334,43 @@ void LabWindow::buildUi() {
     processingRow->addWidget(m_chooseLabFolder);
     layout->addLayout(processingRow);
 
-    auto* sendRow = new QHBoxLayout;
-    m_send = new QCheckBox(tr("Send to viewer"), central);
-    m_send->setObjectName(QStringLiteral("sendCheck"));
-    m_send->setChecked(m_settings.sendToViewer());
-    sendRow->addWidget(m_send);
+    // The viewer: its address (about 22 characters), whether it is there, the stream's ▶ ⏸ ■, Send Frame.
+    auto* viewerRow = new QHBoxLayout;
+    viewerRow->addWidget(new QLabel(tr("Viewer:"), central));
     m_endpoint = new QLineEdit(m_settings.endpoint(), central);
     m_endpoint->setObjectName(QStringLiteral("endpointEdit"));
     m_endpoint->setPlaceholderText(QString::fromStdString(visual_debug::defaultEndpoint()));
-    sendRow->addWidget(m_endpoint, 1);
-    layout->addLayout(sendRow);
+    m_endpoint->setToolTip(
+        tr("The viewer's address; another computer's is asked about before anything goes"));
+    m_endpoint->setFixedWidth(
+        m_endpoint->fontMetrics().horizontalAdvance(QStringLiteral("tcp://127.0.0.1:65535")) + 24);
+    viewerRow->addWidget(m_endpoint);
+    m_viewerIndicator = new QLabel(central);
+    m_viewerIndicator->setObjectName(QStringLiteral("viewerIndicator"));
+    m_viewerIndicator->setFixedSize(16, 16);
+    viewerRow->addWidget(m_viewerIndicator);
+    m_viewerState = new QLabel(central);
+    m_viewerState->setObjectName(QStringLiteral("viewerStateLabel"));
+    viewerRow->addWidget(m_viewerState);
+    m_streamButton =
+        makeButton(tr("Stream"), qt_common::makeColouredIcon(OutlineIcon::Play, qt_common::kGo),
+                   tr("Send every frame to the viewer as it is processed, or go on after a pause"),
+                   "streamButton", central);
+    viewerRow->addWidget(m_streamButton);
+    m_pauseStream = makeButton(QString(), qt_common::makeOutlineIcon(OutlineIcon::Pause),
+                               tr("Pause the stream: the viewer keeps showing the last frame"),
+                               "pauseStreamButton", central);
+    viewerRow->addWidget(m_pauseStream);
+    m_stopStream = makeButton(QString(), qt_common::makeColouredIcon(OutlineIcon::Stop, qt_common::kHalt),
+                              tr("Stop the stream, and end the lab's channels in the viewer"),
+                              "stopStreamButton", central);
+    viewerRow->addWidget(m_stopStream);
+    m_sendFrame =
+        makeButton(tr("Send Frame"), qt_common::makeOutlineIcon(OutlineIcon::Send),
+                   tr("Send the picture on screen into the viewer's history"), "sendFrameButton", central);
+    viewerRow->addWidget(m_sendFrame);
+    viewerRow->addStretch();
+    layout->addLayout(viewerRow);
 
     // The canvas, with the placeholder over it in the same cell, beside the results.
     m_splitter = new QSplitter(Qt::Horizontal, central);
@@ -396,14 +439,20 @@ void LabWindow::buildUi() {
     connect(m_capture, &QPushButton::clicked, this, &LabWindow::capture);
     connect(m_openLabFolder, &QPushButton::clicked, this, &LabWindow::openLabFolder);
     connect(m_chooseLabFolder, &QPushButton::clicked, this, &LabWindow::chooseLabFolder);
-    connect(m_send, &QCheckBox::toggled, this, &LabWindow::toggleSend);
+    connect(m_streamButton, &QPushButton::clicked, this, &LabWindow::startStream);
+    connect(m_pauseStream, &QPushButton::clicked, this, &LabWindow::pauseStream);
+    connect(m_stopStream, &QPushButton::clicked, this, &LabWindow::stopStream);
+    connect(m_sendFrame, &QPushButton::clicked, this, &LabWindow::sendFrame);
     connect(m_endpoint, &QLineEdit::editingFinished, this, &LabWindow::endpointChanged);
     connect(m_closeTimer, &QTimer::timeout, this, [this] {
         if (m_dependencies.engineMode == lab_core::Engine::Mode::Immediate) {
             m_engine->pump();
         }
+        if (m_dependencies.linkMode == lab_core::ViewerLink::Mode::Immediate) {
+            m_link->pump();
+        }
         refreshStatus();
-        if (m_engine->shutDown()) {
+        if (m_engine->shutDown() && m_link->idle()) {
             m_closeTimer->stop();
             close();
         }
@@ -659,6 +708,7 @@ std::optional<CameraFormat> LabWindow::currentFormat() const {
 
 void LabWindow::pumpForTests() {
     m_engine->pump();
+    m_link->pump();
     takeResult();
     refreshStatus();
 }
@@ -873,6 +923,7 @@ void LabWindow::refreshStatus() {
         m_record->setChecked(false);
     }
     updateReplayControls(status);
+    updateViewerRow(status);
     if (status.sending) {
         if (!m_sendingHost.isEmpty()) {
             parts << tr("sending to %1").arg(m_sendingHost);
@@ -880,6 +931,17 @@ void LabWindow::refreshStatus() {
         if (status.sending->last) {
             parts << tr("viewer: %1").arg(qtString(visual_debug::toString(*status.sending->last)));
         }
+        if (status.sending->paused) {
+            parts << tr("stream paused");
+        }
+    }
+    const lab_core::ViewerLink::State link = m_link->state();
+    if (!link.lastStillName.empty() && link.lastStill) {
+        parts << (*link.lastStill == visual_debug::SendResult::Delivered
+                      ? tr("sent %1 to the viewer").arg(QString::fromStdString(link.lastStillName))
+                      : tr("%1 not sent: %2")
+                            .arg(QString::fromStdString(link.lastStillName),
+                                 qtString(visual_debug::toString(*link.lastStill))));
     }
     if (status.busyFrame && status.busySince && at - *status.busySince >= kBusyShownAfter) {
         parts << tr("processing frame %1 for %2 s")
@@ -1136,12 +1198,18 @@ void LabWindow::closeEvent(QCloseEvent* event) {
         m_closing = true;
         stop();
         updateStartStop();
-        m_engine->setSender(nullptr);
+        // The lab's channels end with it, unless an older viewer would only log the ends as rejected.
+        m_engine->stopSending(m_stream != Stream::Off && !olderViewer());
+        m_stream = Stream::Off;
+        m_link->stop();
     }
     if (m_dependencies.engineMode == lab_core::Engine::Mode::Immediate) {
         m_engine->pump();
     }
-    if (m_engine->shutDown()) {
+    if (m_dependencies.linkMode == lab_core::ViewerLink::Mode::Immediate) {
+        m_link->pump();
+    }
+    if (m_engine->shutDown() && m_link->idle()) {
         m_closeTimer->stop();
         event->accept();
         return;
@@ -1165,61 +1233,199 @@ bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
     return QMainWindow::eventFilter(watched, event);
 }
 
-// --- Send to viewer
+// --- The viewer row
 // -----------------------------------------------------------------------------------------
 
-void LabWindow::toggleSend(bool on) {
-    m_settings.setSendToViewer(on);
-    if (on) {
-        startSending();
-    } else {
-        stopSending();
-    }
+QString LabWindow::endpointText() const { return m_endpoint->text().trimmed(); }
+
+// Another computer gets frames that may show real passports, unencrypted: it is not even pinged until the
+// user has said yes to that endpoint, once per session.
+bool LabWindow::mayAsk(const QString& endpoint) const {
+    return visual_debug::isLoopbackEndpoint(endpoint.toStdString()) ||
+           m_confirmedEndpoints.contains(endpoint);
 }
 
-// Another computer gets frames that may show real passports, unencrypted: only once the user has said yes to
-// that endpoint, once per session. Refused, Send to viewer goes off again.
-void LabWindow::startSending() {
-    const QString endpoint = m_endpoint->text().trimmed();
-    const std::string utf8 = endpoint.toStdString();
-    const bool loopback = visual_debug::isLoopbackEndpoint(utf8);
-    if (!loopback && !m_confirmedEndpoints.contains(endpoint)) {
-        const QString question = tr("Frames may show real passports and travel unencrypted to %1. Send them?")
-                                     .arg(hostOf(endpoint));
-        const bool yes = m_dependencies.confirm ? m_dependencies.confirm(question)
-                                                : QMessageBox::question(this, tr("Send to Another Computer"),
-                                                                        question) == QMessageBox::Yes;
-        if (!yes) {
-            const QSignalBlocker blocker(m_send);
-            m_send->setChecked(false);
-            m_settings.setSendToViewer(false);
-            stopSending();
-            return;
-        }
-        m_confirmedEndpoints.insert(endpoint);
+bool LabWindow::confirmFor(const QString& endpoint) {
+    if (endpoint.isEmpty()) {
+        return false;
     }
-    m_sendingHost = loopback ? QString() : hostOf(endpoint);
+    if (mayAsk(endpoint)) {
+        return true;
+    }
+    const QString question =
+        tr("Frames may show real passports and travel unencrypted to %1. Send them?").arg(hostOf(endpoint));
+    const bool yes = m_dependencies.confirm ? m_dependencies.confirm(question)
+                                            : QMessageBox::question(this, tr("Send to Another Computer"),
+                                                                    question) == QMessageBox::Yes;
+    if (yes) {
+        m_confirmedEndpoints.insert(endpoint);
+        applyEndpoint(); // pinged from now on
+    }
+    return yes;
+}
+
+void LabWindow::applyEndpoint() {
+    const QString endpoint = endpointText();
+    m_link->setEndpoint(!endpoint.isEmpty() && mayAsk(endpoint) ? endpoint.toStdString() : std::string());
+}
+
+// An older viewer logs each end as a rejected request: ■ and closing leave its channels to go idle.
+bool LabWindow::olderViewer() const {
+    return m_link->state().viewer == visual_debug::ViewerState::PredatesPing;
+}
+
+// ▶: starts the stream, asking first for another computer, or goes on after ⏸.
+void LabWindow::startStream() {
+    if (m_stream == Stream::Paused) {
+        m_engine->pauseSending(false);
+        m_stream = Stream::On;
+        refreshStatus();
+        return;
+    }
+    const QString endpoint = endpointText();
+    if (m_stream != Stream::Off || m_closing || !confirmFor(endpoint)) {
+        refreshStatus();
+        return;
+    }
+    const std::string utf8 = endpoint.toStdString();
+    m_sendingHost = visual_debug::isLoopbackEndpoint(utf8) ? QString() : hostOf(endpoint);
     m_engine->setSender(
         std::make_unique<lab_core::ResultSender>(m_dependencies.senderMode, m_dependencies.makeSender(utf8)));
+    m_stream = Stream::On;
     refreshStatus();
 }
 
-void LabWindow::stopSending() {
+// ⏸: the viewer keeps the lab's channels, showing the last frame sent.
+void LabWindow::pauseStream() {
+    if (m_stream != Stream::On) {
+        return;
+    }
+    m_engine->pauseSending(true);
+    m_stream = Stream::Paused;
+    refreshStatus();
+}
+
+// ■: the stream stops and the lab's channels end in the viewer; ▶ waits until they have.
+void LabWindow::stopStream() {
+    if (m_stream == Stream::Off) {
+        return;
+    }
+    m_engine->stopSending(!olderViewer());
+    m_stream = Stream::Off;
     m_sendingHost.clear();
-    m_engine->setSender(nullptr);
     refreshStatus();
 }
 
-// A new endpoint gets a sender of its own, asked about as any other.
+// The picture Show shows, into the viewer's history: the frame with its tags and the processor's overlays
+// whatever the Overlays toggle (the viewer has its own), or a processor's picture with its description.
+void LabWindow::sendFrame() {
+    if (!m_onScreen || !confirmFor(endpointText())) {
+        refreshStatus();
+        return;
+    }
+    const std::string entry = currentShow();
+    const std::string number = std::to_string(m_onScreen->frame.number + 1);
+    if (entry == kFrameEntry.toStdString()) {
+        visual_debug::ImageDescription description = m_onScreen->frame.tags;
+        description.overlays.insert(description.overlays.end(), m_onScreen->processed.overlays.begin(),
+                                    m_onScreen->processed.overlays.end());
+        m_link->sendStill(m_onScreen->frame.image, "lab frame " + number, std::move(description));
+    } else {
+        const auto image = std::find_if(
+            m_onScreen->processed.images.begin(), m_onScreen->processed.images.end(),
+            [&entry](const lab_core::ProcessedImage& candidate) { return candidate.name == entry; });
+        if (image == m_onScreen->processed.images.end()) {
+            m_message = tr("%1 is not in this frame").arg(QString::fromStdString(entry));
+            refreshStatus();
+            return;
+        }
+        m_link->sendStill(image->image, "lab " + entry + " " + number, image->description);
+    }
+    refreshStatus();
+}
+
+// A new endpoint ends the stream in the old viewer; ▶ starts it on the new one, never by itself, so no late
+// end from the old sender can race a new stream.
 void LabWindow::endpointChanged() {
-    const QString endpoint = m_endpoint->text().trimmed();
+    const QString endpoint = endpointText();
     if (endpoint == m_settings.endpoint()) {
         return;
     }
     m_settings.setEndpoint(endpoint);
-    if (m_send->isChecked()) {
-        startSending();
+    stopStream();
+    applyEndpoint();
+    refreshStatus();
+}
+
+void LabWindow::updateViewerRow(const lab_core::EngineStatus& status) {
+    using visual_debug::ViewerState;
+    const QString endpoint = endpointText();
+    const lab_core::ViewerLink::State link = m_link->state();
+    enum class Mark { None, Tick, Cross, Pause };
+    Mark mark = Mark::None;
+    QString text;
+    if (endpoint.isEmpty()) {
+        text = tr("no address");
+    } else if (!mayAsk(endpoint)) {
+        text = tr("another computer: not checked");
+    } else if (!link.viewer) {
+        text = tr("checking…");
+    } else {
+        switch (*link.viewer) {
+        case ViewerState::Listening:
+            mark = Mark::Tick;
+            text = tr("available");
+            break;
+        case ViewerState::PredatesPing: {
+            // It cannot answer a ping: while streaming, the stream's own results say whether it is there.
+            const std::optional<visual_debug::SendResult> last =
+                m_stream != Stream::Off && status.sending ? status.sending->last : std::nullopt;
+            const bool gone = last == visual_debug::SendResult::ViewerUnavailable ||
+                              last == visual_debug::SendResult::Timeout;
+            mark = gone ? Mark::Cross : Mark::Tick;
+            text = gone ? tr("not available") : tr("available (older viewer)");
+            break;
+        }
+        case ViewerState::Paused:
+            mark = Mark::Pause;
+            text = tr("paused");
+            break;
+        case ViewerState::Unavailable:
+            mark = Mark::Cross;
+            text = tr("not available");
+            break;
+        case ViewerState::InvalidEndpoint:
+            mark = Mark::Cross;
+            text = tr("invalid address");
+            break;
+        }
     }
+    if (m_viewerState->text() != text) {
+        m_viewerState->setText(text);
+        const QSize size = m_viewerIndicator->size();
+        switch (mark) {
+        case Mark::None:
+            m_viewerIndicator->clear();
+            break;
+        case Mark::Tick:
+            m_viewerIndicator->setPixmap(
+                qt_common::makeColouredIcon(qt_common::OutlineIcon::Tick, qt_common::kGo).pixmap(size));
+            break;
+        case Mark::Cross:
+            m_viewerIndicator->setPixmap(
+                qt_common::makeColouredIcon(qt_common::OutlineIcon::Cross, qt_common::kHalt).pixmap(size));
+            break;
+        case Mark::Pause:
+            m_viewerIndicator->setPixmap(
+                qt_common::makeOutlineIcon(qt_common::OutlineIcon::Pause).pixmap(size));
+            break;
+        }
+    }
+    const bool hasAddress = !endpoint.isEmpty();
+    m_streamButton->setEnabled(!m_closing && hasAddress && m_stream != Stream::On && !status.endingChannels);
+    m_pauseStream->setEnabled(m_stream == Stream::On);
+    m_stopStream->setEnabled(m_stream != Stream::Off);
+    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value());
 }
 
 } // namespace document_lab

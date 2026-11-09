@@ -31,6 +31,7 @@
 #include <opencv2/videoio.hpp>
 #include <visual_debug/endpoint.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -57,9 +58,23 @@ struct Lab {
         auto cameras = std::make_unique<test_support::FakeCameraBackend>();
         backend = cameras.get();
         dependencies.cameras = std::move(cameras);
-        dependencies.makeSender = [](const std::string&) {
-            return std::make_unique<test_support::RecordingSender>();
+        // Fakes only: no test reaches a real viewer, the owner's on 7139 least of all.
+        dependencies.makeSender = [this](const std::string&) -> std::unique_ptr<visual_debug::ImageSender> {
+            auto sender = std::make_unique<test_support::RecordingSender>(streamAnswer, holdStream);
+            sender->log = &streamLog;
+            ++streamSenders;
+            return sender;
         };
+        dependencies.makeLinkSender =
+            [this](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
+            auto sender = std::make_unique<test_support::RecordingSender>();
+            sender->pingAnswer = [this] { return pingAnswer(); };
+            sender->log = &linkLog;
+            linkEndpoints.push_back(endpoint);
+            linkSender = sender.get();
+            return sender;
+        };
+        dependencies.linkMode = lab_core::ViewerLink::Mode::Immediate;
         dependencies.engineMode = lab_core::Engine::Mode::Immediate;
         dependencies.conversionMode = LiveConverter::Mode::Immediate;
         dependencies.conversion = [this](const LiveJob& job) {
@@ -123,6 +138,20 @@ struct Lab {
         }
         return lines;
     }
+
+    // What the viewer row talks to: the stream's senders, and the link's.
+    std::function<visual_debug::SendResult(std::string_view)> streamAnswer = [](std::string_view) {
+        return visual_debug::SendResult::Delivered;
+    };
+    test_support::Latch* holdStream = nullptr;
+    test_support::SendLog streamLog;
+    int streamSenders = 0;
+    std::function<visual_debug::ViewerState()> pingAnswer = [] {
+        return visual_debug::ViewerState::Listening;
+    };
+    test_support::SendLog linkLog;
+    std::vector<std::string> linkEndpoints;
+    test_support::RecordingSender* linkSender = nullptr; // the newest; the link owns it
 
     test_support::ScratchFolder folder;
     std::atomic<Clock::rep> ticks = Clock::duration(1000s).count();
@@ -1117,7 +1146,7 @@ TEST(LabWindow, FormatChangeStopsTheRecording) {
     EXPECT_EQ(recordingJson(recordings[0])["source"]["kind"], "camera");
 }
 
-// --- Send to viewer
+// --- The viewer row
 // -----------------------------------------------------------------------------------------
 
 QLineEdit* endpointEdit(const Lab& lab) { return lab.window->findChild<QLineEdit*>("endpointEdit"); }
@@ -1127,40 +1156,156 @@ void setEndpoint(const Lab& lab, const QString& endpoint) {
     emit endpointEdit(lab)->editingFinished();
 }
 
-TEST(LabWindow, SendIsOffByDefault) {
-    Lab lab;
+QString viewerState(const Lab& lab) { return lab.window->findChild<QLabel*>("viewerStateLabel")->text(); }
 
-    EXPECT_FALSE(button(lab, "sendCheck")->isChecked());
+// The stream's own thread sends: the tests wait for what it logs.
+void threadedStream(LabDependencies& dependencies) {
+    dependencies.senderMode = lab_core::ResultSender::Mode::Threaded;
+}
+
+bool logHas(const test_support::SendLog& log, const std::string& line) {
+    const std::vector<std::string> lines = log.lines();
+    return std::find(lines.begin(), lines.end(), line) != lines.end();
+}
+
+std::size_t countOf(const test_support::SendLog& log, const std::string& line) {
+    const std::vector<std::string> lines = log.lines();
+    return static_cast<std::size_t>(std::count(lines.begin(), lines.end(), line));
+}
+
+// Pumps until the condition holds, or ten seconds pass.
+bool pumpUntil(Lab& lab, const std::function<bool()>& condition) {
+    return QTest::qWaitFor([&] {
+        lab.pump();
+        return condition();
+    });
+}
+
+// A stream can show passports: it starts on a click only, never at launch.
+TEST(LabWindow, StreamIsOffAtLaunch) {
+    Lab lab;
+    lab.pump();
+
     EXPECT_EQ(endpointEdit(lab)->text(), QString::fromStdString(visual_debug::defaultEndpoint()));
+    EXPECT_TRUE(button(lab, "streamButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "pauseStreamButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "stopStreamButton")->isEnabled());
+    EXPECT_EQ(lab.streamSenders, 0);
+    EXPECT_EQ(viewerState(lab), QStringLiteral("available"));
+    EXPECT_LT(endpointEdit(lab)->width(), 300); // about 22 characters, not the row's width
 }
 
 // The frame as "lab" with its overlays, each of the processor's pictures as "lab <name>".
-TEST(LabWindow, SendsLabChannels) {
-    std::atomic<test_support::RecordingSender*> made = nullptr;
-    Lab lab([&made](LabDependencies& dependencies) {
-        dependencies.senderMode = lab_core::ResultSender::Mode::Threaded;
-        dependencies.makeSender = [&made](const std::string&) {
-            auto sender = std::make_unique<test_support::RecordingSender>();
-            made = sender.get();
-            return sender;
-        };
-    });
+TEST(LabWindow, StreamSendsLabChannels) {
+    Lab lab(threadedStream);
     setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7140"));
     lab.choose("processorCombo", QStringLiteral("Edges"));
-    button(lab, "sendCheck")->click();
+    button(lab, "streamButton")->click();
     lab.replay(framesOf(test_support::cardFrame()));
 
     lab.pump();
 
-    ASSERT_NE(made.load(), nullptr);
-    ASSERT_TRUE(made.load()->waitForCalls(2));
-    const auto calls = made.load()->calls();
-    EXPECT_EQ(calls[0].name, "lab");
-    EXPECT_EQ(calls[1].name, "lab edges");
+    EXPECT_TRUE(QTest::qWaitFor([&lab] { return logHas(lab.streamLog, "live lab edges"); }));
+    EXPECT_EQ(lab.streamLog.lines().front(), "live lab");
+    EXPECT_FALSE(button(lab, "streamButton")->isEnabled());
+    EXPECT_TRUE(button(lab, "pauseStreamButton")->isEnabled());
+    EXPECT_TRUE(button(lab, "stopStreamButton")->isEnabled());
 }
 
-// Another computer's viewer gets frames that may show real passports, unencrypted: asked once per endpoint.
-TEST(LabWindow, RemoteEndpointAsksOnce) {
+// ⏸ keeps the viewer's channel showing the last frame; ■ ends it.
+TEST(LabWindow, PauseKeepsAndStopEndsTheChannels) {
+    Lab lab(threadedStream);
+    lab.choose("processorCombo", QStringLiteral("None"));
+    button(lab, "streamButton")->click();
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(QTest::qWaitFor([&lab] { return logHas(lab.streamLog, "live lab"); }));
+
+    button(lab, "pauseStreamButton")->click();
+    lab.pump(2);
+    EXPECT_EQ(countOf(lab.streamLog, "live lab"), 1U);
+    EXPECT_FALSE(logHas(lab.streamLog, "end lab"));
+    EXPECT_TRUE(button(lab, "streamButton")->isEnabled()); // resumes
+
+    button(lab, "stopStreamButton")->click();
+
+    EXPECT_TRUE(pumpUntil(lab, [&lab] { return logHas(lab.streamLog, "end lab"); }));
+    EXPECT_FALSE(button(lab, "stopStreamButton")->isEnabled());
+}
+
+TEST(LabWindow, PausedStreamSaysSo) {
+    Lab lab(threadedStream);
+    button(lab, "streamButton")->click();
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+
+    button(lab, "pauseStreamButton")->click();
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("stream paused"))) << lab.status().toStdString();
+}
+
+// While the old sender ends its channels, ▶ waits: a new stream's "lab" must not be ended by the old one.
+TEST(LabWindow, StreamDisabledWhileEnding) {
+    test_support::Latch latch;
+    Lab lab(threadedStream);
+    lab.holdStream = &latch;
+    button(lab, "streamButton")->click();
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(latch.waitUntilEntered()); // the first frame is held in its send
+
+    button(lab, "stopStreamButton")->click();
+
+    EXPECT_FALSE(button(lab, "streamButton")->isEnabled());
+    latch.release();
+    EXPECT_TRUE(pumpUntil(lab, [&lab] { return button(lab, "streamButton")->isEnabled(); }));
+    EXPECT_TRUE(logHas(lab.streamLog, "end lab"));
+}
+
+// The indicator says what the last ping found, asked every two seconds.
+TEST(LabWindow, IndicatorFollowsThePing) {
+    Lab lab;
+    lab.pump();
+    EXPECT_EQ(viewerState(lab), QStringLiteral("available"));
+
+    lab.pingAnswer = [] { return visual_debug::ViewerState::Unavailable; };
+    lab.advance(2s);
+    lab.pump();
+    EXPECT_EQ(viewerState(lab), QStringLiteral("not available"));
+
+    lab.pingAnswer = [] { return visual_debug::ViewerState::Paused; };
+    lab.advance(2s);
+    lab.pump();
+    EXPECT_EQ(viewerState(lab), QStringLiteral("paused"));
+
+    lab.pingAnswer = [] { return visual_debug::ViewerState::InvalidEndpoint; };
+    lab.advance(2s);
+    lab.pump();
+    EXPECT_EQ(viewerState(lab), QStringLiteral("invalid address"));
+}
+
+// An older viewer cannot be pinged; while streaming, the stream's own results say whether it is there. ■ does
+// not end its channels: it would only log the ends as rejected.
+TEST(LabWindow, OlderViewerFollowsTheStream) {
+    Lab lab(threadedStream);
+    lab.pingAnswer = [] { return visual_debug::ViewerState::PredatesPing; };
+    lab.pump();
+    EXPECT_EQ(viewerState(lab), QStringLiteral("available (older viewer)"));
+
+    lab.streamAnswer = [](std::string_view) { return visual_debug::SendResult::ViewerUnavailable; };
+    button(lab, "streamButton")->click();
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    EXPECT_TRUE(pumpUntil(lab, [&lab] { return viewerState(lab) == QStringLiteral("not available"); }));
+
+    button(lab, "stopStreamButton")->click();
+    EXPECT_TRUE(pumpUntil(lab, [&lab] { return button(lab, "streamButton")->isEnabled(); }));
+    EXPECT_FALSE(logHas(lab.streamLog, "end lab"));
+    EXPECT_EQ(viewerState(lab), QStringLiteral("available (older viewer)"));
+}
+
+// Another computer is not even pinged until the user has said yes to it, this session.
+TEST(LabWindow, AnotherComputerIsNotPingedUntilConfirmed) {
     QStringList questions;
     Lab lab([&questions](LabDependencies& dependencies) {
         dependencies.confirm = [&questions](const QString& question) {
@@ -1168,59 +1313,164 @@ TEST(LabWindow, RemoteEndpointAsksOnce) {
             return true;
         };
     });
-    setEndpoint(lab, QStringLiteral("tcp://192.168.1.20:7140"));
-
-    button(lab, "sendCheck")->click();
+    const QString remote = QStringLiteral("tcp://192.0.2.1:7140");
+    setEndpoint(lab, remote);
     lab.pump();
-    EXPECT_TRUE(lab.status().contains(QStringLiteral("sending to 192.168.1.20")))
-        << lab.status().toStdString();
-    button(lab, "sendCheck")->click();
-    button(lab, "sendCheck")->click();
+
+    EXPECT_EQ(std::count(lab.linkEndpoints.begin(), lab.linkEndpoints.end(), remote.toStdString()), 0);
+    EXPECT_EQ(viewerState(lab), QStringLiteral("another computer: not checked"));
+    EXPECT_TRUE(questions.isEmpty());
+
+    button(lab, "streamButton")->click();
+    lab.pump();
 
     ASSERT_EQ(questions.size(), 1);
-    EXPECT_TRUE(questions[0].contains(QStringLiteral("192.168.1.20")));
+    EXPECT_TRUE(questions[0].contains(QStringLiteral("192.0.2.1")));
     EXPECT_TRUE(questions[0].contains(QStringLiteral("real passports")));
-    EXPECT_TRUE(button(lab, "sendCheck")->isChecked());
+    EXPECT_EQ(lab.linkEndpoints.back(), remote.toStdString());
+    EXPECT_EQ(viewerState(lab), QStringLiteral("available"));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("sending to 192.0.2.1"))) << lab.status().toStdString();
+
+    button(lab, "stopStreamButton")->click();
+    button(lab, "streamButton")->click();
+    EXPECT_EQ(questions.size(), 1); // once per endpoint and session
 }
 
-TEST(LabWindow, RemoteRefusedTurnsSendOff) {
-    int senders = 0;
-    Lab lab([&senders](LabDependencies& dependencies) {
-        dependencies.confirm = [](const QString&) { return false; };
-        dependencies.makeSender = [&senders](const std::string&) {
-            ++senders;
-            return std::make_unique<test_support::RecordingSender>();
-        };
-    });
-    setEndpoint(lab, QStringLiteral("tcp://192.168.1.20:7140"));
+TEST(LabWindow, RefusedComputerIsNotPingedOrStreamed) {
+    Lab lab(
+        [](LabDependencies& dependencies) { dependencies.confirm = [](const QString&) { return false; }; });
+    setEndpoint(lab, QStringLiteral("tcp://192.0.2.1:7140"));
 
-    button(lab, "sendCheck")->click();
+    button(lab, "streamButton")->click();
+    lab.pump();
 
-    EXPECT_FALSE(button(lab, "sendCheck")->isChecked());
-    EXPECT_EQ(senders, 0);
+    EXPECT_EQ(lab.streamSenders, 0);
+    EXPECT_EQ(viewerState(lab), QStringLiteral("another computer: not checked"));
+    EXPECT_FALSE(button(lab, "stopStreamButton")->isEnabled());
 }
 
 TEST(LabWindow, LoopbackNeverAsks) {
     int questions = 0;
-    int senders = 0;
-    Lab lab([&](LabDependencies& dependencies) {
+    Lab lab([&questions](LabDependencies& dependencies) {
         dependencies.confirm = [&questions](const QString&) {
             ++questions;
             return true;
         };
-        dependencies.makeSender = [&senders](const std::string& endpoint) {
-            EXPECT_EQ(endpoint, "tcp://127.0.0.1:7140");
-            ++senders;
-            return std::make_unique<test_support::RecordingSender>();
-        };
     });
     setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7140"));
 
-    button(lab, "sendCheck")->click();
+    button(lab, "streamButton")->click();
+    lab.pump();
 
     EXPECT_EQ(questions, 0);
-    EXPECT_EQ(senders, 1);
-    EXPECT_TRUE(button(lab, "sendCheck")->isChecked());
+    EXPECT_EQ(lab.streamSenders, 1);
+    EXPECT_EQ(lab.linkEndpoints.back(), "tcp://127.0.0.1:7140");
+}
+
+// Send Frame sends what Show shows, into the viewer's history: the frame with the processor's overlays,
+// whatever the Overlays toggle (the viewer has its own), or a processor's picture.
+TEST(LabWindow, SendFrameSendsTheShownPicture) {
+    Lab lab;
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+    lab.choose("showCombo", QStringLiteral("edges"));
+    lab.pump();
+
+    button(lab, "sendFrameButton")->click();
+    lab.pump();
+    EXPECT_TRUE(logHas(lab.linkLog, "image lab edges 1"));
+
+    lab.choose("showCombo", QStringLiteral("Frame"));
+    lab.pump();
+    button(lab, "sendFrameButton")->click();
+    lab.pump();
+    EXPECT_TRUE(logHas(lab.linkLog, "image lab frame 1"));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("sent lab frame 1 to the viewer")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, SendFrameKeepsTheOverlaysWhenHidden) {
+    Lab lab;
+    lab.choose("processorCombo", QStringLiteral("Outline (simple)"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+    button(lab, "overlaysCheck")->click(); // hidden on the canvas
+
+    button(lab, "sendFrameButton")->click();
+    lab.pump();
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    const auto still =
+        std::find_if(calls.begin(), calls.end(), [](const test_support::RecordingSender::Call& call) {
+            return call.kind == test_support::RecordingSender::Kind::Image;
+        });
+    ASSERT_NE(still, calls.end());
+    EXPECT_EQ(still->name, "lab frame 1");
+    EXPECT_FALSE(still->description.overlays.empty());
+}
+
+// A new endpoint ends the stream in the old viewer; ▶ starts it on the new one, never by itself.
+TEST(LabWindow, EndpointChangeStopsTheStream) {
+    Lab lab(threadedStream);
+    button(lab, "streamButton")->click();
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(QTest::qWaitFor([&lab] { return logHas(lab.streamLog, "live lab"); }));
+
+    setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7141"));
+
+    EXPECT_TRUE(pumpUntil(lab, [&lab] { return logHas(lab.streamLog, "end lab"); }));
+    EXPECT_FALSE(button(lab, "stopStreamButton")->isEnabled());
+    EXPECT_EQ(lab.streamSenders, 1);
+    EXPECT_EQ(lab.linkEndpoints.back(), "tcp://127.0.0.1:7141");
+}
+
+TEST(LabWindow, EmptyEndpointDisablesSending) {
+    Lab lab;
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+    ASSERT_TRUE(button(lab, "sendFrameButton")->isEnabled());
+
+    setEndpoint(lab, QString());
+    lab.pump();
+
+    EXPECT_EQ(viewerState(lab), QStringLiteral("no address"));
+    EXPECT_FALSE(button(lab, "streamButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "sendFrameButton")->isEnabled());
+}
+
+// Closing ends the lab's channels in the viewer and waits for a ping in progress rather than leave its
+// thread.
+TEST(LabWindow, CloseEndsTheChannelsAndWaitsForTheLink) {
+    test_support::Latch latch;
+    Lab lab([&latch](LabDependencies& dependencies) {
+        threadedStream(dependencies);
+        dependencies.linkMode = lab_core::ViewerLink::Mode::Threaded;
+        dependencies.makeLinkSender =
+            [&latch](const std::string&) -> std::unique_ptr<visual_debug::ImageSender> {
+            auto sender = std::make_unique<test_support::RecordingSender>();
+            sender->pingAnswer = [&latch] {
+                latch.hold();
+                return visual_debug::ViewerState::Listening;
+            };
+            return sender;
+        };
+    });
+    ASSERT_TRUE(latch.waitUntilEntered()); // the first ping waits for its answer
+    button(lab, "streamButton")->click();
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(QTest::qWaitFor([&lab] { return logHas(lab.streamLog, "live lab"); }));
+
+    lab.window->close();
+    QApplication::processEvents();
+    EXPECT_TRUE(lab.window->isVisible());
+    latch.release();
+
+    EXPECT_TRUE(QTest::qWaitFor([&lab] { return !lab.window->isVisible(); }, 10000));
+    EXPECT_TRUE(logHas(lab.streamLog, "end lab"));
 }
 
 } // namespace
