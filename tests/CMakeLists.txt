@@ -88,11 +88,15 @@ id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
         lab_core/document_outline_test.cpp
+        lab_core/fake_sender.h
         lab_core/processors_test.cpp
+        lab_core/result_sender_test.cpp
     LIBRARIES
         lab_core::lab_core
         opencv_imgproc
         GTest::gtest_main)
+# latch.h: holding a sending thread without timing.
+target_include_directories(lab_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
 
 if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(pipeline_tests
