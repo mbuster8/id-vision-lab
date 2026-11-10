@@ -235,12 +235,18 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
     connect(cameras, &CameraBackend::failed, this, &LabWindow::cameraFailed);
     fillCameras();
 
-    qApp->installEventFilter(this); // Space for the focused button, not Play
+    qApp->installEventFilter(this);           // Space for the focused button, not Play
+    m_canvas->setFocus(Qt::OtherFocusReason); // not the address field, the first that would take it
     refreshStatus();
     m_statusTimer->start(kStatusRefreshMs);
 }
 
 LabWindow::~LabWindow() {
+    // Nothing a child sends while the window comes apart (the address field's editingFinished as it loses the
+    // focus, a resize's scaleChanged) may reach this window once its destructor has run.
+    for (QObject* child : findChildren<QObject*>()) {
+        child->disconnect(this);
+    }
     qApp->removeEventFilter(this);
     m_link.reset(); // joins: no hook comes after; closing waited for it to be idle
     // The camera first: no frame reaches a window whose engine is gone.
@@ -430,6 +436,8 @@ void LabWindow::buildUi() {
     canvasLayout->setContentsMargins(0, 0, 0, 0);
     m_canvas = new ImageView(canvasArea);
     m_canvas->setObjectName(QStringLiteral("canvas"));
+    // The keyboard's place, so Space, ← and → reach the replay rather than a text field.
+    m_canvas->setFocusPolicy(Qt::StrongFocus);
     m_canvas->setRegionsEnabled(false);
     m_canvas->setOverlaysShown(m_overlaysCheck->isChecked());
     m_canvas->setEmptyText(tr("Start a camera, or open a video, an image or a folder of images."));
@@ -450,11 +458,14 @@ void LabWindow::buildUi() {
     m_results->setMinimumWidth(kResultsMinimumWidth);
     splitter->addWidget(canvasArea);
     splitter->addWidget(m_results);
-    splitter->setChildrenCollapsible(false);
+    // The panel can be dragged shut, as View → Results shuts it; its edge stays, to drag it open again. The
+    // canvas cannot.
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, true);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);
-    m_results->setVisible(m_resultsAction->isChecked());
-    splitter->setSizes({std::max(1, width() - m_settings.resultsWidth()), m_settings.resultsWidth()});
+    const int panel = m_resultsAction->isChecked() ? m_settings.resultsWidth() : 0;
+    splitter->setSizes({std::max(1, width() - panel), panel});
     layout->addWidget(splitter, 1);
     setCentralWidget(central);
 
@@ -485,10 +496,18 @@ void LabWindow::buildUi() {
     connect(m_asFast, &QPushButton::toggled, this, [this](bool on) { m_engine->setAsFastAsPossible(on); });
     connect(m_resultsAction, &QAction::toggled, this, &LabWindow::showResultsPanel);
     // The width the user dragged the panel to, not one squeezed by a narrow window or a hidden panel.
+    // Dragged shut, the panel is hidden as View → Results hides it; dragged open, shown. The width kept is
+    // one above the panel's least, which a drag towards shut passes through on its way.
     connect(m_splitter, &QSplitter::splitterMoved, this, [this] {
         const int panel = m_splitter->sizes().value(1);
-        if (m_results->isVisible() && panel > 0) {
+        if (panel > kResultsMinimumWidth) {
             m_settings.setResultsWidth(panel);
+        }
+        const bool shown = panel > 0;
+        if (shown != m_resultsAction->isChecked()) {
+            const QSignalBlocker blocker(m_resultsAction);
+            m_resultsAction->setChecked(shown);
+            m_settings.setResultsShown(shown);
         }
     });
     connect(m_record, &QPushButton::toggled, this, &LabWindow::toggleRecord);
@@ -526,16 +545,13 @@ void LabWindow::buildUi() {
     connect(m_statusTimer, &QTimer::timeout, this, &LabWindow::refreshStatus);
 }
 
-// Shown again at the width it had: the canvas gives it back.
+// Shut to nothing, its edge left at the window's side to drag it open; shown again at the width it had.
 void LabWindow::showResultsPanel(bool shown) {
     m_settings.setResultsShown(shown);
-    m_results->setVisible(shown);
-    if (shown) {
-        const QList<int> sizes = m_splitter->sizes();
-        const int total = sizes.value(0) + sizes.value(1);
-        const int panel = m_settings.resultsWidth();
-        m_splitter->setSizes({std::max(1, total - panel), panel});
-    }
+    const QList<int> sizes = m_splitter->sizes();
+    const int total = sizes.value(0) + sizes.value(1);
+    const int panel = shown ? m_settings.resultsWidth() : 0;
+    m_splitter->setSizes({std::max(1, total - panel), panel});
 }
 
 void LabWindow::startReplay(lab_core::ReplayOpener open) {
@@ -551,6 +567,8 @@ void LabWindow::startReplay(lab_core::ReplayOpener open) {
 void LabWindow::beginRun() {
     m_running = true;
     m_message.clear();
+    // Space now plays and pauses this run, not the button that started it.
+    m_canvas->setFocus(Qt::OtherFocusReason);
     m_minimumGeneration = m_engine->status().generation + 1;
     m_fitNext = true;
     updateStartStop();
@@ -769,6 +787,8 @@ void LabWindow::pumpForTests() {
     refreshStatus();
 }
 
+void LabWindow::pumpEngineForTests() { m_engine->pump(); }
+
 LabWindow::CanvasCounts LabWindow::canvasCountsForTests() const { return m_canvasCounts; }
 
 void LabWindow::takeResult() {
@@ -785,6 +805,8 @@ void LabWindow::takeResult() {
     showResults(*m_current);
     display(m_fitNext ? ImageView::KeepView::No : ImageView::KeepView::IfSameSize);
     m_fitNext = false;
+    // The frame's number, the slider and the time follow each result, not only the refresh twice a second.
+    refreshStatus();
 }
 
 // Every picture a processor has made stays in the picker, so a choice survives frames that lack it.
@@ -1342,8 +1364,18 @@ void LabWindow::closeEvent(QCloseEvent* event) {
     m_closeTimer->start(kClosePollMs);
 }
 
-// Space plays and pauses unless a button has the focus, which Space then presses.
+// Space plays and pauses unless a button has the focus, which Space then presses. In the address field too:
+// an address never holds a space.
 bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::KeyPress && watched == m_endpoint) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
+            if (m_playPauseAction->isEnabled()) {
+                togglePlay();
+            }
+            return true;
+        }
+    }
     if (event->type() == QEvent::ShortcutOverride) {
         const auto* key = static_cast<QKeyEvent*>(event);
         const auto* pressed = qobject_cast<QAbstractButton*>(watched);

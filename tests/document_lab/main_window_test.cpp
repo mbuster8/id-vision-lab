@@ -407,18 +407,39 @@ TEST(LabWindow, ResultsPanelHidesAndRemembersItsWidth) {
         emit splitter->splitterMoved(total - 260, 1);
         results->trigger();
 
-        EXPECT_FALSE(lab.resultsTree()->isVisible());
+        EXPECT_EQ(splitter->sizes().at(1), 0); // shut, its edge left to drag it open again
     }
     Lab lab;
     auto* results = lab.window->findChild<QAction*>("resultsAction");
     auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
     EXPECT_FALSE(results->isChecked());
-    EXPECT_FALSE(lab.resultsTree()->isVisible());
+    EXPECT_EQ(splitter->sizes().at(1), 0);
 
     results->trigger();
 
-    EXPECT_TRUE(lab.resultsTree()->isVisible());
     EXPECT_EQ(splitter->sizes().at(1), 260);
+}
+
+// Dragging the panel's edge shut hides it, as View → Results does, and dragging it open shows it again.
+TEST(LabWindow, ResultsPanelDraggedShutAndOpen) {
+    Lab lab;
+    auto* results = lab.window->findChild<QAction*>("resultsAction");
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    const int total = splitter->sizes().at(0) + splitter->sizes().at(1);
+
+    splitter->setSizes({total, 0});
+    emit splitter->splitterMoved(total, 1);
+
+    EXPECT_EQ(splitter->sizes().at(1), 0);
+    EXPECT_FALSE(results->isChecked());
+    EXPECT_FALSE(QSettings().value(QStringLiteral("lab/resultsShown"), true).toBool());
+
+    splitter->setSizes({total - 240, 240});
+    emit splitter->splitterMoved(total - 240, 1);
+
+    EXPECT_TRUE(results->isChecked());
+    EXPECT_TRUE(QSettings().value(QStringLiteral("lab/resultsShown"), false).toBool());
+    EXPECT_EQ(QSettings().value(QStringLiteral("lab/resultsWidth")).toInt(), 240);
 }
 
 // On Qt before 6.8 the View menu has no appearance in it, but it must still show, or a hidden results panel
@@ -1069,6 +1090,25 @@ TEST(LabWindow, SliderHiddenForACamera) {
     EXPECT_FALSE(button(lab, "forward10Button")->isEnabled());
 }
 
+// The status line and the slider follow each result as it is taken, not only the status's refresh twice a
+// second: a step shows the frame it reached at once.
+TEST(LabWindow, StatusFollowsEachResult) {
+    Lab lab;
+    lab.window->startReplay(test_support::openerOf(thirtyASecond(5)));
+    lab.pump();
+    button(lab, "playPauseButton")->click();
+    lab.pump();
+    ASSERT_TRUE(lab.status().contains(QStringLiteral("frame 1 of 5"))) << lab.status().toStdString();
+    QApplication::processEvents(); // the status hooks queued so far, so that none refreshes it below
+
+    button(lab, "stepButton")->click();
+    lab.window->pumpEngineForTests(); // the result arrives through the engine's hook, as in the running lab
+    QApplication::processEvents();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("frame 2 of 5"))) << lab.status().toStdString();
+    EXPECT_EQ(slider(lab)->value(), 1);
+}
+
 // Space plays and pauses, unless a button has the focus: then it presses that button.
 TEST(LabWindow, SpaceTogglesPlay) {
     Lab lab;
@@ -1093,6 +1133,60 @@ TEST(LabWindow, SpaceTogglesPlay) {
     lab.pump();
     EXPECT_TRUE(loop->isChecked());
     EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Playing"))) << lab.status().toStdString();
+}
+
+// The address field held the focus, so Space typed spaces into it. An address never holds one: there, too,
+// Space plays and pauses.
+TEST(LabWindow, SpaceTogglesPlayInTheAddressField) {
+    Lab lab;
+    lab.window->activateWindow();
+    ASSERT_TRUE(QTest::qWaitForWindowActive(lab.window.get()));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    QLineEdit* address = lab.window->findChild<QLineEdit*>("endpointEdit");
+    const QString text = address->text();
+    address->setFocus();
+
+    QTest::keyClick(address, Qt::Key_Space);
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused"))) << lab.status().toStdString();
+    EXPECT_EQ(address->text(), text);
+}
+
+// Closing the window while the address field has the focus and an edit in it: the field's last signals must
+// not reach a window already partly destroyed.
+TEST(LabWindow, ClosingWithAnAddressBeingEditedIsSafe) {
+    Lab lab;
+    lab.window->activateWindow();
+    ASSERT_TRUE(QTest::qWaitForWindowActive(lab.window.get()));
+    QLineEdit* address = lab.window->findChild<QLineEdit*>("endpointEdit");
+    address->setFocus();
+    QTest::keyClicks(address, QStringLiteral("0"));
+
+    lab.window.reset();
+
+    SUCCEED(); // reaching here, rather than an abort in the window's destructor
+}
+
+// The canvas has the keyboard focus from the start, takes it back when a source opens or it is clicked, so
+// Space reaches play and pause rather than a field or the button that opened the file.
+TEST(LabWindow, CanvasKeepsTheFocus) {
+    const test_support::ScratchFolder files;
+    const std::filesystem::path folder = imageFolder(files);
+    Lab lab([&folder](LabDependencies& dependencies) {
+        dependencies.chooseFolder = [&folder] { return qtPath(folder); };
+    });
+    EXPECT_EQ(lab.window->focusWidget(), lab.canvas());
+
+    QAbstractButton* open = button(lab, "openFolderButton");
+    open->setFocus();
+    open->click();
+    EXPECT_EQ(lab.window->focusWidget(), lab.canvas());
+
+    lab.window->findChild<QLineEdit*>("endpointEdit")->setFocus();
+    QTest::mouseClick(lab.canvas(), Qt::LeftButton, Qt::NoModifier, QPoint(10, 10)); // through the window
+    EXPECT_EQ(lab.window->focusWidget(), lab.canvas());
 }
 
 // The folder of the recording only its owner may open; the lab's folder is left as it was.

@@ -618,8 +618,8 @@ the processor found over the frame; turned off, only the drawing goes.
 
 The results panel beside the canvas lists the processor's findings for the frame on screen as rows of a name
 and a value, such as `document` and `found`; a processor's error is a row of its own. It keeps its width as the
-window grows; drag its edge to change it. **View → Results** hides and shows it, and the lab remembers its width
-and whether it shows.
+window grows; drag its edge to change it, or all the way to the window's side to shut it, and back to open it.
+**View → Results** shuts and opens it too, and the lab remembers its width and whether it shows.
 
 The status bar shows the run (Live, Playing, Paused, Ended, Stopped), the source, the frame and of how many,
 the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a camera's
@@ -634,8 +634,9 @@ names compared as numbers, 30 frames a second) or a recording. Every frame is pr
 video's pace or slower: a frame the processing could not keep up with is shown late, never skipped.
 **Play**/**Pause**, **Step Back** and **Step** (the frame before and the next), **10 s** back and forward,
 **Restart**, **Loop** and **As fast as possible**. Space plays and pauses, ← and → step, Shift+← and Shift+→
-jump ten seconds, except while a button has the focus, when Space presses it. **Play** at the end plays the
-replay again from its first frame.
+jump ten seconds, except while a button has the focus, when Space presses it. The canvas has the keyboard from
+the start, takes it back when a source opens or you click it, and Space plays and pauses in the viewer's address
+field too, which never holds a space. **Play** at the end plays the replay again from its first frame.
 
 Beside them, the position slider and the time of the frame on screen against the replay's length, such as
 `0:16 / 0:25` (`1:02:03 / 1:10:00` from an hour). Dragging moves only the time; letting go, a click beside the

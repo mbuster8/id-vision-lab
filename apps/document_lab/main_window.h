@@ -88,6 +88,8 @@ public:
 
     // Immediate modes: one engine pump, its result taken and drawn, the status refreshed.
     void pumpForTests();
+    // Immediate modes: one engine pump only; its hooks reach the window queued, as in the running lab.
+    void pumpEngineForTests();
     struct CanvasCounts {
         std::uint64_t received = 0; // pictures the converter made
         std::uint64_t applied = 0;  // of those, drawn: the others were for a view no longer shown
