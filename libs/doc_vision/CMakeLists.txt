@@ -6,9 +6,11 @@ add_library(doc_vision STATIC
     include/doc_vision/onnx_model.h
     include/doc_vision/page_detector.h
     include/doc_vision/page_geometry.h
+    include/doc_vision/quality_gates.h
     src/onnx_model.cpp
     src/page_detector.cpp
-    src/page_geometry.cpp)
+    src/page_geometry.cpp
+    src/quality_gates.cpp)
 add_library(doc_vision::doc_vision ALIAS doc_vision)
 
 target_include_directories(doc_vision PUBLIC

@@ -106,6 +106,7 @@ id_vision_lab_add_test_executable(doc_vision_tests
         doc_vision/page_detector_test.cpp
         doc_vision/page_geometry_test.cpp
         doc_vision/procedural_page.h
+        doc_vision/quality_gates_test.cpp
     LIBRARIES
         doc_vision::doc_vision
         opencv_imgproc
