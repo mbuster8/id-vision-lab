@@ -108,6 +108,8 @@ QString processorLabel(lab_core::ProcessorKind kind) {
         return LabWindow::tr("Edges");
     case lab_core::ProcessorKind::Outline:
         return LabWindow::tr("Outline (simple)");
+    case lab_core::ProcessorKind::Document:
+        return LabWindow::tr("Document");
     }
     return qtString(lab_core::nameOf(kind));
 }

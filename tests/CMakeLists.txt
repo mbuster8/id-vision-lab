@@ -125,6 +125,7 @@ id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
         lab_core/document_outline_test.cpp
+        lab_core/document_processor_test.cpp
         lab_core/engine_test.cpp
         lab_core/fake_sender.h
         lab_core/list_source.h
@@ -136,9 +137,15 @@ id_vision_lab_add_test_executable(lab_core_tests
         opencv_imgproc
         nlohmann_json::nlohmann_json
         GTest::gtest_main)
-# latch.h: holding a sending thread without timing; scratch_folder.h: a recording's folder.
+# latch.h: holding a sending thread without timing; scratch_folder.h: a recording's folder; procedural_page.h:
+# the Document processor's synthetic page.
 target_include_directories(lab_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
-                                                  ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/doc_vision)
+# The model the Document processor's end-to-end test opens, under the UTF-8 code page on Windows as in the lab.
+target_compile_definitions(lab_core_tests PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}")
+id_vision_lab_use_utf8_code_page(lab_core_tests)
+id_vision_lab_copy_runtime_dlls(lab_core_tests)
 
 if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(pipeline_tests
@@ -169,6 +176,7 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
     target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
                                                          ${CMAKE_CURRENT_SOURCE_DIR}/lab_core)
     id_vision_lab_use_utf8_code_page(live_sender_tests)
+    id_vision_lab_copy_runtime_dlls(live_sender_tests)
 endif()
 
 # The Qt code, with an offscreen QApplication. Every Qt test program uses qt_common/test_main.cpp, which keeps
@@ -265,6 +273,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
                 GTest::gtest)
         id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
         id_vision_lab_copy_ffmpeg_dlls(document_lab_ui_tests)
+        id_vision_lab_copy_runtime_dlls(document_lab_ui_tests)
         # They also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
         target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
                                                                  ${CMAKE_CURRENT_SOURCE_DIR}/lab_core

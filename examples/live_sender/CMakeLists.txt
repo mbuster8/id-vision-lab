@@ -15,3 +15,5 @@ target_link_libraries(live_sender PRIVATE live_sender_lib lab_core::lab_core fra
 id_vision_lab_set_warnings(live_sender)
 id_vision_lab_add_sanitizer_defaults(live_sender)
 id_vision_lab_use_utf8_code_page(live_sender)
+# lab_core links ONNX Runtime (its Document processor): vcpkg's onnxruntime.dll beside it on Windows.
+id_vision_lab_copy_runtime_dlls(live_sender)
