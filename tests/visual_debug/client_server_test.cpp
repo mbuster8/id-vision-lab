@@ -555,3 +555,117 @@ TEST(ClientServer, DeliversLargeImageWithinDefaultTimeout) {
 }
 
 } // namespace
+
+// --- Ping and end
+// ----------------------------------------------------------------------------------------------
+
+namespace {
+
+using visual_debug::ViewerState;
+
+TEST(ClientServer, PingIsAnsweredAndNotReported) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+
+    EXPECT_EQ(client.ping(), ViewerState::Listening);
+    EXPECT_TRUE(sink.rejections().empty());
+    EXPECT_EQ(sink.count(), 0U);
+}
+
+TEST(ClientServer, PausedPingIsAnsweredPausedAndNotReported) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    server.setPaused(true);
+    Client client({.endpoint = server.boundEndpoint()});
+
+    EXPECT_EQ(client.ping(), ViewerState::Paused);
+    EXPECT_TRUE(sink.rejections().empty());
+}
+
+TEST(ClientServer, PausedMalformedControlIsReported) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    server.setPaused(true);
+
+    const auto reply = test_support::rawRequest(
+        server.boundEndpoint(), {R"({"protocol":"visual_debug","version":2,"type":"other"})", ""});
+
+    ASSERT_TRUE(reply.has_value());
+    EXPECT_EQ((*reply)["reason"], "viewer paused");
+    EXPECT_EQ(sink.rejections(), std::vector<std::string>{"viewer paused"});
+}
+
+TEST(ClientServer, EndReachesTheSink) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    Client client({.endpoint = server.boundEndpoint()});
+
+    EXPECT_EQ(client.endLive("lab"), SendResult::Delivered);
+    EXPECT_EQ(sink.ended(), std::vector<std::string>{"lab"});
+    EXPECT_TRUE(sink.rejections().empty());
+}
+
+TEST(ClientServer, PausedEndIsReported) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    server.setPaused(true);
+    Client client({.endpoint = server.boundEndpoint()});
+
+    EXPECT_EQ(client.endLive("lab"), SendResult::Rejected);
+    EXPECT_EQ(sink.rejections(), std::vector<std::string>{"viewer paused"});
+    EXPECT_TRUE(sink.ended().empty());
+}
+
+TEST(ClientServer, ImageHeaderWithEmptyFrameKeepsItsReason) {
+    CollectingSink sink;
+    Server server(sink, {.endpoint = kAnyLoopbackPort});
+    ASSERT_TRUE(started(server));
+    const auto encoded = visual_debug::encode(cv::Mat(1, 1, CV_8UC1, cv::Scalar(0)), "x");
+    const std::string header = std::get<visual_debug::EncodedMessage>(encoded).header;
+
+    const auto reply = test_support::rawRequest(server.boundEndpoint(), {header, ""});
+
+    ASSERT_TRUE(reply.has_value());
+    EXPECT_EQ((*reply)["reason"], "pixel frame has the wrong size");
+}
+
+TEST(ClientServer, PingWithoutViewerIsUnavailable) {
+    Client client({.endpoint = unusedEndpoint(), .replyTimeout = 100ms, .retryInterval = 1000ms});
+
+    EXPECT_EQ(client.ping(), ViewerState::Unavailable);
+    const auto start = Clock::now();
+    EXPECT_EQ(client.ping(), ViewerState::Unavailable); // the back-off answers at once
+    EXPECT_LT(Clock::now() - start, 50ms);
+}
+
+TEST(ClientServer, OlderViewerPredatesPing) {
+    {
+        const test_support::ScriptedPeer older(R"({"status":"error","reason":"unsupported message type"})");
+        Client client({.endpoint = older.endpoint()});
+        EXPECT_EQ(client.ping(), ViewerState::PredatesPing);
+    }
+    {
+        const test_support::ScriptedPeer other(R"({"status":"error","reason":"rows out of range"})");
+        Client client({.endpoint = other.endpoint()});
+        EXPECT_EQ(client.ping(), ViewerState::Unavailable);
+    }
+    {
+        const test_support::ScriptedPeer garbage("not json");
+        Client client({.endpoint = garbage.endpoint()});
+        EXPECT_EQ(client.ping(), ViewerState::Unavailable);
+    }
+}
+
+TEST(ClientServer, PingInvalidEndpoint) {
+    Client client({.endpoint = "not an endpoint"});
+
+    EXPECT_EQ(client.ping(), ViewerState::InvalidEndpoint);
+}
+
+} // namespace

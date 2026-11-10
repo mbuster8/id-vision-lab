@@ -347,6 +347,22 @@ def _check_description(name, value_range, transfer, primaries, overlays) -> None
         raise TypeError("overlays are Polygon, Rectangle, Circle or Point")
 
 
+def encode_ping() -> bytes:
+    """The header of a ping, which asks whether a viewer is listening; it goes with an empty second frame."""
+    return f'{{"protocol":"visual_debug","version":{PROTOCOL_VERSION},"type":"ping"}}'.encode("utf-8")
+
+
+def encode_end(channel: str) -> bytes:
+    """The header of an end, which tells the viewer the live channel is finished with; it goes with an empty second
+    frame. The name is made valid and cut as an image's is. TypeError when the channel is not a str."""
+    if not isinstance(channel, str):
+        raise TypeError("channel must be a str")
+    name = _json_string(_cut_utf8(_valid_text(channel), MAX_NAME_BYTES))
+    return f'{{"protocol":"visual_debug","version":{PROTOCOL_VERSION},"type":"end","name":{name}}}'.encode(
+        "utf-8"
+    )
+
+
 def _header(
     rows, cols, channels, depth, name, live, sent_at, value_range, transfer, primaries, overlays
 ) -> bytes:
@@ -450,6 +466,21 @@ class SendResult(enum.Enum):
         return self.value
 
 
+class ViewerState(enum.Enum):
+    """What a ping found at the endpoint; str() gives the C++ toString() text."""
+
+    LISTENING = "listening"  # a viewer answered
+    PAUSED = "paused"  # a viewer answered that it is paused
+    PREDATES_PING = "predates ping"  # an older viewer, which does not know a ping but takes images
+    UNAVAILABLE = (
+        "unavailable"  # no answer, an answer from something that is not a viewer, or a back-off running
+    )
+    INVALID_ENDPOINT = "invalid endpoint"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 def default_endpoint() -> str:
     """VISUAL_DEBUG_ENDPOINT when it is set and not empty, else tcp://127.0.0.1:7139. The only place that reads it."""
     return os.environ.get("VISUAL_DEBUG_ENDPOINT") or DEFAULT_ENDPOINT
@@ -480,12 +511,23 @@ def _wait_for(socket, event: int, timeout: float) -> bool:
     return bool(socket.poll(max(0, round(timeout * 1000)), event) & event)
 
 
-def _is_ok_reply(reply: bytes) -> bool:
+def _reply_status(reply: bytes) -> tuple[bool, str] | None:
+    """(True, "") for ok, (False, reason) for an error, None for anything that is not a reply of the format."""
     try:
         value = json.loads(reply)
-    except Exception:  # not UTF-8, not JSON, or nested too deeply: in any case not "ok"
-        return False
-    return isinstance(value, dict) and value.get("status") == "ok"
+    except Exception:  # not UTF-8, not JSON, or nested too deeply
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("status"), str):
+        return None
+    if value["status"] == "ok":
+        return True, ""
+    reason = value.get("reason")
+    return False, reason if isinstance(reason, str) else ""
+
+
+def _is_ok_reply(reply: bytes) -> bool:
+    status = _reply_status(reply)
+    return status is not None and status[0]
 
 
 class Client:
@@ -522,6 +564,40 @@ class Client:
         """Sends one frame of a live channel: the viewer shows it in place of the channel's previous frame."""
         return self._send(frame, channel, True, rgb, value_range, transfer, primaries, overlays)
 
+    def ping(self) -> ViewerState:
+        """Whether a viewer answers, waiting up to the reply timeout. Only exactly "unsupported message type" counts as
+        an older viewer; no answer starts the back-off, as a failed send does."""
+        not_ready = self._ready()
+        if not_ready is not None:
+            return (
+                ViewerState.INVALID_ENDPOINT
+                if not_ready is SendResult.INVALID_ENDPOINT
+                else ViewerState.UNAVAILABLE
+            )
+        reply = self._exchange(encode_ping(), b"", self.reply_timeout)
+        if isinstance(reply, SendResult):
+            return ViewerState.UNAVAILABLE
+        status = _reply_status(reply)
+        if status is None:
+            return ViewerState.UNAVAILABLE  # something answered that is not a viewer
+        ok, reason = status
+        if ok:
+            return ViewerState.LISTENING
+        if reason == "viewer paused":
+            return ViewerState.PAUSED
+        return ViewerState.PREDATES_PING if reason == "unsupported message type" else ViewerState.UNAVAILABLE
+
+    def end_live(self, channel: str) -> SendResult:
+        """Tells the viewer the live channel is finished with: it closes it. TypeError when channel is not a str."""
+        header = encode_end(channel)
+        not_ready = self._ready()
+        if not_ready is not None:
+            return not_ready
+        reply = self._exchange(header, b"", self.reply_timeout)
+        if isinstance(reply, SendResult):
+            return reply
+        return SendResult.DELIVERED if _is_ok_reply(reply) else SendResult.REJECTED
+
     def close(self) -> None:
         self._drop_socket()
 
@@ -539,20 +615,9 @@ class Client:
             _check_image(image)
         except ValueError:
             return SendResult.INVALID_IMAGE
-        if time.monotonic() < self._back_off_until:
-            return SendResult.VIEWER_UNAVAILABLE
-        if self._socket is not None and self._socket_pid != os.getpid():
-            self._socket = None  # the parent's, after a fork: unusable here, and not ours to close
-        if self._socket is None and not self._open_socket():
-            return SendResult.INVALID_ENDPOINT
-
-        # Only a fresh socket waits for its connection. Afterwards ZeroMQ keeps reconnecting in the background, so a
-        # program without a viewer is blocked once, not on every retry.
-        connect_wait = self.reply_timeout if self._socket_is_fresh else 0.0
-        self._socket_is_fresh = False
-        if not _wait_for(self._socket, zmq.POLLOUT, connect_wait):
-            self._start_back_off()
-            return SendResult.VIEWER_UNAVAILABLE
+        not_ready = self._ready()
+        if not_ready is not None:
+            return not_ready
 
         sent_at = time.time_ns() // 1_000_000 if live else None
         try:
@@ -570,28 +635,53 @@ class Client:
         except ValueError:
             return SendResult.INVALID_IMAGE
 
+        reply = self._exchange(header, pixels, self._reply_deadline(pixels.nbytes))
+        if isinstance(reply, SendResult):
+            return reply
+        return SendResult.DELIVERED if _is_ok_reply(reply) else SendResult.REJECTED
+
+    def _ready(self) -> SendResult | None:
+        """None when a request can go out now; otherwise why not: a back-off running, an endpoint ZeroMQ refuses, or
+        no connection."""
+        if time.monotonic() < self._back_off_until:
+            return SendResult.VIEWER_UNAVAILABLE
+        if self._socket is not None and self._socket_pid != os.getpid():
+            self._socket = None  # the parent's, after a fork: unusable here, and not ours to close
+        if self._socket is None and not self._open_socket():
+            return SendResult.INVALID_ENDPOINT
+        # Only a fresh socket waits for its connection. Afterwards ZeroMQ keeps reconnecting in the background, so a
+        # program without a viewer is blocked once, not on every retry.
+        connect_wait = self.reply_timeout if self._socket_is_fresh else 0.0
+        self._socket_is_fresh = False
+        if not _wait_for(self._socket, zmq.POLLOUT, connect_wait):
+            self._start_back_off()
+            return SendResult.VIEWER_UNAVAILABLE
+        return None
+
+    def _exchange(self, header: bytes, second, deadline: float) -> bytes | SendResult:
+        """Sends the header and the second frame and waits for the reply; VIEWER_UNAVAILABLE when the request could
+        not go out, TIMEOUT when no reply came in time."""
         # A REQ socket interrupted between its request and the reply (Ctrl+C, or an error such as running out of
-        # memory while the pixels are copied) could never send again: drop it, so the next send starts afresh, then
-        # let the interrupt or error through.
+        # memory while the pixels are copied) could never send again: drop it, so the next request starts afresh,
+        # then let the interrupt or error through.
         try:
             try:
                 # copy=True: the caller may change the array as soon as send returns.
-                self._socket.send_multipart([header, pixels], flags=zmq.NOBLOCK, copy=True)
+                self._socket.send_multipart([header, second], flags=zmq.NOBLOCK, copy=True)
             except zmq.ZMQError:
                 self._recover()
                 return SendResult.VIEWER_UNAVAILABLE
             try:
-                if not _wait_for(self._socket, zmq.POLLIN, self._reply_deadline(pixels.nbytes)):
+                if not _wait_for(self._socket, zmq.POLLIN, deadline):
                     self._recover()  # a lost reply would block the REQ socket for good ("Lazy Pirate")
                     return SendResult.TIMEOUT
-                reply = self._socket.recv(flags=zmq.NOBLOCK)
+                return self._socket.recv(flags=zmq.NOBLOCK)
             except zmq.ZMQError:
                 self._recover()
                 return SendResult.TIMEOUT
         except BaseException:
             self._drop_socket()
             raise
-        return SendResult.DELIVERED if _is_ok_reply(reply) else SendResult.REJECTED
 
     def _open_socket(self) -> bool:
         socket = _shared_context().socket(zmq.REQ)
@@ -652,6 +742,24 @@ def send_live(frame, channel: str, **description) -> SendResult:
         if _shared_client is None:
             _shared_client = Client()
         return _shared_client.send_live(frame, channel, **description)
+
+
+def ping() -> ViewerState:
+    """Whether a viewer answers at default_endpoint(), through send_image's client."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = Client()
+        return _shared_client.ping()
+
+
+def end_live(channel: str) -> SendResult:
+    """Tells the viewer the live channel is finished with, through send_image's client."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = Client()
+        return _shared_client.end_live(channel)
 
 
 def _reset_shared_client() -> None:

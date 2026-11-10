@@ -19,6 +19,18 @@ enum class SendResult {
 
 std::string_view toString(SendResult result);
 
+// What a ping found at the endpoint.
+enum class ViewerState {
+    Listening,       // a viewer answered
+    Paused,          // a viewer answered that it is paused: it takes no images until resumed
+    PredatesPing,    // a viewer answered that it does not know a ping: an older one, which still takes images
+    Unavailable,     // no answer, an answer from something that is not a viewer, or a retry back-off running
+    InvalidEndpoint, // the endpoint string cannot be used
+};
+
+// "listening", "paused", "predates ping", "unavailable", "invalid endpoint".
+std::string_view toString(ViewerState state);
+
 // What host applications depend on, so their own tests can substitute a fake, or a different transport
 // can be added later, without touching their code.
 class ImageSender {
@@ -41,6 +53,11 @@ public:
                                 const ImageDescription& /*description*/) {
         return sendLive(frame, channel);
     }
+    // Whether a viewer answers. By default Listening, so an implementation that does not override it behaves
+    // as if one always does.
+    virtual ViewerState ping() { return ViewerState::Listening; }
+    // Tells the viewer the live channel is finished with: it closes it. By default nothing is sent.
+    virtual SendResult endLive(std::string_view /*channel*/) { return SendResult::Delivered; }
 };
 
 } // namespace visual_debug

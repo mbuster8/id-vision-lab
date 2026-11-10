@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -136,6 +137,25 @@ TEST(Recording, JsonMarksIncompleteUntilFinished) {
     EXPECT_EQ(finished["counts"]["notRecorded"], 4);
 }
 
+// A recording's rate is its frames' own: five 40 ms apart are 25 a second.
+TEST(Recording, RateFromItsTimes) {
+    const ScratchFolder folder;
+    {
+        auto writer = startIn(folder.path(), immediate());
+        for (int index = 0; index < 5; ++index) {
+            ASSERT_EQ(writer->push(grey(10, static_cast<std::uint64_t>(index), 40ms * index)),
+                      RecordingWriter::Push::Queued);
+            writer->pump();
+        }
+        writer->finish();
+    }
+    std::string error;
+    const auto source = frame_io::openRecording(folder.path(), error);
+    ASSERT_NE(source, nullptr) << error;
+
+    EXPECT_EQ(source->frameRate(), std::optional<double>(25.0));
+}
+
 // A recording cut short by a crash still replays: the frames its JSON lists, then any PNGs it does not, in
 // name order, each a thirtieth of a second after the one before.
 TEST(Recording, IncompleteReplaysListedAndLaterFrames) {
@@ -162,6 +182,70 @@ TEST(Recording, IncompleteReplaysListedAndLaterFrames) {
         EXPECT_EQ(read.frame.image.at<cv::Vec3b>(0, 0)[0], 10 * (index + 1));
         EXPECT_EQ(read.frame.at.count(), times[static_cast<std::size_t>(index)]);
     }
+}
+
+// The first frame that cannot be written (a disk unplugged, a file in the way) stops the recording: no later
+// frame is taken, and recording.json lists only the frames that were written, with the failure.
+TEST(Recording, FailedWriteStopsAndIsLeftOut) {
+    const ScratchFolder folder;
+    auto writer = startIn(folder.path(), immediate());
+    ASSERT_EQ(writer->push(grey(10, 0, 0ms)), RecordingWriter::Push::Queued);
+    ASSERT_EQ(writer->push(grey(20, 1, 40ms)), RecordingWriter::Push::Queued);
+    std::filesystem::create_directory(folder.path() / "000001.png"); // where frame 1's file would go
+
+    writer->pump();
+
+    EXPECT_NE(writer->progress().failure.find("000001.png"), std::string::npos) << writer->progress().failure;
+    EXPECT_EQ(writer->progress().written, 1U);
+    EXPECT_EQ(writer->push(grey(30, 2, 80ms)), RecordingWriter::Push::Failed);
+    writer->finish();
+    const nlohmann::json json = jsonIn(folder.path());
+    ASSERT_EQ(json["frames"].size(), 1U);
+    EXPECT_EQ(json["frames"][0]["file"], "000000.png");
+    EXPECT_FALSE(json["failure"].get<std::string>().empty());
+}
+
+// Frames queued behind the failed one are dropped and counted, not written.
+TEST(Recording, JobsAfterAFailureAreDropped) {
+    const ScratchFolder folder;
+    test_support::Latch latch;
+    RecordingWriter::Options options = threaded();
+    options.threads = 1;
+    options.beforeWrite = [&latch](std::uint64_t index) {
+        if (index == 0) {
+            latch.hold(); // until every frame is queued
+        }
+        if (index == 1) {
+            throw std::runtime_error("disk gone");
+        }
+    };
+    auto writer = startIn(folder.path(), options);
+    for (std::uint64_t i = 0; i < 4; ++i) {
+        ASSERT_EQ(writer->push(grey(10, i, 40ms * i)), RecordingWriter::Push::Queued) << i;
+    }
+
+    latch.release();
+    writer->finish();
+
+    EXPECT_EQ(writer->progress().written, 1U);
+    EXPECT_EQ(writer->progress().notRecorded, 2U);
+    const nlohmann::json json = jsonIn(folder.path());
+    ASSERT_EQ(json["frames"].size(), 1U);
+    EXPECT_FALSE(std::filesystem::exists(folder.path() / "000002.png"));
+    EXPECT_FALSE(std::filesystem::exists(folder.path() / "000003.png"));
+}
+
+TEST(Recording, ThrowingWriteIsAFailure) {
+    const ScratchFolder folder;
+    RecordingWriter::Options options = immediate();
+    options.beforeWrite = [](std::uint64_t) { throw std::runtime_error("disk gone"); };
+    auto writer = startIn(folder.path(), options);
+    writer->push(grey(10, 0, 0ms));
+
+    writer->pump();
+
+    EXPECT_FALSE(writer->progress().failure.empty());
+    EXPECT_EQ(writer->progress().written, 0U);
 }
 
 // A recording's JSON names files inside its own folder only: one from elsewhere (a recording someone sent,

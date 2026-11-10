@@ -29,7 +29,8 @@ struct SequenceEntry {
 
 class FileSequence final : public ReplaySource {
 public:
-    FileSequence(std::vector<SequenceEntry> entries, std::string description, ReadOptions options);
+    FileSequence(std::vector<SequenceEntry> entries, std::string description, ReadOptions options,
+                 double rate);
     ~FileSequence() override; // waits for the reads in flight
 
     FileSequence(const FileSequence&) = delete;
@@ -42,6 +43,7 @@ public:
     bool canSeek() const override;
     void seek(std::uint64_t index) override;
     std::optional<std::uint64_t> frameCount() const override;
+    std::optional<double> frameRate() const override;
     std::string describe() const override;
 
 private:
@@ -56,6 +58,7 @@ private:
     std::vector<SequenceEntry> m_entries;
     std::string m_description;
     ReadOptions m_options;
+    double m_rate;
     std::shared_ptr<Wake> m_wake = std::make_shared<Wake>();
     std::uint64_t m_next = 0;                                              // the index next() returns
     std::deque<std::pair<std::uint64_t, std::future<ReadResult>>> m_reads; // from m_next on, in order

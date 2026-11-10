@@ -221,3 +221,62 @@ def test_str_of_results():
         "Timeout",
         "Invalid endpoint",
     ]
+
+
+# --- Ping and end (docs/wire-format.md, "Requests: ping and end") -----------------------------------------------------
+
+
+def test_ping_listening():
+    with FakeViewer() as fake, client_for(fake.endpoint) as client:
+        assert client.ping() is vd.ViewerState.LISTENING
+    assert fake.received[0] == ({"protocol": "visual_debug", "version": 2, "type": "ping"}, b"")
+
+
+def test_ping_paused():
+    with FakeViewer(reply="paused") as fake, client_for(fake.endpoint) as client:
+        assert client.ping() is vd.ViewerState.PAUSED
+
+
+def test_ping_older():
+    with FakeViewer(reply="older") as fake, client_for(fake.endpoint) as client:
+        assert client.ping() is vd.ViewerState.PREDATES_PING
+
+
+def test_ping_error_or_garbage_is_unavailable():
+    with FakeViewer(reply="error") as fake, client_for(fake.endpoint) as client:
+        assert client.ping() is vd.ViewerState.UNAVAILABLE
+        fake.reply = "garbage"
+        assert client.ping() is vd.ViewerState.UNAVAILABLE
+
+
+def test_ping_without_viewer():
+    with vd.Client(f"tcp://127.0.0.1:{free_port()}", reply_timeout=0.1) as client:
+        assert client.ping() is vd.ViewerState.UNAVAILABLE
+
+
+def test_ping_invalid_endpoint():
+    with vd.Client("not an endpoint") as client:
+        assert client.ping() is vd.ViewerState.INVALID_ENDPOINT
+
+
+def test_end_live():
+    with FakeViewer() as fake, client_for(fake.endpoint) as client:
+        assert client.end_live("lab") is DELIVERED
+    assert fake.received[0] == ({"protocol": "visual_debug", "version": 2, "type": "end", "name": "lab"}, b"")
+
+
+def test_module_ping_and_end_live(isolated_endpoint):
+    with FakeViewer(endpoint=isolated_endpoint) as fake:
+        assert vd.ping() is vd.ViewerState.LISTENING
+        assert vd.end_live("lab") is DELIVERED
+    assert [header["type"] for header, _ in fake.received] == ["ping", "end"]
+
+
+def test_str_of_viewer_states():
+    assert [str(state) for state in vd.ViewerState] == [
+        "listening",
+        "paused",
+        "predates ping",
+        "unavailable",
+        "invalid endpoint",
+    ]

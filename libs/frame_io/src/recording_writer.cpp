@@ -88,6 +88,9 @@ RecordingWriter::Push RecordingWriter::push(const Frame& frame) {
     const std::size_t bytes = frame.image.total() * frame.image.elemSize();
     {
         const std::lock_guard lock(m_mutex);
+        if (!m_failure.empty()) {
+            return Push::Failed;
+        }
         // A frame larger than the whole queue still goes in, alone.
         if (m_finishing || (m_bytes > 0 && m_bytes + bytes > m_options.queueBytes)) {
             return Push::Full;
@@ -125,6 +128,9 @@ bool RecordingWriter::pump() {
             }
             job = std::move(m_jobs.front());
             m_jobs.pop_front();
+            if (dropAfterFailure(job)) {
+                continue;
+            }
             ++m_writing;
         }
         write(std::move(job));
@@ -188,41 +194,60 @@ void RecordingWriter::writeLoop() {
             }
             job = std::move(m_jobs.front());
             m_jobs.pop_front();
+            if (dropAfterFailure(job)) {
+                m_changed.notify_all();
+                continue;
+            }
             ++m_writing;
         }
         write(std::move(job));
     }
 }
 
-void RecordingWriter::write(Job job) {
-    if (m_options.beforeWrite) {
-        m_options.beforeWrite(job.index);
+// After the first failure no frame is written: one still queued is dropped and counted as not recorded.
+bool RecordingWriter::dropAfterFailure(const Job& job) {
+    if (m_failure.empty()) {
+        return false;
     }
+    m_bytes -= job.bytes;
+    ++m_notRecorded;
+    completeIfDone();
+    return true;
+}
+
+// Any exception, from the PNG encoder, the disk or a test's hook, is a frame that could not be written.
+void RecordingWriter::write(Job job) {
     std::string failure;
     std::vector<unsigned char> bytes;
     try {
+        if (m_options.beforeWrite) {
+            m_options.beforeWrite(job.index);
+        }
         if (!cv::imencode(".png", job.image, bytes)) {
             failure = utf8Name(job.file) + ": the frame could not be encoded as PNG";
+        } else {
+            writeOwnerOnly(job.file, bytes, failure);
         }
     } catch (const cv::Exception&) {
         failure = utf8Name(job.file) + ": the frame could not be encoded as PNG";
-    }
-    if (failure.empty()) {
-        writeOwnerOnly(job.file, bytes, failure);
+    } catch (...) {
+        failure = utf8Name(job.file) + ": could not be written";
     }
     job.image.release(); // before the queue has room again
     {
         const std::lock_guard lock(m_mutex);
-        wrote(job.bytes, failure);
+        wrote(job, failure);
     }
     m_changed.notify_all();
 }
 
-void RecordingWriter::wrote(std::size_t bytes, const std::string& failure) {
+void RecordingWriter::wrote(const Job& job, const std::string& failure) {
     --m_writing;
-    m_bytes -= bytes;
-    ++m_written;
-    if (!failure.empty() && m_failure.empty()) {
+    m_bytes -= job.bytes;
+    if (failure.empty()) {
+        ++m_written;
+        m_entries[job.index].written = true;
+    } else if (m_failure.empty()) {
         m_failure = failure;
     }
     completeIfDone();
@@ -244,29 +269,35 @@ bool RecordingWriter::writeJson(bool complete, std::string& error) const {
     const visual_debug::ImageDescription first =
         m_entries.empty() ? visual_debug::ImageDescription{} : m_entries.front().tags;
     for (const Entry& entry : m_entries) {
+        if (!entry.written) {
+            continue;
+        }
         nlohmann::json frame{{"file", entry.file}, {"at", entry.at.count()}};
         if (entry.tags != first) {
             frame["tags"] = toJson(entry.tags);
         }
         frames.push_back(std::move(frame));
     }
-    const nlohmann::json json{
-        {"format", "document-lab-recording"},
-        {"version", 1},
-        {"complete", complete},
-        {"startedAt", m_info.startedAt},
-        {"source", {{"kind", m_info.kind}, {"name", m_info.name}, {"format", m_info.format}}},
-        {"tags", toJson(first)},
-        {"frames", std::move(frames)},
-        {"counts",
-         {{"droppedBeforeProcessing", m_counts.droppedBeforeProcessing},
-          {"notDrawn", m_counts.notDrawn},
-          {"notSent", m_counts.notSent},
-          {"notRecorded", m_counts.notRecorded}}}};
+    nlohmann::json json{{"format", "document-lab-recording"},
+                        {"version", 1},
+                        {"complete", complete},
+                        {"startedAt", m_info.startedAt},
+                        {"source", {{"kind", m_info.kind}, {"name", m_info.name}, {"format", m_info.format}}},
+                        {"tags", toJson(first)},
+                        {"frames", std::move(frames)},
+                        {"counts",
+                         {{"droppedBeforeProcessing", m_counts.droppedBeforeProcessing},
+                          {"notDrawn", m_counts.notDrawn},
+                          {"notSent", m_counts.notSent},
+                          {"notRecorded", m_counts.notRecorded}}}};
+    if (!m_failure.empty()) {
+        json["failure"] = m_failure;
+    }
     // Through a temporary file and a rename, so a crash leaves the old file or the new one, never half of
-    // one.
+    // one. Text that is not UTF-8 (a camera's name, say) is replaced rather than thrown on.
     const std::filesystem::path temporary = m_folder / kJsonTemporaryName;
-    if (!writeOwnerOnly(temporary, json.dump(2) + "\n", error)) {
+    if (!writeOwnerOnly(temporary, json.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n",
+                        error)) {
         return false;
     }
     std::error_code failed;

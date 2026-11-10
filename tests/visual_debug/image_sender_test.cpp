@@ -36,4 +36,16 @@ TEST(ImageSender, DescribedSendsFallBackToThePlainOnes) {
     EXPECT_EQ(fake.names(), (std::vector<std::string>{"still", "camera"}));
 }
 
+// The same fake answers a ping and an end as if a viewer always did, sending nothing.
+TEST(ImageSender, DefaultPingAndEnd) {
+    RecordingSender fake;
+    visual_debug::ImageSender& sender = fake;
+
+    EXPECT_EQ(sender.ping(), visual_debug::ViewerState::Listening);
+    EXPECT_EQ(sender.endLive("x"), SendResult::Delivered);
+    EXPECT_TRUE(fake.names().empty());
+    EXPECT_EQ(visual_debug::toString(visual_debug::ViewerState::PredatesPing), "predates ping");
+    EXPECT_EQ(visual_debug::toString(visual_debug::ViewerState::InvalidEndpoint), "invalid endpoint");
+}
+
 } // namespace

@@ -2,6 +2,8 @@
 
 #include "tags_json.h"
 
+#include <visual_debug/wire_format.h>
+
 #include <opencv2/imgcodecs.hpp>
 
 #include <nlohmann/json.hpp>
@@ -34,12 +36,18 @@ std::filesystem::path writeCapture(const std::filesystem::path& folder, const st
         error = "the frame could not be encoded as PNG";
         return {};
     }
-    const nlohmann::json described{{"source", info.source},
-                                   {"frame", frame.number + 1},
-                                   {"at", frame.at.count()},
-                                   {"tags", toJson(frame.tags)},
-                                   {"findings", info.findings}};
-    if (!writeOwnerOnly(png, bytes, error) || !writeOwnerOnly(json, described.dump(2) + "\n", error)) {
+    nlohmann::json described{{"source", info.source},
+                             {"frame", frame.number + 1},
+                             {"at", frame.at.count()},
+                             {"tags", toJson(frame.tags)},
+                             {"findings", info.findings}};
+    // In the wire format's shape, as the viewer would have drawn them.
+    if (!info.overlays.empty()) {
+        described["overlays"] = nlohmann::json::parse(visual_debug::encodeOverlays(info.overlays));
+    }
+    // A finding that is not UTF-8 is written with U+FFFD in its place rather than thrown on.
+    const std::string text = described.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
+    if (!writeOwnerOnly(png, bytes, error) || !writeOwnerOnly(json, text, error)) {
         return {};
     }
     return png;

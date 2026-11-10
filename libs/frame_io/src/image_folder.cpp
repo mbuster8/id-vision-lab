@@ -55,9 +55,11 @@ const char* depthName(int depth) {
     }
 }
 
+constexpr int kFolderRate = 30; // a folder has no rate of its own
+
 // A frame of the folder: 30 a second, in whole nanoseconds, truncated.
 std::chrono::nanoseconds folderTime(std::uint64_t index) {
-    return std::chrono::nanoseconds(static_cast<std::int64_t>(index) * 1'000'000'000 / 30);
+    return std::chrono::nanoseconds(static_cast<std::int64_t>(index) * 1'000'000'000 / kFolderRate);
 }
 
 // The name for messages and the window: as UTF-8, whatever the platform's own encoding.
@@ -88,6 +90,7 @@ public:
     bool canSeek() const override { return true; }
     void seek(std::uint64_t index) override { m_taken = index > 0; }
     std::optional<std::uint64_t> frameCount() const override { return 1; }
+    std::optional<double> frameRate() const override { return std::nullopt; }
     std::string describe() const override { return m_name; }
 
 private:
@@ -194,7 +197,8 @@ std::unique_ptr<ReplaySource> openImageFolder(const std::filesystem::path& folde
     for (std::uint64_t index = 0; index < files.size(); ++index) {
         entries.push_back({.file = files[index], .at = folderTime(index), .tags = std::nullopt});
     }
-    return std::make_unique<FileSequence>(std::move(entries), displayName(folder), std::move(options));
+    return std::make_unique<FileSequence>(std::move(entries), displayName(folder), std::move(options),
+                                          kFolderRate);
 }
 
 std::unique_ptr<ReplaySource> openImageFile(const std::filesystem::path& file, std::string& error) {
@@ -206,8 +210,10 @@ std::unique_ptr<ReplaySource> openImageFile(const std::filesystem::path& file, s
     return std::make_unique<ImageFile>(std::move(frame), displayName(file));
 }
 
-FileSequence::FileSequence(std::vector<SequenceEntry> entries, std::string description, ReadOptions options)
-    : m_entries(std::move(entries)), m_description(std::move(description)), m_options(std::move(options)) {
+FileSequence::FileSequence(std::vector<SequenceEntry> entries, std::string description, ReadOptions options,
+                           double rate)
+    : m_entries(std::move(entries)), m_description(std::move(description)), m_options(std::move(options)),
+      m_rate(rate) {
     if (m_options.depth == 0) {
         m_options.depth = 1;
     }
@@ -260,7 +266,15 @@ ReadResult FileSequence::next() {
         return {};
     }
     startReads();
-    ReadResult result = m_reads.front().second.get();
+    ReadResult result;
+    try {
+        result = m_reads.front().second.get();
+    } catch (...) {
+        // A read that threw is an error at its frame, never the end of the folder.
+        result = {.status = ReadStatus::Error,
+                  .frame = {},
+                  .error = displayName(m_entries[m_next].file) + ": reading failed"};
+    }
     m_reads.pop_front();
     ++m_next;
     startReads();
@@ -296,6 +310,8 @@ void FileSequence::seek(std::uint64_t index) {
 }
 
 std::optional<std::uint64_t> FileSequence::frameCount() const { return m_entries.size(); }
+
+std::optional<double> FileSequence::frameRate() const { return m_rate; }
 
 std::string FileSequence::describe() const { return m_description; }
 

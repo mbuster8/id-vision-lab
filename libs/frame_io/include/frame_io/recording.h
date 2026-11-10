@@ -58,7 +58,8 @@ public:
         std::function<std::uintmax_t(const std::filesystem::path&)> freeSpace; // null: what the volume has
         std::function<void(std::uint64_t index)> beforeWrite;                  // tests hold a writer here
     };
-    enum class Push { Queued, Full, LowDisk };
+    // Failed: a frame could not be written (progress().failure says which); the recording takes no more.
+    enum class Push { Queued, Full, LowDisk, Failed };
     struct Progress {
         std::uint64_t written = 0;
         std::uint64_t queued = 0; // pushed and not yet written
@@ -97,6 +98,7 @@ private:
         std::string file;
         std::chrono::nanoseconds at{};
         visual_debug::ImageDescription tags;
+        bool written = false; // only written frames go in recording.json
     };
     struct Job {
         std::uint64_t index = 0;
@@ -107,10 +109,11 @@ private:
 
     RecordingWriter(std::filesystem::path folder, RecordingInfo info, Options options);
     void writeLoop();
-    void write(Job job);                                       // without the lock
-    void wrote(std::size_t bytes, const std::string& failure); // with it
-    bool writeJson(bool complete, std::string& error) const;   // with it
-    void completeIfDone();                                     // with it
+    void write(Job job);                                     // without the lock
+    void wrote(const Job& job, const std::string& failure);  // with it
+    bool dropAfterFailure(const Job& job);                   // with it: whether the job is not to be written
+    bool writeJson(bool complete, std::string& error) const; // with it
+    void completeIfDone();                                   // with it
 
     std::filesystem::path m_folder;
     RecordingInfo m_info;

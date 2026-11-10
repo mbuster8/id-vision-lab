@@ -10,8 +10,9 @@ namespace frame_io {
 
 // What is known about a captured frame besides its pixels.
 struct CaptureInfo {
-    std::string source;                // the camera's or the file's name
-    std::vector<std::string> findings; // the processor's, for this frame
+    std::string source;                            // the camera's or the file's name
+    std::vector<std::string> findings;             // the processor's, for this frame
+    std::vector<visual_debug::Overlay> overlays{}; // the processor's: where it found what it found
 };
 
 // Keeps a frame at full resolution: "<baseName> frame <number + 1>.png" (8- or 16-bit as the frame is) and a

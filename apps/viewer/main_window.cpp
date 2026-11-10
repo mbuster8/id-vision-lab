@@ -1008,6 +1008,24 @@ void MainWindow::takeLiveFrames() {
     const Clock::time_point now = m_clock();
     LiveChannelPanel* panel = m_sidebar->liveChannels();
 
+    // Ended by their senders, before anything else, so a frame that came after the end starts the channel
+    // again. A channel the user froze to look at stays, going idle as any quiet channel does.
+    std::vector<std::string> logged;
+    for (const std::string& name : batch.ended) {
+        const viewer_core::LiveChannel* channel = m_live.find(name);
+        if (channel == nullptr) {
+            continue;
+        }
+        if (!m_mutedChannels.contains(name)) {
+            log(LogKind::Info,
+                tr("Live channel [%1] ended by its sender").arg(singleLine(QString::fromStdString(name))));
+            logged.push_back(name);
+        }
+        if (!channel->frozen) {
+            forgetLiveChannel(name);
+        }
+    }
+
     // An eviction made room for a channel that opened at the same moment, so its frame is in this batch.
     std::vector<std::string> opened;
     for (const QtImageSink::LiveFrame& frame : batch.frames) {
@@ -1017,9 +1035,13 @@ void MainWindow::takeLiveFrames() {
     }
     for (std::size_t i = 0; i < batch.evicted.size(); ++i) {
         const QString idle = singleLine(QString::fromStdString(batch.evicted[i]));
-        log(LogKind::Info, i < opened.size() ? tr("Live channel [%1] replaced idle channel [%2]")
-                                                   .arg(singleLine(QString::fromStdString(opened[i])), idle)
-                                             : tr("Closed idle live channel [%1] to make room").arg(idle));
+        // A channel ended and then evicted in one batch is already in the log.
+        if (std::find(logged.begin(), logged.end(), batch.evicted[i]) == logged.end()) {
+            log(LogKind::Info, i < opened.size()
+                                   ? tr("Live channel [%1] replaced idle channel [%2]")
+                                         .arg(singleLine(QString::fromStdString(opened[i])), idle)
+                                   : tr("Closed idle live channel [%1] to make room").arg(idle));
+        }
         forgetLiveChannel(batch.evicted[i]);
     }
 

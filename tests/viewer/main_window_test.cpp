@@ -1753,6 +1753,74 @@ TEST(MainWindowTest, ClosingTheShownChannelReturnsToTheHistory) {
     EXPECT_TRUE(infoBarOf(*empty.window)->isHidden());
 }
 
+// A sender that ends its channel takes it away, as the close button would, and the log says who did.
+TEST(MainWindowTest, EndedChannelIsForgottenAndLogged) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    ASSERT_NE(liveRowOf(window, QStringLiteral("camera")), nullptr);
+
+    window.sinkForTests().onLiveEnded("camera");
+    QApplication::processEvents();
+
+    EXPECT_EQ(liveRowOf(window, QStringLiteral("camera")), nullptr);
+    EXPECT_EQ(window.shownLiveChannel(), std::nullopt);
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [camera] ended by its sender")),
+              nullptr);
+}
+
+// A channel the user froze to look at stays when its sender ends it, going idle as a quiet channel does.
+TEST(MainWindowTest, FrozenChannelOutlivesItsEnd) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+    window.findChild<QAction*>(QStringLiteral("actionFreeze"))->trigger();
+
+    window.sinkForTests().onLiveEnded("camera");
+    QApplication::processEvents();
+
+    ASSERT_NE(liveRowOf(window, QStringLiteral("camera")), nullptr);
+    EXPECT_EQ(window.shownLiveChannel(), std::optional<std::string>("camera"));
+    clocked.now += viewer_core::kIdleAfter;
+    window.tick(clocked.now);
+    EXPECT_EQ(
+        liveRowOf(window, QStringLiteral("camera"))->findChild<QLabel*>(QStringLiteral("liveState"))->text(),
+        QStringLiteral("frozen · idle"));
+}
+
+TEST(MainWindowTest, MutedEndIsNotLogged) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    feedLive(window, "edges", liveFrame(2));
+    QApplication::processEvents();
+    clickMute(window, QStringLiteral("edges"));
+
+    window.sinkForTests().onLiveEnded("edges");
+    QApplication::processEvents();
+
+    EXPECT_EQ(liveRowOf(window, QStringLiteral("edges")), nullptr);
+    EXPECT_EQ(findEntry(*logOf(window), QStringLiteral("Live channel [edges] ended by its sender")), nullptr);
+}
+
+// A frame that comes after the end, in the same batch, starts the channel again.
+TEST(MainWindowTest, FrameAfterTheEndStartsTheChannelAgain) {
+    ClockedWindow clocked;
+    MainWindow& window = *clocked.window;
+    feedLive(window, "camera", liveFrame(1));
+    QApplication::processEvents();
+
+    window.sinkForTests().onLiveEnded("camera");
+    feedLive(window, "camera", liveFrame(2));
+    QApplication::processEvents();
+
+    EXPECT_NE(liveRowOf(window, QStringLiteral("camera")), nullptr);
+    EXPECT_NE(findEntry(*logOf(window), QStringLiteral("Live channel [camera] ended by its sender")),
+              nullptr);
+}
+
 // (F3) Freezing a channel and then losing its sender leaves a row that can still be closed.
 TEST(MainWindowTest, FrozenIdleChannelCanBeClosed) {
     ClockedWindow clocked;

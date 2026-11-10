@@ -9,6 +9,7 @@
 #include <frame_io/recording.h>
 #include <lab_core/engine.h>
 #include <lab_core/processors.h>
+#include <lab_core/viewer_link.h>
 #include <visual_debug/image_description.h>
 #include <visual_debug/image_sender.h>
 
@@ -27,25 +28,32 @@
 #include <vector>
 
 class QAction;
-class QCheckBox;
 class QCloseEvent;
 class QComboBox;
 class QEvent;
 class QLabel;
 class QLineEdit;
-class QListWidget;
 class QPushButton;
+class QSlider;
+class QSplitter;
 class QTimer;
+class QTreeWidget;
 
 namespace document_lab {
 
 using Clock = std::chrono::steady_clock;
 
+// "0:16 / 0:25", or "1:02:03 / 1:10:00" from an hour: a replay's position and its length, seconds truncated.
+QString formatPosition(std::chrono::nanoseconds at, std::chrono::nanoseconds length);
+
 // Everything the window would otherwise make or ask for itself, so that its tests can run it without cameras,
 // threads, dialogs or a disk that fills up.
 struct LabDependencies {
     std::unique_ptr<CameraBackend> cameras;
+    // The stream's sender, and the viewer link's own (pings, Send Frame); null: a visual_debug::Client.
     std::function<std::unique_ptr<visual_debug::ImageSender>(const std::string& endpoint)> makeSender;
+    lab_core::ViewerLink::MakeSender makeLinkSender;
+    lab_core::ViewerLink::Mode linkMode = lab_core::ViewerLink::Mode::Threaded;
     std::function<std::unique_ptr<lab_core::FrameProcessor>(lab_core::ProcessorKind)>
         makeProcessor; // null: lab_core's
     lab_core::Engine::Mode engineMode = lab_core::Engine::Mode::Threaded;
@@ -80,6 +88,8 @@ public:
 
     // Immediate modes: one engine pump, its result taken and drawn, the status refreshed.
     void pumpForTests();
+    // Immediate modes: one engine pump only; its hooks reach the window queued, as in the running lab.
+    void pumpEngineForTests();
     struct CanvasCounts {
         std::uint64_t received = 0; // pictures the converter made
         std::uint64_t applied = 0;  // of those, drawn: the others were for a view no longer shown
@@ -93,6 +103,7 @@ protected:
 
 private:
     void buildUi();
+    void showResultsPanel(bool shown);
     void beginRun();
     void takeResult();
     const cv::Mat* shownImage(visual_debug::ImageDescription& description) const;
@@ -129,7 +140,10 @@ private:
     void openFolder();
     void openReplay(const QString& path);
     void togglePlay();
+    void seekSeconds(int seconds); // back when negative, at the replay's own rate
+    void sliderChanged(int value);
     void updateReplayControls(const lab_core::EngineStatus& status);
+    void updatePosition(const lab_core::EngineStatus& status);
 
     // Recording and capture.
     QString labFolder() const;
@@ -140,11 +154,18 @@ private:
     void chooseLabFolder();
     void openLabFolder();
 
-    // Send to viewer.
-    void toggleSend(bool on);
-    void startSending();
-    void stopSending();
+    // The viewer row.
+    QString endpointText() const;
+    bool mayAsk(const QString& endpoint) const; // loopback, or another computer the user said yes to
+    bool confirmFor(const QString& endpoint);   // mayAsk, after asking for another computer if need be
+    void applyEndpoint();                       // the link pings the endpoint, when it may
+    bool olderViewer() const;
+    void startStream();
+    void pauseStream();
+    void stopStream();
+    void sendFrame();
     void endpointChanged();
+    void updateViewerRow(const lab_core::EngineStatus& status);
 
     LabDependencies m_dependencies;
     LabSettings m_settings;
@@ -158,26 +179,41 @@ private:
     QPushButton* m_step = nullptr;
     QPushButton* m_stepBack = nullptr;
     QPushButton* m_restart = nullptr;
-    QCheckBox* m_loop = nullptr;
-    QCheckBox* m_asFast = nullptr;
+    QPushButton* m_loop = nullptr;
+    QPushButton* m_asFast = nullptr;
+    QPushButton* m_back10 = nullptr;
+    QPushButton* m_forward10 = nullptr;
+    QSlider* m_slider = nullptr;
+    QLabel* m_position = nullptr;
     QAction* m_playPauseAction = nullptr;
     QAction* m_stepAction = nullptr;
     QAction* m_stepBackAction = nullptr;
+    QAction* m_back10Action = nullptr;
+    QAction* m_forward10Action = nullptr;
     QPushButton* m_record = nullptr;
     QPushButton* m_capture = nullptr;
     QPushButton* m_openLabFolder = nullptr;
     QPushButton* m_chooseLabFolder = nullptr;
     QTimer* m_closeTimer = nullptr;
-    QCheckBox* m_send = nullptr;
     QLineEdit* m_endpoint = nullptr;
-    QString m_sendingHost;              // another computer's, while sending there; empty for this one
+    QLabel* m_viewerIndicator = nullptr;
+    QLabel* m_viewerState = nullptr;
+    QPushButton* m_streamButton = nullptr;
+    QPushButton* m_pauseStream = nullptr;
+    QPushButton* m_stopStream = nullptr;
+    QPushButton* m_sendFrame = nullptr;
+    enum class Stream { Off, On, Paused };
+    Stream m_stream = Stream::Off;
+    QString m_sendingHost;              // another computer's, while streaming there; empty for this one
     QSet<QString> m_confirmedEndpoints; // the user said yes to sending there, this session
     QComboBox* m_processorCombo = nullptr;
     QComboBox* m_showCombo = nullptr;
-    QCheckBox* m_overlaysCheck = nullptr;
+    QPushButton* m_overlaysCheck = nullptr;
     ImageView* m_canvas = nullptr;
     QLabel* m_placeholder = nullptr;
-    QListWidget* m_results = nullptr;
+    QSplitter* m_splitter = nullptr;
+    QTreeWidget* m_results = nullptr;
+    QAction* m_resultsAction = nullptr;
     QLabel* m_status = nullptr;
     QTimer* m_statusTimer = nullptr;
 
@@ -187,7 +223,8 @@ private:
     std::vector<CameraInfo> m_cameras;   // as the camera picker lists them
     std::vector<CameraFormat> m_formats; // the chosen camera's, as the format picker lists them
     bool m_cameraRunning = false;
-    quint64 m_session = 0; // the camera session whose frames are taken
+    quint64 m_session = 0;                           // the camera session whose frames are taken
+    std::optional<Clock::time_point> m_firstFrameAt; // the run's first camera frame's arrival
     CameraGeometry m_geometry;
 
     bool m_running = false;                // a camera or a replay runs: its results are taken
@@ -208,10 +245,11 @@ private:
     std::deque<Clock::time_point> m_taken; // results taken in the last second
     std::deque<Clock::time_point> m_drawn; // pictures drawn in the last second
 
-    // Destroyed in this order, from the bottom: the converter's thread and the engine's stop before anything
-    // they call back into goes.
+    // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop
+    // before anything they call back into goes.
     std::unique_ptr<LiveConverter> m_converter;
     std::unique_ptr<lab_core::Engine> m_engine;
+    std::unique_ptr<lab_core::ViewerLink> m_link;
 };
 
 } // namespace document_lab

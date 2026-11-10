@@ -7,7 +7,9 @@
 #include <future>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 
@@ -106,6 +108,48 @@ TEST(ReadAhead, WakesWhenAnItemIsReadyAndAtTheEnd) {
 TEST(ReadAhead, AThrowingReadEndsTheStream) {
     ReadAhead<int> ahead([]() -> std::optional<int> { throw std::runtime_error("decoder failed"); }, 2);
 
+    EXPECT_EQ(ahead.take(), std::nullopt);
+}
+
+// With a handler, the exception becomes the stream's last item, so a replay can stop with an error rather
+// than look as if it had ended.
+TEST(ReadAhead, AThrowingReadGivesTheHandlersItem) {
+    int calls = 0;    // only the reading thread touches it
+    std::string what; // set by the handler before its item is taken
+    ReadAhead<int> ahead(
+        [&calls]() -> std::optional<int> {
+            if (++calls == 3) {
+                throw std::runtime_error("boom");
+            }
+            return calls;
+        },
+        2,
+        [&what](std::string thrown) -> std::optional<int> {
+            what = std::move(thrown);
+            return -1;
+        });
+
+    EXPECT_EQ(ahead.take(), std::optional(1));
+    EXPECT_EQ(ahead.take(), std::optional(2));
+    EXPECT_EQ(ahead.take(), std::optional(-1));
+    EXPECT_EQ(what, "boom");
+    EXPECT_EQ(ahead.take(), std::nullopt);
+}
+
+// Anything thrown, not only a standard exception.
+TEST(ReadAhead, ANonStandardThrowEndsTheStream) {
+    int calls = 0;
+    ReadAhead<int> ahead(
+        [&calls]() -> std::optional<int> {
+            if (++calls == 3) {
+                throw 42;
+            }
+            return calls;
+        },
+        2);
+
+    EXPECT_EQ(ahead.take(), std::optional(1));
+    EXPECT_EQ(ahead.take(), std::optional(2));
     EXPECT_EQ(ahead.take(), std::nullopt);
 }
 

@@ -6,8 +6,11 @@
 #include <zmq.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <optional>
+#include <span>
+#include <string>
 #include <variant>
 
 namespace visual_debug {
@@ -18,13 +21,34 @@ using Clock = std::chrono::steady_clock;
 // Whatever answers on the viewer's port cannot push a large reply into the host application.
 constexpr std::int64_t kMaxReplyBytes = 64 * 1024;
 
-bool isOkReply(std::string_view text) {
+// A reply of the format: ok, or an error with its reason. Nothing for anything else.
+struct ReplyStatus {
+    bool ok = false;
+    std::string reason;
+};
+
+std::optional<ReplyStatus> readReply(std::string_view text) {
     const auto reply = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
     if (!reply.is_object()) {
-        return false;
+        return std::nullopt;
     }
     const auto status = reply.find("status");
-    return status != reply.end() && status->is_string() && status->get_ref<const std::string&>() == "ok";
+    if (status == reply.end() || !status->is_string()) {
+        return std::nullopt;
+    }
+    if (status->get_ref<const std::string&>() == "ok") {
+        return ReplyStatus{.ok = true, .reason = {}};
+    }
+    const auto reason = reply.find("reason");
+    return ReplyStatus{.ok = false,
+                       .reason = reason != reply.end() && reason->is_string()
+                                     ? reason->get_ref<const std::string&>()
+                                     : std::string()};
+}
+
+bool isOkReply(std::string_view text) {
+    const std::optional<ReplyStatus> status = readReply(text);
+    return status && status->ok;
 }
 
 } // namespace
@@ -40,20 +64,8 @@ public:
         if (!isSupportedImage(image)) {
             return SendResult::InvalidImage;
         }
-        if (Clock::now() < m_backOffUntil) {
-            return SendResult::ViewerUnavailable;
-        }
-        if (!m_socket && !openSocket()) {
-            return SendResult::InvalidEndpoint;
-        }
-
-        // Only a fresh socket waits for its connection. Afterwards ZeroMQ keeps reconnecting in the
-        // background, so a host application without a viewer is blocked once, not on every retry.
-        const auto connectWait = m_socketIsFresh ? m_options.replyTimeout : std::chrono::milliseconds(0);
-        m_socketIsFresh = false;
-        if (!waitFor(ZMQ_POLLOUT, connectWait)) {
-            startBackOff();
-            return SendResult::ViewerUnavailable;
+        if (const std::optional<SendResult> notReady = ready()) {
+            return *notReady;
         }
 
         EncodeOptions options{.description = description};
@@ -67,22 +79,45 @@ public:
         }
         const auto& message = std::get<EncodedMessage>(encoded);
         const auto pixels = message.pixelBytes();
-        // message_t copies the pixels, so the caller may change its Mat as soon as send() returns.
-        if (!m_socket->send(zmq::buffer(message.header),
-                            zmq::send_flags::sndmore | zmq::send_flags::dontwait) ||
-            !m_socket->send(zmq::message_t(pixels.data(), pixels.size()), zmq::send_flags::dontwait)) {
-            recover();
-            return SendResult::ViewerUnavailable;
+        const auto reply = exchange(message.header, pixels, replyDeadline(pixels.size()));
+        if (const auto* failed = std::get_if<SendResult>(&reply)) {
+            return *failed;
         }
+        return isOkReply(std::get<std::string>(reply)) ? SendResult::Delivered : SendResult::Rejected;
+    }
 
-        zmq::message_t reply;
-        if (!waitFor(ZMQ_POLLIN, replyDeadline(pixels.size())) ||
-            !m_socket->recv(reply, zmq::recv_flags::dontwait)) {
-            // A REQ socket still waiting for a lost reply cannot send again, so start afresh ("Lazy Pirate").
-            recover();
-            return SendResult::Timeout;
+    ViewerState ping() {
+        if (const std::optional<SendResult> notReady = ready()) {
+            return *notReady == SendResult::InvalidEndpoint ? ViewerState::InvalidEndpoint
+                                                            : ViewerState::Unavailable;
         }
-        return isOkReply(reply.to_string_view()) ? SendResult::Delivered : SendResult::Rejected;
+        const auto reply = exchange(encodePing(), {}, m_options.replyTimeout);
+        if (std::holds_alternative<SendResult>(reply)) {
+            return ViewerState::Unavailable;
+        }
+        const std::optional<ReplyStatus> status = readReply(std::get<std::string>(reply));
+        if (!status) {
+            return ViewerState::Unavailable; // something answered that is not a viewer
+        }
+        if (status->ok) {
+            return ViewerState::Listening;
+        }
+        if (status->reason == "viewer paused") {
+            return ViewerState::Paused;
+        }
+        return status->reason == "unsupported message type" ? ViewerState::PredatesPing
+                                                            : ViewerState::Unavailable;
+    }
+
+    SendResult endLive(std::string_view channel) {
+        if (const std::optional<SendResult> notReady = ready()) {
+            return *notReady;
+        }
+        const auto reply = exchange(encodeEnd(channel), {}, m_options.replyTimeout);
+        if (const auto* failed = std::get_if<SendResult>(&reply)) {
+            return *failed;
+        }
+        return isOkReply(std::get<std::string>(reply)) ? SendResult::Delivered : SendResult::Rejected;
     }
 
     // After an unexpected error the socket's state is unknown: drop it and back off. Never throws.
@@ -92,6 +127,46 @@ public:
     }
 
 private:
+    // Nothing when a request can go out now; otherwise why not: a back-off running, an endpoint ZeroMQ
+    // refuses, or no connection.
+    std::optional<SendResult> ready() {
+        if (Clock::now() < m_backOffUntil) {
+            return SendResult::ViewerUnavailable;
+        }
+        if (!m_socket && !openSocket()) {
+            return SendResult::InvalidEndpoint;
+        }
+        // Only a fresh socket waits for its connection. Afterwards ZeroMQ keeps reconnecting in the
+        // background, so a host application without a viewer is blocked once, not on every retry.
+        const auto connectWait = m_socketIsFresh ? m_options.replyTimeout : std::chrono::milliseconds(0);
+        m_socketIsFresh = false;
+        if (!waitFor(ZMQ_POLLOUT, connectWait)) {
+            startBackOff();
+            return SendResult::ViewerUnavailable;
+        }
+        return std::nullopt;
+    }
+
+    // Sends the header and the second frame, and waits for the reply's text; ViewerUnavailable when the
+    // request could not go out, Timeout when no reply came in time.
+    std::variant<std::string, SendResult> exchange(std::string_view header, std::span<const std::byte> frame,
+                                                   std::chrono::milliseconds deadline) {
+        // message_t copies the pixels, so the caller may change its Mat as soon as send() returns.
+        zmq::message_t second = frame.empty() ? zmq::message_t() : zmq::message_t(frame.data(), frame.size());
+        if (!m_socket->send(zmq::buffer(header), zmq::send_flags::sndmore | zmq::send_flags::dontwait) ||
+            !m_socket->send(std::move(second), zmq::send_flags::dontwait)) {
+            recover();
+            return SendResult::ViewerUnavailable;
+        }
+        zmq::message_t reply;
+        if (!waitFor(ZMQ_POLLIN, deadline) || !m_socket->recv(reply, zmq::recv_flags::dontwait)) {
+            // A REQ socket still waiting for a lost reply cannot send again, so start afresh ("Lazy Pirate").
+            recover();
+            return SendResult::Timeout;
+        }
+        return std::string(reply.to_string_view());
+    }
+
     bool openSocket() {
         zmq::socket_t socket(m_context, zmq::socket_type::req);
         socket.set(zmq::sockopt::linger, 0);       // process exit never waits for undelivered images
@@ -159,6 +234,24 @@ SendResult Client::send(const cv::Mat& image, std::string_view name,
 SendResult Client::sendLive(const cv::Mat& frame, std::string_view channel,
                             const ImageDescription& description) noexcept {
     return sendGuarded(frame, channel, true, description);
+}
+
+ViewerState Client::ping() noexcept {
+    try {
+        return m_impl->ping();
+    } catch (...) {
+        m_impl->recover();
+        return ViewerState::Unavailable;
+    }
+}
+
+SendResult Client::endLive(std::string_view channel) noexcept {
+    try {
+        return m_impl->endLive(channel);
+    } catch (...) {
+        m_impl->recover();
+        return SendResult::ViewerUnavailable;
+    }
 }
 
 SendResult Client::sendGuarded(const cv::Mat& image, std::string_view name, bool live,

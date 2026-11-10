@@ -517,3 +517,78 @@ INSTANTIATE_TEST_SUITE_P(EveryRule, WireFormatRejection, testing::ValuesIn(rejec
                          [](const testing::TestParamInfo<RejectionCase>& info) { return info.param.label; });
 
 } // namespace
+
+// --- Control messages: ping and end
+// ----------------------------------------------------------------------------------
+
+namespace {
+
+using visual_debug::ControlMessage;
+
+ControlMessage controlOrFail(std::string_view header) {
+    auto result = visual_debug::decodeControl(header);
+    if (const auto* error = std::get_if<DecodeError>(&result)) {
+        ADD_FAILURE() << "decodeControl failed: " << error->reason;
+        return {};
+    }
+    return std::get<ControlMessage>(std::move(result));
+}
+
+std::string controlReason(std::string_view header) {
+    auto result = visual_debug::decodeControl(header);
+    const auto* error = std::get_if<DecodeError>(&result);
+    return error != nullptr ? error->reason : std::string("(decoded)");
+}
+
+TEST(WireFormat, PingHeader) {
+    EXPECT_EQ(visual_debug::encodePing(), R"({"protocol":"visual_debug","version":2,"type":"ping"})");
+}
+
+TEST(WireFormat, EndHeaderSanitisesTheName) {
+    EXPECT_EQ(visual_debug::encodeEnd("lab"),
+              R"({"protocol":"visual_debug","version":2,"type":"end","name":"lab"})");
+    EXPECT_NE(visual_debug::encodeEnd("a\xff").find("a\xEF\xBF\xBD"), std::string::npos);
+}
+
+TEST(WireFormat, DecodeControlKinds) {
+    EXPECT_EQ(controlOrFail(visual_debug::encodePing()).kind, ControlMessage::Kind::Ping);
+    const ControlMessage end = controlOrFail(visual_debug::encodeEnd("lab"));
+    EXPECT_EQ(end.kind, ControlMessage::Kind::End);
+    EXPECT_EQ(end.name, "lab");
+    const EncodedMessage image = encodeOrFail(cv::Mat(1, 1, CV_8UC1, cv::Scalar(0)), "x");
+    EXPECT_EQ(controlOrFail(image.header).kind, ControlMessage::Kind::Image);
+}
+
+TEST(WireFormat, DecodeControlReasons) {
+    EXPECT_EQ(controlReason(R"({"protocol":"x","version":2,"type":"ping"})"), "unknown protocol");
+    EXPECT_EQ(controlReason(R"({"protocol":"visual_debug","version":3,"type":"ping"})"),
+              "unsupported version");
+    EXPECT_EQ(controlReason(R"({"protocol":"visual_debug","version":2,"type":"other"})"),
+              "unsupported message type");
+    EXPECT_EQ(controlReason(R"({"protocol":"visual_debug","version":2,"type":"end"})"),
+              "name is missing or not a string");
+    // Built outside EXPECT_EQ: MSVC 19.44's preprocessor misreads a raw string ending in a quote inside a
+    // macro argument.
+    const std::string endPrefix = R"({"protocol":"visual_debug","version":2,"type":"end","name":")";
+    EXPECT_EQ(controlReason(endPrefix + std::string(1025, 'n') + "\"}"), "name too long");
+    EXPECT_EQ(controlReason("[]"), "header is not a JSON object");
+    EXPECT_EQ(controlReason("{"), "header is not valid JSON");
+    EXPECT_EQ(controlReason(std::string(visual_debug::kMaxHeaderBytes + 1, ' ')), "header too large");
+}
+
+TEST(WireFormat, EncodeOverlaysMatchesTheHeader) {
+    const std::vector<visual_debug::Overlay> shapes{
+        visual_debug::Polygon{.points = {{210, 170}, {1390, 140}, {1410, 880}, {190, 900}},
+                              .label = "Document"},
+        visual_debug::Polygon{.points = {{250, 755}, {1350, 745}, {1352, 862}, {252, 872}},
+                              .label = "MRZ",
+                              .colour = visual_debug::kOverlayRed}};
+    const EncodedMessage message = encodeOrFail(cv::Mat(1000, 1600, CV_8UC3, cv::Scalar::all(0)), "x",
+                                                {.description = {.overlays = shapes}});
+    const std::string overlays = visual_debug::encodeOverlays(shapes);
+
+    EXPECT_NE(message.header.find(R"("overlays":)" + overlays + "}"), std::string::npos) << overlays << "\n"
+                                                                                         << message.header;
+}
+
+} // namespace

@@ -19,6 +19,8 @@ constexpr std::chrono::milliseconds kWaitSlice{50};
 constexpr std::chrono::milliseconds kIdleWait{1000};
 
 constexpr char kLowDisk[] = "recording stopped: low disk space";
+constexpr char kReplayMoved[] = "recording stopped: the replay moved";
+const std::string kRecordingStopped = "recording stopped: ";
 
 bool isRunning(EngineState state) { return state == EngineState::Live || state == EngineState::Playing; }
 
@@ -64,7 +66,7 @@ Engine::~Engine() {
     }
     std::vector<std::unique_ptr<frame_io::RecordingWriter>> finishing;
     std::unique_ptr<ResultSender> sender;
-    std::vector<std::future<void>> retiring;
+    std::vector<Retired> retiring;
     std::deque<std::function<void()>> commands;
     std::optional<Pending> pending;
     {
@@ -81,8 +83,8 @@ Engine::~Engine() {
     }
     finishing.clear(); // each writes its queue first
     sender.reset();    // waits for a send in progress
-    for (std::future<void>& done : retiring) {
-        done.wait();
+    for (Retired& retired : retiring) {
+        retired.done.wait();
     }
 }
 
@@ -96,6 +98,7 @@ void Engine::startLive(std::string name) {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_pending);
         m_pending.reset();
+        m_seekRequest.reset(); // for the replay this ends
         m_acceptLive = true;
         m_offered = 0;
         run = ++m_run;
@@ -126,6 +129,7 @@ void Engine::startReplay(ReplayOpener open) {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_pending);
         m_pending.reset();
+        m_seekRequest.reset(); // for the source this replaces
         m_acceptLive = false;
         ++m_run;
     }
@@ -138,6 +142,7 @@ void Engine::stop() {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_pending);
         m_pending.reset();
+        m_seekRequest.reset();
         m_acceptLive = false;
         ++m_run;
     }
@@ -156,11 +161,40 @@ void Engine::step() {
     post([this] { doStep(); });
 }
 
-void Engine::stepBack() {
-    post([this] { doStepBack(); });
+void Engine::seek(std::uint64_t index) {
+    bool first = false;
+    {
+        const std::lock_guard lock(m_mutex);
+        first = !m_seekRequest;
+        m_seekRequest = SeekRequest{.absolute = index, .relative = 0};
+    }
+    if (first) {
+        post([this] { doSeek(); });
+    }
 }
 
+void Engine::seekBy(std::int64_t frames) {
+    bool first = false;
+    {
+        const std::lock_guard lock(m_mutex);
+        first = !m_seekRequest;
+        if (first) {
+            m_seekRequest = SeekRequest{};
+        }
+        m_seekRequest->relative += frames;
+    }
+    if (first) {
+        post([this] { doSeek(); });
+    }
+}
+
+void Engine::stepBack() { seekBy(-1); }
+
 void Engine::restart() {
+    {
+        const std::lock_guard lock(m_mutex);
+        m_seekRequest.reset(); // for the run the restart ends
+    }
     post([this] { doRestart(); });
 }
 
@@ -192,6 +226,20 @@ void Engine::stopRecording() {
 
 void Engine::setSender(std::unique_ptr<ResultSender> sender) {
     post([this, sender = held(std::move(sender))] { doSetSender(std::move(*sender)); });
+}
+
+void Engine::pauseSending(bool paused) {
+    post([this, paused] { doPauseSending(paused); });
+}
+
+void Engine::stopSending(bool endChannels) {
+    if (endChannels) {
+        // From the call, not from when the processing thread gets to it: the window disables ▶ at once.
+        const std::lock_guard lock(m_mutex);
+        ++m_endsAsked;
+        m_status.endingChannels = true;
+    }
+    post([this, endChannels] { doStopSending(endChannels); });
 }
 
 void Engine::reportNotDrawn(std::uint64_t total) {
@@ -232,12 +280,12 @@ bool Engine::shutDown() const {
             return false;
         }
     }
-    for (const std::future<void>& retired : m_retiring) {
-        if (retired.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    for (const Retired& retired : m_retiring) {
+        if (retired.done.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             return false;
         }
     }
-    return true;
+    return m_endsAsked == 0;
 }
 
 bool Engine::pump() {
@@ -296,30 +344,82 @@ void Engine::run() {
     closeDown();
 }
 
-// The commands waiting, then at most one frame; the hooks after, with no lock held.
+// The commands waiting, then at most one frame; the hooks after, with no lock held. Nothing thrown leaves:
+// on the processing thread it would end the program.
 Engine::Turn Engine::turn() {
     Turn turn;
-    for (;;) {
-        std::function<void()> command;
-        {
-            const std::lock_guard lock(m_mutex);
-            if (m_commands.empty()) {
-                break;
+    try {
+        for (;;) {
+            std::function<void()> command;
+            {
+                const std::lock_guard lock(m_mutex);
+                if (m_commands.empty()) {
+                    break;
+                }
+                command = std::move(m_commands.front());
+                m_commands.pop_front();
             }
-            command = std::move(m_commands.front());
-            m_commands.pop_front();
+            command();
+            turn.did = true;
         }
-        command();
-        turn.did = true;
-    }
-    pruneFinished();
-    if (m_live) {
-        liveWork(turn);
-    } else if (m_source) {
-        replayWork(turn);
+        pruneFinished();
+        stopFailedRecording();
+        if (m_live) {
+            liveWork(turn);
+        } else if (m_source) {
+            replayWork(turn);
+        }
+    } catch (const std::exception& exception) {
+        turn = {.did = true, .wakeAt = {}, .waitForRecorder = false};
+        stopAfterThrow(exception.what());
+    } catch (...) {
+        turn = {.did = true, .wakeAt = {}, .waitForRecorder = false};
+        stopAfterThrow("unknown exception");
     }
     notify();
     return turn;
+}
+
+// A recording whose writer failed in the background stops now, not at the next frame it is given.
+void Engine::stopFailedRecording() {
+    if (!m_recorder) {
+        return;
+    }
+    const std::string failure = m_recorder->progress().failure;
+    if (!failure.empty()) {
+        stopRecordingNow(kRecordingStopped + failure);
+    }
+}
+
+// Everything that was going on stops, as cleanly as it can: whatever threw may have left a frame half-done.
+void Engine::stopAfterThrow(const std::string& what) {
+    std::optional<Pending> pending; // destroyed without the lock
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.busyFrame.reset();
+        m_status.busySince.reset();
+        m_seekRequest.reset();
+        pending = std::move(m_pending);
+        m_pending.reset();
+        m_acceptLive = false;
+    }
+    m_held.reset();
+    m_waitingToRecord.reset();
+    try {
+        stopRecordingNow();
+    } catch (...) {
+        // It could not be finished in the background: its destructor writes its queue here instead.
+        std::unique_ptr<frame_io::RecordingWriter> dropped;
+        {
+            const std::lock_guard lock(m_mutex);
+            dropped = std::move(m_recorder);
+            m_status.recording = false;
+        }
+    }
+    closeSource();
+    m_live = false;
+    setMessage("stopped: internal error (" + what + ")");
+    setState(EngineState::Stopped);
 }
 
 void Engine::liveWork(Turn& turn) {
@@ -384,6 +484,7 @@ void Engine::replayWork(Turn& turn) {
         case frame_io::ReadStatus::End:
             turn.did = true;
             m_stepWanted = false;
+            clearSeeking(); // a seek past the last frame, when the count said one more
             if (m_loop && !m_oneFrame && m_state == EngineState::Playing) {
                 newGeneration();
                 std::string error;
@@ -399,6 +500,7 @@ void Engine::replayWork(Turn& turn) {
         case frame_io::ReadStatus::Error:
             turn.did = true;
             m_stepWanted = false;
+            clearSeeking();
             stopWithError("stopped at frame " + std::to_string(m_nextIndex + 1) + ": " + read.error);
             return;
         case frame_io::ReadStatus::Frame:
@@ -421,6 +523,7 @@ void Engine::replayWork(Turn& turn) {
     m_heldDue.reset();
     m_stepWanted = false;
     process(std::move(frame), true);
+    clearSeeking(); // the seek's frame is on screen
     turn.did = true;
 }
 
@@ -459,6 +562,7 @@ void Engine::process(frame_io::Frame frame, bool record) {
     if (m_sender) {
         m_sender->submit(result);
     }
+    m_lastResult = result;             // for a sender set or resumed while nothing runs
     std::optional<LabResult> replaced; // destroyed without the lock
     const std::lock_guard lock(m_mutex);
     m_status.busyFrame.reset();
@@ -496,6 +600,10 @@ void Engine::record(const frame_io::Frame& frame) {
         m_recorder->countNotRecorded();
         stopRecordingNow(kLowDisk);
         return;
+    case frame_io::RecordingWriter::Push::Failed:
+        m_recorder->countNotRecorded();
+        stopRecordingNow(kRecordingStopped + m_recorder->progress().failure);
+        return;
     }
 }
 
@@ -515,6 +623,11 @@ bool Engine::pushWaitingFrame() {
         m_waitingToRecord.reset();
         m_recorder->countNotRecorded();
         stopRecordingNow(kLowDisk);
+        return true;
+    case frame_io::RecordingWriter::Push::Failed:
+        m_waitingToRecord.reset();
+        m_recorder->countNotRecorded();
+        stopRecordingNow(kRecordingStopped + m_recorder->progress().failure);
         return true;
     }
     return true;
@@ -547,13 +660,19 @@ void Engine::pruneFinished() {
             ++writer;
         }
     }
+    bool ending = m_endsAsked > 0;
     for (auto sender = m_retiring.begin(); sender != m_retiring.end();) {
-        if (sender->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            retired.push_back(std::move(*sender));
+        if (sender->done.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            retired.push_back(std::move(sender->done));
             sender = m_retiring.erase(sender);
         } else {
+            ending = ending || sender->endingChannels;
             ++sender;
         }
+    }
+    if (ending != m_status.endingChannels) {
+        m_status.endingChannels = ending;
+        m_notifyStatus = true;
     }
 }
 
@@ -607,6 +726,8 @@ void Engine::doStartReplay(const ReplayOpener& open) {
     }
     source->setWake([this] { signal(); });
     const std::optional<std::uint64_t> count = source->frameCount();
+    const std::optional<double> rate = source->frameRate();
+    const bool canSeek = source->canSeek();
     const std::string name = source->describe();
     m_source = std::move(source);
     m_oneFrame = count == std::uint64_t{1};
@@ -616,6 +737,8 @@ void Engine::doStartReplay(const ReplayOpener& open) {
         m_status.source = name;
         m_status.frameNumber.reset();
         m_status.frameCount = count;
+        m_status.frameRate = rate;
+        m_status.canSeek = canSeek;
         m_status.canStepBack = false;
         m_status.loop = m_loop && !m_oneFrame;
     }
@@ -661,14 +784,52 @@ void Engine::doStep() {
     }
 }
 
-void Engine::doStepBack() {
-    if (m_live || !m_source || !m_source->canSeek() || !m_onScreen || m_onScreen->number == 0) {
+// Steps count from the seek still running, else from the frame on screen; in signed arithmetic, so a step
+// back from frame 0 stays there rather than wrapping round to the last frame.
+void Engine::doSeek() {
+    std::optional<SeekRequest> request;
+    {
+        const std::lock_guard lock(m_mutex);
+        request.swap(m_seekRequest);
+    }
+    if (!request || m_live || !m_source || !m_source->canSeek()) {
         return;
     }
-    const std::uint64_t target = m_onScreen->number - 1;
+    const std::uint64_t from = request->absolute ? *request->absolute
+                               : m_seekTarget    ? *m_seekTarget
+                               : m_onScreen      ? m_onScreen->number
+                                                 : m_nextIndex;
+    std::int64_t wanted = std::max<std::int64_t>(0, static_cast<std::int64_t>(from) + request->relative);
+    const std::optional<std::uint64_t> count = m_source->frameCount();
+    if (count && *count > 0) {
+        wanted = std::min(wanted, static_cast<std::int64_t>(*count - 1));
+    }
+    const auto target = static_cast<std::uint64_t>(wanted);
+    // A seek already running to that frame goes on: a slider click asks on its press and its release, and ←
+    // held at the first frame keeps asking for frame 0.
+    if (m_seekTarget == target) {
+        return;
+    }
+    // A step back at the first frame, paused: nothing to do, and no reason to end a recording.
+    if (m_state == EngineState::Paused && !m_seekTarget && m_onScreen && m_onScreen->number == target) {
+        return;
+    }
+    const bool playing = m_state == EngineState::Playing;
+    setMessage({});
+    stopRecordingNow(kReplayMoved);
     newGeneration();
     m_source->seek(target);
     m_nextIndex = target;
+    m_seekTarget = target;
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.seeking = true;
+        m_status.seekTarget = target;
+    }
+    m_notifyStatus = true;
+    if (playing) {
+        return; // plays on from the target; newGeneration() restarted the pacer
+    }
     setState(EngineState::Paused);
     m_stepWanted = true;
 }
@@ -732,12 +893,43 @@ void Engine::doStartRecording(std::unique_ptr<frame_io::RecordingWriter> writer,
     m_notifyStatus = true;
 }
 
+// While nothing runs (paused, ended, one picture) the new sender gets the frame on screen at once.
 void Engine::doSetSender(std::unique_ptr<ResultSender> sender) {
+    retireSender(false);
+    {
+        const std::lock_guard lock(m_mutex);
+        m_sender = std::move(sender);
+    }
+    if (m_sender && !isRunning(m_state) && m_lastResult) {
+        m_sender->submit(*m_lastResult);
+    }
+}
+
+void Engine::doPauseSending(bool paused) {
+    if (!m_sender) {
+        return;
+    }
+    m_sender->setPaused(paused);
+    if (!paused && !isRunning(m_state) && m_lastResult) {
+        m_sender->submit(*m_lastResult);
+    }
+}
+
+void Engine::doStopSending(bool endChannels) {
+    retireSender(endChannels);
+    if (endChannels) {
+        const std::lock_guard lock(m_mutex);
+        --m_endsAsked; // the retiree, if there was one, now says whether it is ending
+    }
+}
+
+// The sender goes on a thread of its own, after ending its channels when asked, so a send in progress to a
+// slow viewer never holds up the processing or the window.
+void Engine::retireSender(bool endChannels) {
     std::unique_ptr<ResultSender> old;
     {
         const std::lock_guard lock(m_mutex);
         old = std::move(m_sender);
-        m_sender = std::move(sender);
         if (old) {
             m_notSentRetired += old->stats().notSent;
         }
@@ -747,11 +939,17 @@ void Engine::doSetSender(std::unique_ptr<ResultSender> sender) {
     }
     try {
         std::future<void> retiring =
-            std::async(std::launch::async, [retired = std::move(old)]() mutable { retired.reset(); });
+            std::async(std::launch::async, [retired = std::move(old), endChannels]() mutable {
+                if (endChannels) {
+                    retired->endChannels();
+                }
+                retired.reset();
+            });
         const std::lock_guard lock(m_mutex);
-        m_retiring.push_back(std::move(retiring));
+        m_retiring.push_back({.done = std::move(retiring), .endingChannels = endChannels});
     } catch (const std::system_error&) {
-        // No thread to spare: the sender went with the task that could not start, here, after its send.
+        // No thread to spare: the sender went with the task that could not start, here, after its send, and
+        // without ending its channels.
     }
 }
 
@@ -772,6 +970,21 @@ void Engine::newGeneration() {
     m_heldDue.reset();
     m_stepWanted = false;
     m_pacer.restart();
+    clearSeeking();
+}
+
+// The seek's frame was shown, or will never be: the end, an error, a new run.
+void Engine::clearSeeking() {
+    if (!m_seekTarget) {
+        return;
+    }
+    m_seekTarget.reset();
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.seeking = false;
+        m_status.seekTarget.reset();
+    }
+    m_notifyStatus = true;
 }
 
 // Its counts are those since the recording started; the writer writes its queue in the background.
@@ -853,6 +1066,11 @@ void Engine::closeSource() {
     m_oneFrame = false;
     m_stepWanted = false;
     m_nextIndex = 0;
+    m_lastResult.reset(); // the source's: not for a sender set after it
+    clearSeeking();
+    const std::lock_guard lock(m_mutex);
+    m_status.frameRate.reset();
+    m_status.canSeek = false;
 }
 
 Engine::Totals Engine::totals() const {

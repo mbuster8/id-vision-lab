@@ -38,6 +38,18 @@ struct Reply {
 
 Reply rejected(std::string_view reason) { return {errorReply(reason), std::string(reason)}; }
 
+using ControlKind = ControlMessage::Kind;
+
+// Two frames, the second empty: what a ping or an end looks like.
+bool isControl(const std::vector<zmq::message_t>& frames) {
+    return frames.size() == 2 && frames[1].size() == 0;
+}
+
+std::optional<ControlKind> kindOf(const std::variant<ControlMessage, DecodeError>& decoded) {
+    const auto* message = std::get_if<ControlMessage>(&decoded);
+    return message != nullptr ? std::optional(message->kind) : std::nullopt;
+}
+
 } // namespace
 
 class Server::Impl {
@@ -137,12 +149,33 @@ private:
     }
 
     Reply handle(std::vector<zmq::message_t>& frames) {
-        // Checked first, so a paused viewer spends nothing on a request, however malformed.
+        // Checked first, so a paused viewer answers every request the same, however malformed. Only a ping is
+        // read, so that pinging a paused viewer does not fill its log with rejections.
         if (m_paused) {
+            if (isControl(frames) && kindOf(decodeControl(frames[0].to_string_view())) == ControlKind::Ping) {
+                return {errorReply("viewer paused"), {}};
+            }
             return rejected("viewer paused");
         }
         if (frames.size() != 2) {
             return rejected("expected exactly two frames");
+        }
+        // A header with an empty second frame may be a control message: a ping or the end of a live channel.
+        if (isControl(frames)) {
+            auto control = decodeControl(frames[0].to_string_view());
+            if (const auto* error = std::get_if<DecodeError>(&control)) {
+                return rejected(error->reason);
+            }
+            const ControlMessage& message = std::get<ControlMessage>(control);
+            switch (message.kind) {
+            case ControlKind::Ping:
+                return {std::string(kOkReply), {}};
+            case ControlKind::End:
+                m_sink.onLiveEnded(message.name);
+                return {std::string(kOkReply), {}};
+            case ControlKind::Image:
+                break; // an image's header: decode() refuses its empty pixel frame
+            }
         }
         const auto& pixels = frames[1];
         auto decoded = decode(frames[0].to_string_view(), {pixels.data<std::byte>(), pixels.size()});

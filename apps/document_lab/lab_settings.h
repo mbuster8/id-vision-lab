@@ -21,10 +21,12 @@ public:
     void setFormatFor(const QByteArray& cameraId, const QString& label);
     QString labFolder() const; // chosen by the user; empty for the default
     void setLabFolder(const QString& folder);
-    bool sendToViewer() const; // off unless turned on
-    void setSendToViewer(bool on);
     QString endpoint() const; // visual_debug::defaultEndpoint() unless another was entered
     void setEndpoint(const QString& endpoint);
+    int resultsWidth() const; // the results panel's, in pixels; 200 the first time
+    void setResultsWidth(int width);
+    bool resultsShown() const; // on unless View → Results turned it off
+    void setResultsShown(bool shown);
 
 private:
     QSettings m_settings;

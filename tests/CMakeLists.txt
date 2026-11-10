@@ -69,6 +69,7 @@ id_vision_lab_add_test_executable(frame_io_tests
         frame_io/recording_test.cpp
         frame_io/replay_pacer_test.cpp
         frame_io/scratch_folder.h
+        frame_io/tags_json_test.cpp
         frame_io/video_file_test.cpp
         frame_io/video_source_test.cpp
         frame_io/yuv_test.cpp
@@ -84,9 +85,11 @@ id_vision_lab_add_test_executable(frame_io_tests
         GTest::gtest_main)
 id_vision_lab_use_utf8_code_page(frame_io_tests)
 # latch.h: holding a reader's thread without timing (Qt-free, kept with the other test helpers);
-# test_support.h: the measurements' environment variables.
+# test_support.h: the measurements' environment variables; frame_io's src: tags_json_test.cpp tests a private
+# helper.
 target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
-                                                  ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
+                                                  ${PROJECT_SOURCE_DIR}/libs/frame_io/src)
 
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
@@ -97,6 +100,7 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/list_source.h
         lab_core/processors_test.cpp
         lab_core/result_sender_test.cpp
+        lab_core/viewer_link_test.cpp
     LIBRARIES
         lab_core::lab_core
         opencv_imgproc

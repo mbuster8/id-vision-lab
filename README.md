@@ -75,9 +75,10 @@ is [below](#what-changed-since-2013). Until October 2026 the repository was call
 The workbench for document-reading code. A camera (an iPhone through Continuity Camera too) or a video,
 image, folder or recording runs through a processor on a thread of its own, and the result shows on the
 viewer's canvas, with what the processor found drawn over the frame and listed beside it. It replays every
-frame in order, records frames losslessly as PNG folders, captures one at full resolution, and sends its frames
-to the viewer when asked. Its first processors find edges and a document's outline; the processor hook is where
-document reading goes next. See [Running the Document Lab](docs/user-guide.md#running-the-document-lab).
+frame in order and goes to any frame of a video, records frames losslessly as PNG folders, captures one at full
+resolution, and streams its frames to the viewer, or sends it one, when asked, showing whether the viewer is
+there. Its first processors find edges and a simple outline of a light four-sided shape; the processor hook is
+where document reading goes next. See [Running the Document Lab](docs/user-guide.md#running-the-document-lab).
 
 ## Coming next
 

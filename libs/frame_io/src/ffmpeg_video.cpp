@@ -200,13 +200,55 @@ Scaler makeScaler(AVPixelFormat format, cv::Size size, const Conversion& convers
     return scaler;
 }
 
-// Converts `source` into `target`, a CV_16UC3 matrix of its size.
-bool convert(SwsContext* scaler, const AVFrame* source, cv::Mat& target) {
+// The ordinary conversion of an 8-bit video to 8-bit BGR: video range stretched to full (16 to 0, 235 to
+// 255), full range kept.
+Scaler makeEightBitScaler(AVPixelFormat format, cv::Size size, int colourspace, bool fullRange) {
+    Scaler scaler(sws_alloc_context());
+    if (!scaler) {
+        return nullptr;
+    }
+    const auto threads = static_cast<std::int64_t>(std::max(1U, std::thread::hardware_concurrency()));
+    SwsContext* context = scaler.get();
+    if (av_opt_set_int(context, "srcw", size.width, 0) < 0 ||
+        av_opt_set_int(context, "srch", size.height, 0) < 0 ||
+        av_opt_set_int(context, "src_format", format, 0) < 0 ||
+        av_opt_set_int(context, "dstw", size.width, 0) < 0 ||
+        av_opt_set_int(context, "dsth", size.height, 0) < 0 ||
+        av_opt_set_int(context, "dst_format", AV_PIX_FMT_BGR24, 0) < 0 ||
+        av_opt_set_int(context, "threads", threads, 0) < 0 ||
+        sws_init_context(context, nullptr, nullptr) < 0) {
+        return nullptr;
+    }
+    const int* coefficients = sws_getCoefficients(colourspace);
+    if (sws_setColorspaceDetails(context, coefficients, fullRange ? 1 : 0, coefficients, 1, 0, kUnity,
+                                 kUnity) < 0) {
+        return nullptr;
+    }
+    return scaler;
+}
+
+// The full-range ("JPEG") formats FFmpeg still uses for MJPEG, whatever the range tag says.
+bool isFullRangeFormat(AVPixelFormat format) {
+    switch (format) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+    case AV_PIX_FMT_YUVJ411P:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Converts `source` into `target`, a matrix of its size in `targetFormat` (BGR48: CV_16UC3, BGR24: CV_8UC3).
+bool convert(SwsContext* scaler, const AVFrame* source, cv::Mat& target,
+             AVPixelFormat targetFormat = AV_PIX_FMT_BGR48) {
     const Frame frame(av_frame_alloc());
     if (!frame) {
         return false;
     }
-    frame->format = AV_PIX_FMT_BGR48;
+    frame->format = targetFormat;
     frame->width = target.cols;
     frame->height = target.rows;
     frame->data[0] = target.data;
@@ -341,6 +383,10 @@ struct FfmpegVideo::Impl {
     Frame transferred{av_frame_alloc()}; // from the hardware's memory
     bool draining = false;
     Conversion conversion;
+    // An 8-bit SDR video read as 8-bit: its own conversion instead of the 16-bit one.
+    bool eightBitOutput = false;
+    int eightBitColourspace = SWS_CS_ITU709;
+    bool eightBitFullRange = false;
     Scaler scaler;
     AVPixelFormat scalerFormat = AV_PIX_FMT_NONE;
     cv::Size scalerSize;
@@ -352,8 +398,12 @@ struct FfmpegVideo::Impl {
     std::string error;               // why the last read gave nothing; empty at the end
 
     // One attempt at opening `path`: with the hardware when `hardware` is set and the codec has it.
-    static std::unique_ptr<Impl> open(const std::string& path, bool hardware, std::string& error);
+    static std::unique_ptr<Impl> open(const std::string& path, bool hardware, bool eightBitAsEightBit,
+                                      std::string& error);
     const AVFrame* nextFrame();
+    const AVFrame* receiveFrame();
+    const AVFrame* inMemory(const AVFrame* frame);
+    bool seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon);
     std::optional<VideoFrame> toVideoFrame(const AVFrame* frame);
     std::nullptr_t fail(const char* what, int code); // sets `error`
 };
@@ -367,10 +417,17 @@ std::nullptr_t FfmpegVideo::Impl::fail(const char* what, int code) {
 
 // The next decoded frame in the computer's memory; nothing at the end or on an error, which sets `error`.
 const AVFrame* FfmpegVideo::Impl::nextFrame() {
+    const AVFrame* frame = receiveFrame();
+    return frame ? inMemory(frame) : nullptr;
+}
+
+// The next decoded frame, in the hardware's memory when the hardware decodes; nothing at the end or on an
+// error, which sets `error`.
+const AVFrame* FfmpegVideo::Impl::receiveFrame() {
     for (;;) {
         const int received = avcodec_receive_frame(decoder.get(), decoded.get());
         if (received == 0) {
-            break;
+            return decoded.get();
         }
         if (received == AVERROR_EOF) {
             return nullptr; // the end: the decoder has handed over every frame it held
@@ -398,33 +455,103 @@ const AVFrame* FfmpegVideo::Impl::nextFrame() {
             return fail("could not decode a packet", sent);
         }
     }
-    if (!decoded->hw_frames_ctx) {
-        return decoded.get();
+}
+
+// The decoded frame in the computer's memory: itself, or copied from the hardware's.
+const AVFrame* FfmpegVideo::Impl::inMemory(const AVFrame* frame) {
+    if (!frame->hw_frames_ctx) {
+        return frame;
     }
     av_frame_unref(transferred.get());
-    if (const int transferredData = av_hwframe_transfer_data(transferred.get(), decoded.get(), 0);
+    if (const int transferredData = av_hwframe_transfer_data(transferred.get(), frame, 0);
         transferredData < 0) {
         return fail("could not copy a frame from the hardware", transferredData);
     }
-    if (const int copied = av_frame_copy_props(transferred.get(), decoded.get()); copied < 0) {
+    if (const int copied = av_frame_copy_props(transferred.get(), frame); copied < 0) {
         return fail("could not copy a frame from the hardware", copied);
     }
     return transferred.get();
+}
+
+bool FfmpegVideo::Impl::seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon) {
+    error.clear();
+    first.reset();
+    if (!firstTimestamp) {
+        error = "its frames have no timestamps";
+        return false;
+    }
+    const AVRational nanoseconds{1, 1'000'000'000};
+    const std::int64_t target = *firstTimestamp + av_rescale_q(at.count(), nanoseconds, timeBase);
+    // Half a frame, compared in nanoseconds: in a time base of one tick a frame (AVI, IVF), half a frame
+    // rounded to ticks would be a whole one, and the frame before the target would pass for it.
+    const std::int64_t half = info.fps > 0.0 ? std::llround(0.5e9 / info.fps) : 0;
+    const auto fromTarget = [&](std::int64_t timestamp) {
+        return av_rescale_q(timestamp - *firstTimestamp, timeBase, nanoseconds) - at.count();
+    };
+    std::int64_t from = target;
+    std::int64_t back = av_rescale_q(1'000'000'000, nanoseconds, timeBase); // a second, doubled each try
+    for (;;) {
+        if (const int sought = av_seek_frame(input.get(), stream, from, AVSEEK_FLAG_BACKWARD); sought < 0) {
+            fail("could not seek", sought);
+            return false;
+        }
+        avcodec_flush_buffers(decoder.get());
+        draining = false;
+        bool firstDecoded = true;
+        bool tryEarlier = false;
+        while (!tryEarlier) {
+            if (abandon && abandon()) {
+                error.clear();
+                return false;
+            }
+            const AVFrame* frame = receiveFrame();
+            if (!frame) {
+                return error.empty(); // past the end: the next read gives the end
+            }
+            // Compared before any copy or conversion: the frames passed over cost only their decoding.
+            const std::int64_t timestamp = frame->best_effort_timestamp;
+            // The first frame decoded already past the target: the seek landed late (an index by decoding
+            // time, an open GOP's dropped leading frames), so try again from earlier, down to the first
+            // frame.
+            if (firstDecoded && timestamp != AV_NOPTS_VALUE && fromTarget(timestamp) > half &&
+                from > *firstTimestamp) {
+                from = std::max(target - back, *firstTimestamp);
+                back *= 2;
+                tryEarlier = true;
+                continue;
+            }
+            firstDecoded = false;
+            if (timestamp == AV_NOPTS_VALUE || fromTarget(timestamp) >= -half) {
+                const AVFrame* kept = inMemory(frame);
+                if (!kept) {
+                    return false;
+                }
+                first = toVideoFrame(kept);
+                if (!first) {
+                    error = "could not convert a frame to BGR";
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
 }
 
 std::optional<VideoFrame> FfmpegVideo::Impl::toVideoFrame(const AVFrame* frame) {
     const auto format = static_cast<AVPixelFormat>(frame->format);
     const cv::Size size(frame->width, frame->height);
     if (!scaler || format != scalerFormat || size != scalerSize) {
-        scaler = makeScaler(format, size, conversion);
+        scaler = eightBitOutput ? makeEightBitScaler(format, size, eightBitColourspace,
+                                                     eightBitFullRange || isFullRangeFormat(format))
+                                : makeScaler(format, size, conversion);
         scalerFormat = format;
         scalerSize = size;
         if (!scaler) {
             return std::nullopt;
         }
     }
-    cv::Mat image(size, CV_16UC3);
-    if (!convert(scaler.get(), frame, image)) {
+    cv::Mat image(size, eightBitOutput ? CV_8UC3 : CV_16UC3);
+    if (!convert(scaler.get(), frame, image, eightBitOutput ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_BGR48)) {
         return std::nullopt;
     }
     if (quarterTurns != 0) {
@@ -452,7 +579,7 @@ std::optional<VideoFrame> FfmpegVideo::Impl::toVideoFrame(const AVFrame* frame) 
 }
 
 std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& path, bool hardware,
-                                                           std::string& error) {
+                                                           bool eightBitAsEightBit, std::string& error) {
     auto impl = std::make_unique<Impl>();
     if (!impl->packet || !impl->decoded || !impl->transferred) {
         error = "out of memory";
@@ -485,7 +612,8 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
     impl->decoder->pkt_timebase = stream->time_base;
     impl->timeBase = stream->time_base;
 
-    impl->hardwareFormat = hardware ? hardwareFormatOf(codec) : AV_PIX_FMT_NONE;
+    impl->hardwareFormat =
+        hardware && !codecPrefersSoftware(codec->name) ? hardwareFormatOf(codec) : AV_PIX_FMT_NONE;
     AVBufferRef* device = nullptr;
     if (impl->hardwareFormat != AV_PIX_FMT_NONE &&
         av_hwdevice_ctx_create(&device, kHardware, nullptr, nullptr, 0) >= 0) {
@@ -522,8 +650,10 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
     VideoInfo& info = impl->info;
     info.size = impl->quarterTurns % 2 == 0 ? cv::Size(first->width, first->height)
                                             : cv::Size(first->height, first->width);
-    const AVRational rate = stream->avg_frame_rate;
-    info.fps = rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0;
+    // The average rate, else the stream's base rate (some containers give only that).
+    const auto rateOf = [](AVRational rate) { return rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0.0; };
+    info.fps =
+        rateOf(stream->avg_frame_rate) > 0.0 ? rateOf(stream->avg_frame_rate) : rateOf(stream->r_frame_rate);
     info.frameCount = frameCountOf(*input, *stream);
     info.bitDepth = av_pix_fmt_desc_get(format)->comp[0].depth;
     info.valueRange = calibration->valueRange;
@@ -534,6 +664,21 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
             : Primaries::Bt709;
     info.decoder = impl->decoded->hw_frames_ctx ? kHardwareName : "software";
     info.dolbyVisionProfile = dolbyVisionProfileOf(parameters);
+    info.seekable = first->best_effort_timestamp != AV_NOPTS_VALUE && info.fps > 0.0 &&
+                    (input->iformat->flags & AVFMT_NOTIMESTAMPS) == 0;
+
+    // An 8-bit SDR video stays 8-bit when asked: its own matrix (an untagged one by its size, as players
+    // guess: BT.601 below 720 rows) and range; no value range, as 0–255 is its whole scale.
+    if (eightBitAsEightBit && info.bitDepth <= 8 && info.transfer == Transfer::Sdr) {
+        const AVColorSpace matrix = tagOf(first->colorspace, parameters->color_space, AVCOL_SPC_UNSPECIFIED);
+        impl->eightBitOutput = true;
+        impl->eightBitColourspace = matrix == AVCOL_SPC_UNSPECIFIED || matrix == AVCOL_SPC_RESERVED
+                                        ? (first->height < 720 ? SWS_CS_ITU601 : SWS_CS_ITU709)
+                                        : swsColourspaceOf(matrix);
+        impl->eightBitFullRange =
+            tagOf(first->color_range, parameters->color_range, AVCOL_RANGE_UNSPECIFIED) == AVCOL_RANGE_JPEG;
+        info.valueRange = {};
+    }
 
     impl->first = impl->toVideoFrame(first);
     if (!impl->first) {
@@ -543,16 +688,35 @@ std::unique_ptr<FfmpegVideo::Impl> FfmpegVideo::Impl::open(const std::string& pa
     return impl;
 }
 
-std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, bool allowHardware,
+std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, const Options& options,
                                                std::string& error) {
-    std::unique_ptr<Impl> impl = allowHardware ? Impl::open(path, true, error) : nullptr;
+    std::unique_ptr<Impl> impl =
+        options.allowHardware ? Impl::open(path, true, options.eightBitAsEightBit, error) : nullptr;
     if (!impl) {
-        impl = Impl::open(path, false, error); // the hardware could not decode it
+        impl = Impl::open(path, false, options.eightBitAsEightBit, error); // the hardware could not decode it
     }
     if (!impl) {
         return nullptr;
     }
     return std::unique_ptr<FfmpegVideo>(new FfmpegVideo(std::move(impl)));
+}
+
+std::unique_ptr<FfmpegVideo> FfmpegVideo::open(const std::string& path, bool allowHardware,
+                                               std::string& error) {
+    return open(path, Options{.allowHardware = allowHardware, .eightBitAsEightBit = false}, error);
+}
+
+// H.264 at 4K on Apple silicon: FFmpeg's own decoder read a 60 fps clip about four times as fast as
+// VideoToolbox through FFmpeg did, and sought in well under half the time (A2.1's measurements). HEVC went
+// the other way, so it keeps the hardware. D3D11VA has not been measured: Windows keeps the hardware for
+// both.
+bool codecPrefersSoftware(std::string_view decoderName) {
+#if defined(__APPLE__)
+    return decoderName == "h264";
+#else
+    static_cast<void>(decoderName);
+    return false;
+#endif
 }
 
 FfmpegVideo::FfmpegVideo(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
@@ -572,11 +736,15 @@ std::optional<VideoFrame> FfmpegVideo::read() {
     }
     std::optional<VideoFrame> converted = m_impl->toVideoFrame(frame);
     if (!converted) {
-        m_impl->error = "could not convert a frame to 16-bit BGR";
+        m_impl->error = "could not convert a frame to BGR";
     }
     return converted;
 }
 
 const std::string& FfmpegVideo::lastError() const { return m_impl->error; }
+
+bool FfmpegVideo::seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon) {
+    return m_impl->seek(at, abandon);
+}
 
 } // namespace frame_io

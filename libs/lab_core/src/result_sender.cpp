@@ -1,5 +1,6 @@
 #include "lab_core/result_sender.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace lab_core {
@@ -15,7 +16,9 @@ ResultSender::ResultSender(Mode mode, std::unique_ptr<visual_debug::ImageSender>
     }
 }
 
-ResultSender::~ResultSender() {
+ResultSender::~ResultSender() { stopThread(); }
+
+void ResultSender::stopThread() {
     {
         const std::lock_guard lock(m_mutex);
         m_stopping = true;
@@ -29,6 +32,9 @@ ResultSender::~ResultSender() {
 void ResultSender::submit(LabResult result) {
     {
         const std::lock_guard lock(m_mutex);
+        if (m_stats.paused || m_stopping) {
+            return; // dropped, as meant: not "not sent"
+        }
         if (m_waiting) {
             ++m_stats.notSent;
         }
@@ -48,6 +54,28 @@ bool ResultSender::pump() {
     }
     send(*result);
     return true;
+}
+
+void ResultSender::setPaused(bool paused) {
+    std::optional<LabResult> dropped; // destroyed without the lock
+    const std::lock_guard lock(m_mutex);
+    m_stats.paused = paused;
+    if (paused) {
+        dropped.swap(m_waiting);
+    }
+}
+
+void ResultSender::endChannels() {
+    stopThread();
+    std::optional<LabResult> dropped;
+    {
+        const std::lock_guard lock(m_mutex);
+        dropped.swap(m_waiting);
+    }
+    for (const std::string& channel : m_channels) {
+        m_sender->endLive(channel);
+    }
+    m_channels.clear();
 }
 
 ResultSender::Stats ResultSender::stats() const {
@@ -75,14 +103,27 @@ void ResultSender::send(const LabResult& result) {
     visual_debug::ImageDescription description = result.frame.tags;
     description.overlays.insert(description.overlays.end(), result.processed.overlays.begin(),
                                 result.processed.overlays.end());
-    const visual_debug::SendResult frameResult =
-        m_sender->sendLive(result.frame.image, kSourceChannel, description);
+    visual_debug::SendResult frameResult = visual_debug::SendResult::Delivered;
+    sendLive(result.frame.image, kSourceChannel, description, &frameResult);
     for (const ProcessedImage& image : result.processed.images) {
-        m_sender->sendLive(image.image, channelFor(image.name), image.description);
+        sendLive(image.image, channelFor(image.name), image.description, nullptr);
     }
     const std::lock_guard lock(m_mutex);
     ++m_stats.sent;
     m_stats.last = frameResult;
+}
+
+// Remembered before it is sent: a send that timed out may still have reached the viewer.
+void ResultSender::sendLive(const cv::Mat& image, const std::string& channel,
+                            const visual_debug::ImageDescription& description,
+                            visual_debug::SendResult* result) {
+    if (std::find(m_channels.begin(), m_channels.end(), channel) == m_channels.end()) {
+        m_channels.push_back(channel);
+    }
+    const visual_debug::SendResult sent = m_sender->sendLive(image, channel, description);
+    if (result) {
+        *result = sent;
+    }
 }
 
 } // namespace lab_core

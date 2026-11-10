@@ -347,7 +347,10 @@ channel**: the viewer shows the channel's newest frame in place, instead of addi
 - **Closing.** A channel that has gone idle shows a close button (✕) on its row, frozen or muted or not; the
   right-click menu's **Close** is enabled at the same time. One that still streams has none: stop its sender,
   and 3 seconds later it is idle. Closing the channel in view shows the image you looked at before it, if it
-  is still in the history.
+  is still in the history. A sender can also end its channel itself (the Document Lab's ■ does, and
+  `visual_debug::endLive` or Python's `end_live`): the viewer closes it as the button would and logs
+  `Live channel [lab] ended by its sender`, except a channel you froze, which stays until you close it. A still image
+  a sender sends while a live channel is shown goes to the history without taking the view.
 - **Limits.** At most 8 channels, whose newest frames may hold 1 GiB together. A ninth channel takes the place
   of the one that has been idle longest, never the one in view; with all 8 active, its frames are refused,
   and its sender gets `Rejected` (`too many live channels`). So does any frame that would take the channels
@@ -582,6 +585,12 @@ open build/debug/apps/document_lab/document_lab.app
 Start it with `open` or from Finder: macOS asks for camera access on behalf of the app that started it, so
 started from a terminal it asks for the terminal (see the [build guide](build-guide.md#building)).
 
+The window has four rows of controls above the canvas: the source (a camera, or **Open File…** and **Open
+Folder…**), the replay, the processing (the processor, Show, Overlays, Record and Capture) and the viewer. Every
+button has a tooltip. The green ▶ starts (a camera, a replay, a stream), the red ■ stops, and the red ● records;
+the toggles (**Loop**, **As fast as possible**, **Overlays**) draw their icon in the accent colour while they are
+on, so on and off differ in light and dark appearance alike.
+
 ### Cameras
 
 The **Camera** picker lists the cameras macOS, Windows or Linux offers, an iPhone through Continuity Camera
@@ -591,60 +600,108 @@ format), and starts on the largest uncompressed one up to 60 fps; the lab rememb
 camera's format. Nothing starts until you press **Start**. The first Start asks for camera access; refused,
 the status bar says where to allow it (on a Mac, System Settings → Privacy & Security → Camera). Another camera
 or format while running starts a new run; a camera that fails or is unplugged stops it, and the status bar
-says why. **Stop** empties the canvas.
+says why. **Stop** empties the canvas. A camera frame's time counts from the run's first frame, as a replay's
+does.
 
 ### The canvas, Show and Overlays
 
 The canvas is the viewer's: the wheel zooms at the cursor, a drag pans, a double-click fits. **Processor**
 chooses what runs on each frame: **None**, **Edges** (the frame's edges as a picture, and their share of the
-frame) or **Outline** (the document's outline, drawn over the frame). **Show** chooses what the canvas shows:
+frame) or **Outline (simple)**, which outlines the largest four-sided shape lighter than the frame around it,
+covering a tenth of the frame or more, and draws it over the frame. It is simple on purpose: a lit wall, a
+window or a sheet of paper is such a shape too, so it says `document: found` for them as well; telling a
+document from them is the work of the document-reading code to come. **Show** chooses what the canvas shows:
 the **Frame**, or a picture the processor made, such as `edges`; a picture the frame on screen does not have
 says so instead of showing an older one. Choosing another processor leaves only its own pictures in the list,
-and the frame shows until a picture of the name chosen comes back. **Overlays**, on from the start, draws what the processor found over
-the frame; turned off, only the drawing goes. The results panel beside the canvas lists the processor's
-findings for the frame on screen, such as `document: found`.
+and the frame shows until a picture of the name chosen comes back. **Overlays**, on from the start, draws what
+the processor found over the frame; turned off, only the drawing goes.
+
+The results panel beside the canvas lists the processor's findings for the frame on screen as rows of a name
+and a value, such as `document` and `found`; a processor's error is a row of its own. It keeps its width as the
+window grows; drag its edge to change it, or all the way to the window's side to shut it, and back to open it.
+**View → Results** shuts and opens it too, and the lab remembers its width and whether it shows.
 
 The status bar shows the run (Live, Playing, Paused, Ended, Stopped), the source, the frame and of how many,
 the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a camera's
 frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas drew
 them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
-how long.
+how long; a seek on its way says `seeking…`.
 
 ### Replay
 
 **Open File…** replays a video or an image; **Open Folder…** a folder of images (in name order, numbers in
 names compared as numbers, 30 frames a second) or a recording. Every frame is processed, in order, at the
 video's pace or slower: a frame the processing could not keep up with is shown late, never skipped.
-**Play**/**Pause**, **Step** (the next frame), **Step Back** (folders and recordings only), **Restart**,
-**Loop** and **As fast as possible**; Space plays and pauses, → steps and ← steps back, except while a button
-has the focus, when Space presses it. **Play** at the end plays the replay again from its first frame. A video that is damaged part-way stops with `stopped at frame N:` and
-the reason, never as its end. 10-bit and HDR videos (an iPhone's HLG, PQ) are read as 16-bit frames with their
-tags.
+**Play**/**Pause**, **Step Back** and **Step** (the frame before and the next), **10 s** back and forward,
+**Restart**, **Loop** and **As fast as possible**. Space plays and pauses, ← and → step, Shift+← and Shift+→
+jump ten seconds, except while a button has the focus, when Space presses it. The canvas has the keyboard from
+the start, takes it back when a source opens or you click it, and Space plays and pauses in the viewer's address
+field too, which never holds a space. **Play** at the end plays the replay again from its first frame.
+
+Beside them, the position slider and the time of the frame on screen against the replay's length, such as
+`0:16 / 0:25` (`1:02:03 / 1:10:00` from an hour). Dragging moves only the time; letting go, a click beside the
+handle or a key goes to that frame. A seek, a step back or ten seconds is a new run of the processor, playing on
+if the replay was playing and paused on the frame otherwise.
+
+Videos are read through FFmpeg's libraries where the lab has them (every build the
+[build guide](build-guide.md) describes does): a video lands on the exact frame asked for, decoded forward from
+the keyframe before it, which in a 4K video takes a moment; holding ← makes one seek, not one per key press.
+Videos decode on the graphics hardware where it can (VideoToolbox on a Mac, D3D11VA on Windows; the processor
+on Linux), except H.264 on a Mac, which FFmpeg's own decoder reads and seeks in faster than VideoToolbox does. A video whose frames
+carry no times (a raw `.h264` stream) can only start again. In a video of varying frame rate, such as an
+iPhone's, frame numbers are counted at its average rate, and a seek lands on the first frame at or after that
+time. A video that is damaged part-way stops with `stopped at frame N:` and the reason, never as its end. 10-bit
+and HDR videos (an iPhone's HLG, PQ) are read as 16-bit frames with their tags; other videos as 8-bit frames.
 
 ### Record and Capture
 
 **Record** writes every frame the processor gets, losslessly, as a new folder named by the local time in the
-lab's folder, readable by you only; **Record** again, **Stop**, **Restart**, **Step Back**, a loop, another
-source or another camera format ends it. Stopping, or closing the lab, waits until every frame is written,
-with the progress in the status bar. A camera's frame that finds the queue full is left out and counted; a
-replay waits instead. Recording stops when the disk has less than 5 GB free. A recording replays through
-**Open Folder…**.
+lab's folder, readable by you only; **Record** again, **Stop**, **Restart**, a seek (the slider, **Step Back**,
+**10 s**), a loop, another source or another camera format ends it, a seek with `recording stopped: the replay
+moved` in the status bar. Stopping, or closing the lab, waits until every frame is written, with the progress in
+the status bar. A camera's frame that finds the queue full is left out and counted; a replay waits instead.
+Recording stops when the disk has less than 5 GB free, and when a frame cannot be written (a disk unplugged, a
+file in the way), with the reason in the status bar; `recording.json` then lists only the frames written. A
+recording replays through **Open Folder…**.
 
 **Capture** keeps the frame on the canvas at full resolution as a PNG, with a JSON beside it (the source, the
-frame's number, its time, its tags and the processor's findings), in the `Captures` folder.
+frame's number, its time, its tags, the processor's findings and its overlays: where it found what it found), in
+the `Captures` folder.
 
 The lab's folder is the app's local data folder (`~/Library/Application Support/Document Lab` on a Mac,
 `%LOCALAPPDATA%\Document Lab` on Windows, `~/.local/share/Document Lab` on Linux), which iCloud and OneDrive do
 not sync. **Open Lab Folder** shows it; **Choose Folder…** picks another, with a reminder that recordings may
 show real passports and should stay out of synced or shared folders.
 
-### Send to viewer
+### The viewer
 
-**Send to viewer**, off by default, sends each result to the viewer at the endpoint beside it: the frame as the
-live channel `lab`, with the processor's overlays, and each picture as `lab <name>`, such as `lab edges`. A
-slow or absent viewer never slows the lab; the status bar shows the viewer's last reply. An endpoint on another
-computer is used only after you agree, once per session, that frames may show real passports and travel there
-unencrypted; while sending there, the status bar names the host.
+The **Viewer** row holds the viewer's address, a mark and a word saying whether it is there, the stream's
+▶ ⏸ ■ and **Send Frame**.
+
+- **Is it there?** The lab asks the viewer every two seconds with a [ping](wire-format.md#requests-ping-and-end),
+  which the viewer answers without logging it: a green tick and **available**; **available (older viewer)** for
+  a viewer from before the ping, asked once a minute instead because it logs each ping as a rejected request
+  (while streaming to it, the stream's own replies decide the mark); **paused** for a viewer you paused; a red
+  cross and **not available** or **invalid address**; **checking…** until the first answer; **no address** with
+  the field empty, which also disables the stream and Send Frame.
+- **Another computer.** An address that is not this computer's gets nothing, not even a ping, until you agree,
+  once per address and session, that frames may show real passports and travel there unencrypted; until then
+  the row says **another computer: not checked**, and ▶ or Send Frame asks first. While streaming there, the
+  status bar names the host.
+- **▶ Stream** sends each result as it is processed: the frame as the live channel `lab`, with the processor's
+  overlays, and each picture as `lab <name>`, such as `lab edges`. A slow or absent viewer never slows the lab;
+  the status bar shows the viewer's last reply and the results not sent. A stream starts only when you press ▶,
+  never by itself at launch. **⏸** pauses it: the viewer keeps showing the last frame sent, and the status bar
+  says `stream paused`; ▶ goes on, sending the frame on screen at once if the replay is paused. **■** stops it
+  and ends the lab's channels in the viewer, which closes them (one you froze stays); ▶ waits until the ends have
+  gone, so a new stream is never ended by the old one. An older viewer's channels are not ended, only left to go
+  idle.
+- **Send Frame** sends the picture Show shows into the viewer's history, as an ordinary image: the frame, with
+  its tags and the processor's overlays whether Overlays is on or not (the viewer has its own toggle), named
+  `lab frame 12`, or a processor's picture named `lab edges 12`, numbered as the status bar counts frames. The
+  status bar says `sent lab frame 12 to the viewer`, or why not.
+- **Another address** ends a stream in the old viewer; ▶ starts it at the new one. Closing the lab ends its
+  channels too.
 
 ## Running live_sender
 
@@ -832,6 +889,11 @@ Invalid image
   `vd.Client(endpoint, reply_timeout=0.5, retry_interval=1.0)` (in seconds) has `send` and `send_live` and
   closes as a context manager; use one per thread. Pressing Ctrl+C during a send interrupts it, and the next
   send starts afresh.
+- **Is a viewer there?** `vd.ping()` (or `Client.ping()`) asks without sending an image and gives a
+  `vd.ViewerState`: `LISTENING`, `PAUSED`, `PREDATES_PING` (a viewer older than the ping, which still takes
+  images), `UNAVAILABLE` or `INVALID_ENDPOINT`. **Ending a live channel:** `vd.end_live("camera")` (or
+  `Client.end_live`) tells the viewer the channel is finished with, and it closes the channel unless its user
+  froze it. C++ has the same as `visual_debug::ping()` and `visual_debug::endLive()`, and on a `Client`.
 
 `python/examples/demo.py` sends a gradient, the ramp above, a card with overlays and a short live sequence:
 `python3 python/examples/demo.py`, with `--endpoint` for a viewer on another port.

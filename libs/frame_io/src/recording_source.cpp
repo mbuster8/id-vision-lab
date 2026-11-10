@@ -21,6 +21,15 @@ bool isBareFileName(const std::string& file) {
     return !file.empty() && path == path.filename() && !path.has_root_path() && path != "." && path != "..";
 }
 
+// Frames a second from the frames' own times, first to last; 30, as for a folder, when they do not say.
+double rateOf(const std::vector<SequenceEntry>& entries) {
+    if (entries.size() < 2 || entries.back().at <= entries.front().at) {
+        return 30.0;
+    }
+    return static_cast<double>(entries.size() - 1) * 1e9 /
+           static_cast<double>((entries.back().at - entries.front().at).count());
+}
+
 } // namespace
 
 std::unique_ptr<ReplaySource> openRecording(const std::filesystem::path& folder, std::string& error) {
@@ -75,7 +84,8 @@ std::unique_ptr<ReplaySource> openRecording(const std::filesystem::path& folder,
         error = utf8Name(folder) + ": the recording holds no frames";
         return nullptr;
     }
-    return std::make_unique<FileSequence>(std::move(entries), utf8Name(folder), ReadOptions{});
+    const double rate = rateOf(entries);
+    return std::make_unique<FileSequence>(std::move(entries), utf8Name(folder), ReadOptions{}, rate);
 }
 
 std::unique_ptr<ReplaySource> openReplay(const std::filesystem::path& path, std::string& error) {

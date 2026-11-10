@@ -20,6 +20,8 @@ using Json = nlohmann::json;
 
 constexpr std::string_view kProtocolName = "visual_debug";
 constexpr std::string_view kImageType = "image";
+constexpr std::string_view kPingType = "ping";
+constexpr std::string_view kEndType = "end";
 
 struct DepthInfo {
     int depth;
@@ -621,6 +623,44 @@ std::variant<ImageMessage, DecodeError> decodeChecked(std::string_view headerTex
         .name = nameText, .image = view.clone(), .live = live, .sentAt = sentAt, .description = description};
 }
 
+// The checks decodeChecked starts with, in its order, then the type and an end's name.
+std::variant<ControlMessage, DecodeError> decodeControlChecked(std::string_view headerText) {
+    if (headerText.size() > kMaxHeaderBytes) {
+        return DecodeError{"header too large"};
+    }
+    const Json header = Json::parse(headerText, nullptr, /*allow_exceptions=*/false);
+    if (header.is_discarded()) {
+        return DecodeError{"header is not valid JSON"};
+    }
+    if (!header.is_object()) {
+        return DecodeError{"header is not a JSON object"};
+    }
+    if (!hasString(header, "protocol", kProtocolName)) {
+        return DecodeError{"unknown protocol"};
+    }
+    if (readInteger(header, "version", 0, std::numeric_limits<int>::max()) != kProtocolVersion) {
+        return DecodeError{"unsupported version"};
+    }
+    if (hasString(header, "type", kImageType)) {
+        return ControlMessage{.kind = ControlMessage::Kind::Image, .name = {}};
+    }
+    if (hasString(header, "type", kPingType)) {
+        return ControlMessage{.kind = ControlMessage::Kind::Ping, .name = {}};
+    }
+    if (!hasString(header, "type", kEndType)) {
+        return DecodeError{"unsupported message type"};
+    }
+    const auto name = header.find("name");
+    if (name == header.end() || !name->is_string()) {
+        return DecodeError{"name is missing or not a string"};
+    }
+    const auto& nameText = name->get_ref<const std::string&>();
+    if (nameText.size() > kMaxNameBytes) {
+        return DecodeError{"name too long"};
+    }
+    return ControlMessage{.kind = ControlMessage::Kind::End, .name = nameText};
+}
+
 } // namespace
 
 bool ValueRange::empty() const { return !(std::isfinite(min) && std::isfinite(max) && min < max); }
@@ -717,5 +757,29 @@ std::variant<ImageMessage, DecodeError> decode(std::string_view header, std::spa
         return DecodeError{"could not decode message"};
     }
 }
+
+std::string encodePing() {
+    const nlohmann::ordered_json header = {
+        {"protocol", kProtocolName}, {"version", kProtocolVersion}, {"type", kPingType}};
+    return header.dump();
+}
+
+std::string encodeEnd(std::string_view channel) {
+    const nlohmann::ordered_json header = {{"protocol", kProtocolName},
+                                           {"version", kProtocolVersion},
+                                           {"type", kEndType},
+                                           {"name", sanitiseName(channel)}};
+    return header.dump();
+}
+
+std::variant<ControlMessage, DecodeError> decodeControl(std::string_view header) {
+    try {
+        return decodeControlChecked(header);
+    } catch (...) {
+        return DecodeError{"could not decode message"};
+    }
+}
+
+std::string encodeOverlays(const std::vector<Overlay>& overlays) { return overlaysField(overlays).dump(); }
 
 } // namespace visual_debug

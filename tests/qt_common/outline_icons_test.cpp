@@ -17,11 +17,14 @@ using qt_common::makeOutlineIcon;
 using qt_common::OutlineIcon;
 
 constexpr std::initializer_list<OutlineIcon> kAllShapes = {
-    OutlineIcon::Pencil, OutlineIcon::Duplicate, OutlineIcon::Trash,     OutlineIcon::Pause,
-    OutlineIcon::Play,   OutlineIcon::Stop,      OutlineIcon::ChevronUp, OutlineIcon::ChevronDown,
-    OutlineIcon::Copy,   OutlineIcon::Clear,     OutlineIcon::Search,    OutlineIcon::Options,
-    OutlineIcon::Info,   OutlineIcon::Warning,   OutlineIcon::Error,     OutlineIcon::Folder,
-    OutlineIcon::Send,   OutlineIcon::Camera,    OutlineIcon::EyeOff};
+    OutlineIcon::Pencil,      OutlineIcon::Duplicate, OutlineIcon::Trash,     OutlineIcon::Pause,
+    OutlineIcon::Play,        OutlineIcon::Stop,      OutlineIcon::ChevronUp, OutlineIcon::ChevronDown,
+    OutlineIcon::Copy,        OutlineIcon::Clear,     OutlineIcon::Search,    OutlineIcon::Options,
+    OutlineIcon::Info,        OutlineIcon::Warning,   OutlineIcon::Error,     OutlineIcon::Folder,
+    OutlineIcon::Send,        OutlineIcon::Camera,    OutlineIcon::EyeOff,    OutlineIcon::StepBack,
+    OutlineIcon::StepForward, OutlineIcon::Back10,    OutlineIcon::Forward10, OutlineIcon::Restart,
+    OutlineIcon::Loop,        OutlineIcon::Fast,      OutlineIcon::Record,    OutlineIcon::Overlays,
+    OutlineIcon::Tick,        OutlineIcon::Cross};
 
 QImage render(OutlineIcon shape) { return makeOutlineIcon(shape).pixmap(24, 24).toImage(); }
 
@@ -72,6 +75,36 @@ TEST(OutlineIcons, FollowTheApplicationPalette) {
 
     setWindowText(Qt::blue);
     EXPECT_TRUE(strokedIn(render(OutlineIcon::Pencil), Qt::blue));
+}
+
+// A toggle that is on (Loop, Overlays) draws in the accent colour, so on and off differ without a frame.
+TEST(OutlineIcons, OnStateUsesTheAccent) {
+    const test_support::PaletteGuard guard;
+    QPalette palette = QGuiApplication::palette();
+    palette.setColor(QPalette::WindowText, Qt::red);
+    palette.setColor(QPalette::Highlight, Qt::green);
+    QGuiApplication::setPalette(palette);
+    const QIcon icon = makeOutlineIcon(OutlineIcon::Loop);
+
+    EXPECT_TRUE(strokedIn(icon.pixmap(QSize(24, 24), QIcon::Normal, QIcon::On).toImage(), Qt::green));
+    EXPECT_TRUE(strokedIn(icon.pixmap(QSize(24, 24), QIcon::Normal, QIcon::Off).toImage(), Qt::red));
+}
+
+// ▶ green and ■ red whatever the palette; grey, as every disabled icon, when disabled.
+TEST(OutlineIcons, ColouredIconsKeepTheirColour) {
+    const test_support::PaletteGuard guard;
+    QPalette palette = QGuiApplication::palette();
+    palette.setColor(QPalette::WindowText, Qt::blue);
+    palette.setColor(QPalette::PlaceholderText, Qt::gray); // opaque: Fusion's own is half transparent
+    QGuiApplication::setPalette(palette);
+    const QIcon play = qt_common::makeColouredIcon(OutlineIcon::Play, qt_common::kGo);
+
+    EXPECT_TRUE(strokedIn(play.pixmap(QSize(24, 24)).toImage(), qt_common::kGo));
+    EXPECT_GT(countDrawnPixels(play.pixmap(QSize(24, 24)).toImage()), 60); // filled, not only stroked
+    EXPECT_TRUE(strokedIn(play.pixmap(QSize(24, 24), QIcon::Disabled).toImage(), QColor(Qt::gray)));
+    EXPECT_TRUE(strokedIn(
+        qt_common::makeColouredIcon(OutlineIcon::Record, qt_common::kHalt).pixmap(QSize(24, 24)).toImage(),
+        qt_common::kHalt));
 }
 
 } // namespace

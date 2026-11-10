@@ -12,8 +12,10 @@ const QString kOverlays = QStringLiteral("lab/overlays");
 const QString kCamera = QStringLiteral("lab/camera");
 const QString kFormats = QStringLiteral("lab/formats/");
 const QString kLabFolder = QStringLiteral("lab/folder");
-const QString kSend = QStringLiteral("lab/send");
 const QString kEndpoint = QStringLiteral("lab/endpoint");
+const QString kResultsWidth = QStringLiteral("lab/resultsWidth");
+const QString kResultsShown = QStringLiteral("lab/resultsShown");
+constexpr int kDefaultResultsWidth = 200;
 
 } // namespace
 
@@ -46,14 +48,22 @@ QString LabSettings::labFolder() const { return m_settings.value(kLabFolder).toS
 
 void LabSettings::setLabFolder(const QString& folder) { m_settings.setValue(kLabFolder, folder); }
 
-bool LabSettings::sendToViewer() const { return m_settings.value(kSend, false).toBool(); }
-
-void LabSettings::setSendToViewer(bool on) { m_settings.setValue(kSend, on); }
-
 QString LabSettings::endpoint() const {
     return m_settings.value(kEndpoint, QString::fromStdString(visual_debug::defaultEndpoint())).toString();
 }
 
 void LabSettings::setEndpoint(const QString& endpoint) { m_settings.setValue(kEndpoint, endpoint); }
+
+int LabSettings::resultsWidth() const {
+    bool valid = false;
+    const int width = m_settings.value(kResultsWidth, kDefaultResultsWidth).toInt(&valid);
+    return valid && width > 0 ? width : kDefaultResultsWidth;
+}
+
+void LabSettings::setResultsWidth(int width) { m_settings.setValue(kResultsWidth, width); }
+
+bool LabSettings::resultsShown() const { return m_settings.value(kResultsShown, true).toBool(); }
+
+void LabSettings::setResultsShown(bool shown) { m_settings.setValue(kResultsShown, shown); }
 
 } // namespace document_lab

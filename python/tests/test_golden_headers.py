@@ -46,7 +46,19 @@ def repeated_polygons(repeat):
     return [vd.Polygon([(i, i + 0.5) for i in range(repeat["points"])]) for _ in range(repeat["count"])]
 
 
+def name_of(case):
+    """The case's name: nameRepeat's text count times, else name, else x."""
+    if "nameRepeat" in case:
+        return case["nameRepeat"]["text"] * case["nameRepeat"]["count"]
+    return case.get("name", "x")
+
+
 def encoded(case):
+    kind = case.get("type", "image")
+    if kind == "ping":
+        return vd.encode_ping()
+    if kind == "end":
+        return vd.encode_end(name_of(case))
     rows, cols, channels = case.get("rows", 1), case.get("cols", 1), case.get("channels", 1)
     shape = (rows, cols) if channels == 1 else (rows, cols, channels)
     image = np.zeros(shape, DTYPES[case.get("depth", "8U")])
@@ -59,7 +71,7 @@ def encoded(case):
         options["overlays"] = [overlay(item) for item in case["overlays"]]
     if "overlaysRepeat" in case:
         options["overlays"] = repeated_polygons(case["overlaysRepeat"])
-    return vd.encode(image, case.get("name", "x"), **options)[0]
+    return vd.encode(image, name_of(case), **options)[0]
 
 
 def test_the_cases_are_there():

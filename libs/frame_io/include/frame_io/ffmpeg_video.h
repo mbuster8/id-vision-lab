@@ -6,9 +6,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace frame_io {
 
@@ -27,7 +29,14 @@ struct VideoInfo {
     visual_debug::Primaries primaries = visual_debug::Primaries::Bt709; // unknown is BT.709
     std::string decoder;        // "VideoToolbox", "D3D11VA" or "software"
     int dolbyVisionProfile = 0; // 0 without Dolby Vision
+    // Frames that can be found by time: the first frame has a timestamp, the rate is known, and the format
+    // keeps timestamps (a raw .h264 or .hevc stream does not).
+    bool seekable = false;
 };
+
+// Whether a codec, by FFmpeg's decoder name ("h264", "hevc"), decodes faster in software than with the
+// hardware decoder: then open() leaves the hardware alone for it.
+bool codecPrefersSoftware(std::string_view decoderName);
 
 // A video file read with FFmpeg's libraries rather than OpenCV's videoio, which hands over 8-bit pictures
 // without their transfer and primaries. Every frame comes as 16-bit BGR: a limited-range video's nominal
@@ -36,9 +45,19 @@ struct VideoInfo {
 // clipping.
 class FfmpegVideo {
 public:
+    struct Options {
+        bool allowHardware = true;
+        // A video of 8 bits or fewer tagged SDR comes as 8-bit BGR (CV_8UC3), video range stretched to full
+        // and full range kept, with no value range in its tags; anything deeper, or HLG or PQ, as 16-bit.
+        bool eightBitAsEightBit = false;
+    };
+
     // Hardware decoding (VideoToolbox on macOS, D3D11VA on Windows) when allowed and the video's codec has
     // it, software otherwise or when the hardware cannot decode the first frame. Nothing, with `error` set,
     // for a file that does not open or has no video stream that decodes.
+    static std::unique_ptr<FfmpegVideo> open(const std::string& path, const Options& options,
+                                             std::string& error);
+    // Every frame as 16-bit BGR.
     static std::unique_ptr<FfmpegVideo> open(const std::string& path, bool allowHardware, std::string& error);
 
     FfmpegVideo(const FfmpegVideo&) = delete;
@@ -47,6 +66,12 @@ public:
 
     const VideoInfo& info() const;
     std::optional<VideoFrame> read(); // nothing at the end or on an error
+    // The next read() gives the first frame at or after `at` (from the first frame), less half a frame: from
+    // the keyframe before it, decoded forward, so it is exact. A time past the end makes the next read() the
+    // end. `abandon`, asked between frames, gives up at once when it says so, with no error. False when
+    // abandoned or when FFmpeg cannot seek (lastError() says why); the read position is then undefined, and
+    // the next call must be another seek.
+    bool seek(std::chrono::nanoseconds at, const std::function<bool()>& abandon = {});
     // Why the last read() gave nothing: empty at the end of the file, the reason after anything else.
     const std::string& lastError() const;
 

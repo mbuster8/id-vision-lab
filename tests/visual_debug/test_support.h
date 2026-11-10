@@ -7,6 +7,7 @@
 #include <zmq.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -14,6 +15,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace test_support {
@@ -31,9 +34,21 @@ public:
         return m_rejections;
     }
 
+    void onLiveEnded(std::string_view name) override {
+        std::lock_guard lock(m_mutex);
+        m_ended.emplace_back(name);
+    }
+
+    // The live channels ended by their senders, in order.
+    std::vector<std::string> ended() const {
+        std::lock_guard lock(m_mutex);
+        return m_ended;
+    }
+
 private:
     mutable std::mutex m_mutex;
     std::vector<std::string> m_rejections;
+    std::vector<std::string> m_ended;
 };
 
 // Thread-safe sink that keeps every image it receives.
@@ -134,6 +149,50 @@ inline std::string unusedEndpoint() {
     server.stop();
     return endpoint;
 }
+
+// Something on a loopback port that answers every request with the same reply, as an older viewer or another
+// program would, on a thread of its own until destroyed.
+class ScriptedPeer {
+public:
+    explicit ScriptedPeer(std::string reply)
+        : m_reply(std::move(reply)), m_socket(m_context, zmq::socket_type::rep) {
+        m_socket.set(zmq::sockopt::linger, 0);
+        m_socket.bind("tcp://127.0.0.1:*");
+        m_endpoint = m_socket.get(zmq::sockopt::last_endpoint);
+        m_thread = std::thread([this] { serve(); });
+    }
+    ~ScriptedPeer() {
+        m_stop = true;
+        m_thread.join();
+    }
+    ScriptedPeer(const ScriptedPeer&) = delete;
+    ScriptedPeer& operator=(const ScriptedPeer&) = delete;
+
+    std::string endpoint() const { return m_endpoint; }
+
+private:
+    void serve() {
+        while (!m_stop) {
+            zmq::pollitem_t item{m_socket.handle(), 0, ZMQ_POLLIN, 0};
+            zmq::poll(&item, 1, std::chrono::milliseconds(20));
+            if ((item.revents & ZMQ_POLLIN) == 0) {
+                continue;
+            }
+            zmq::message_t frame;
+            do {
+                (void)m_socket.recv(frame);
+            } while (frame.more());
+            m_socket.send(zmq::buffer(m_reply), zmq::send_flags::none);
+        }
+    }
+
+    std::string m_reply;
+    zmq::context_t m_context;
+    zmq::socket_t m_socket;
+    std::string m_endpoint;
+    std::atomic<bool> m_stop{false};
+    std::thread m_thread;
+};
 
 // Sends raw frames from a plain REQ socket, as a misbehaving sender would, and returns the parsed reply,
 // or nothing if no reply arrives within a second.

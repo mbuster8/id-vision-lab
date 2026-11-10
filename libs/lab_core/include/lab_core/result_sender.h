@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace lab_core {
 
@@ -43,19 +44,34 @@ public:
     // Immediate mode: sends the waiting result, if any. Whether there was one.
     bool pump();
 
+    // While paused, a result handed over is dropped, and one waiting too, without being counted as not sent:
+    // ⏸ keeps the viewer's channels showing the last frame sent.
+    void setPaused(bool paused);
+    // Stops the sending thread, after a send in progress (a result waiting is not sent), then ends every
+    // channel it sent on, once each, in the order first sent, on the calling thread. Best effort: the
+    // client's back-off makes the ends return at once after one has timed out. Nothing is sent after it.
+    void endChannels();
+
     struct Stats {
         std::uint64_t sent = 0;                       // results that went out
         std::uint64_t notSent = 0;                    // results replaced by a newer one before they went out
         std::optional<visual_debug::SendResult> last; // the frame's channel's result for the last one
+        bool paused = false;
     };
     Stats stats() const;
 
 private:
     void run();
+    void stopThread();
     void send(const LabResult& result);
+    void sendLive(const cv::Mat& image, const std::string& channel,
+                  const visual_debug::ImageDescription& description, visual_debug::SendResult* result);
 
     Mode m_mode;
     std::unique_ptr<visual_debug::ImageSender> m_sender;
+    // The channels sent on, in the order first sent; only the sending thread, or pump()'s caller, touches it
+    // until endChannels() has stopped that thread.
+    std::vector<std::string> m_channels;
     mutable std::mutex m_mutex;
     std::condition_variable m_wake;
     std::optional<LabResult> m_waiting;

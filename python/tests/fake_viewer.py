@@ -8,6 +8,8 @@ import zmq
 
 OK = b'{"status":"ok"}'
 ERROR = b'{"status":"error","reason":"rows out of range"}'
+PAUSED = b'{"status":"error","reason":"viewer paused"}'
+OLDER = b'{"status":"error","reason":"unsupported message type"}'  # a viewer that predates ping and end
 
 
 def free_port() -> int:
@@ -19,7 +21,7 @@ def free_port() -> int:
 
 class FakeViewer:
     """Binds to `endpoint` (an ephemeral loopback port by default) and answers each request by `reply`: "ok",
-    "error", "garbage" (not JSON) or "silent" (never). A ROUTER socket, so a silent viewer still takes the next
+    "error", "paused" (viewer paused), "older" (unsupported message type), "garbage" (not JSON) or "silent" (never). A ROUTER socket, so a silent viewer still takes the next
     socket's request, as the viewer's queue does. `received` holds (header dict, pixel bytes) per request."""
 
     def __init__(self, reply: str = "ok", endpoint: str = "tcp://127.0.0.1:*"):
@@ -49,6 +51,8 @@ class FakeViewer:
                 continue
             identity, empty, header, pixels = self._socket.recv_multipart()
             self.received.append((json.loads(header), pixels))
-            answer = {"ok": OK, "error": ERROR, "garbage": b"not json"}.get(self.reply)
+            answer = {"ok": OK, "error": ERROR, "paused": PAUSED, "older": OLDER, "garbage": b"not json"}.get(
+                self.reply
+            )
             if answer is not None:
                 self._socket.send_multipart([identity, empty, answer])

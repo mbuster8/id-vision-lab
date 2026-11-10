@@ -32,11 +32,17 @@ public:
     virtual void setWake(std::function<void()> wake) = 0;
     // Back to frame 0: by seeking, or by opening the file again. False, with `error`, when it cannot.
     virtual bool restart(std::string& error) = 0;
-    // Folders and recordings can go to any frame; a video file only back to its start.
+    // Folders, recordings and a video whose frames have timestamps can go to any frame; a video without them
+    // (a raw stream, or one read through OpenCV) only back to its start.
     virtual bool canSeek() const = 0;
-    // Only when canSeek(): next() then returns frame `index` (numbered `index`), or the end past the last.
+    // Only when canSeek(): next() then returns frame `index` (numbered `index`), or the end past the last. A
+    // video finds the frame on its reading thread, so next() may wait; ready() and the wake say when it is
+    // there.
     virtual void seek(std::uint64_t index) = 0;
     virtual std::optional<std::uint64_t> frameCount() const = 0;
+    // Frames a second, to turn a frame number into a time and back: a video's own, a recording's from its
+    // frames' times, 30 for a folder; nothing for a single picture, or a video that does not say.
+    virtual std::optional<double> frameRate() const = 0;
     // The file's or the folder's name, for the window and recording.json.
     virtual std::string describe() const = 0;
 };

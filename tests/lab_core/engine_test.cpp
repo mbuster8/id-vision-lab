@@ -298,6 +298,239 @@ TEST(Engine, RestartReopensAVideo) {
     EXPECT_EQ(counters.restarts, 1);
 }
 
+// --- Seeking
+// ------------------------------------------------------------------------------------------------
+
+// A replay as fast as possible, paused with frame `shown` on screen.
+void pausedAt(Harness& h, std::uint64_t shown) {
+    h.engine.setAsFastAsPossible(true);
+    for (std::uint64_t number = 0; number <= shown; ++number) {
+        ASSERT_EQ(h.nextNumber(), number);
+    }
+    h.engine.pause();
+    h.engine.pump();
+    ASSERT_EQ(h.engine.status().state, EngineState::Paused);
+}
+
+// Pumps until a result comes, or twenty pumps.
+std::optional<std::uint64_t> pumpUntilAResult(Harness& h) {
+    for (int pumps = 0; pumps < 20; ++pumps) {
+        if (const auto number = h.nextNumber()) {
+            return number;
+        }
+    }
+    return std::nullopt;
+}
+
+TEST(Engine, SeekWhilePausedShowsThatFrame) {
+    Harness h;
+    ListSource::Counters counters;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &counters));
+    pausedAt(h, 2);
+    const std::uint64_t generation = h.engine.status().generation;
+
+    h.engine.seek(7);
+    const auto result = h.next();
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->frame.number, 7U);
+    EXPECT_EQ(result->generation, generation + 1);
+    EXPECT_EQ(h.engine.status().state, EngineState::Paused);
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(7));
+}
+
+TEST(Engine, SeekWhilePlayingPlaysOn) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    EXPECT_EQ(h.nextNumber(), 0U);
+    EXPECT_EQ(h.nextNumber(), 1U);
+
+    h.engine.seek(7);
+
+    EXPECT_EQ(h.nextNumber(), 7U);
+    EXPECT_EQ(h.nextNumber(), 8U);
+    EXPECT_EQ(h.engine.status().state, EngineState::Playing);
+}
+
+TEST(Engine, SeekFromTheEndPauses) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    for (std::uint64_t number = 0; number < 3; ++number) {
+        EXPECT_EQ(h.nextNumber(), number);
+    }
+    h.engine.pump();
+    ASSERT_EQ(h.engine.status().state, EngineState::Ended);
+
+    h.engine.seek(1);
+
+    EXPECT_EQ(h.nextNumber(), 1U);
+    EXPECT_EQ(h.engine.status().state, EngineState::Paused);
+}
+
+// Holding ← makes Step Backs faster than a video can seek: those waiting add up to one seek.
+TEST(Engine, TenStepBacksMakeOneSeek) {
+    Harness h;
+    ListSource::Counters counters;
+    h.engine.startReplay(openerOf(framesApart(15, 40ms), true, &counters));
+    pausedAt(h, 12);
+
+    for (int i = 0; i < 10; ++i) {
+        h.engine.seekBy(-1);
+    }
+
+    EXPECT_EQ(pumpUntilAResult(h), 2U);
+    EXPECT_EQ(counters.seeks, 1);
+}
+
+// A seek replaces the steps waiting before it; steps after it count from its frame. Before the first frame or
+// after the last, a seek stops there.
+TEST(Engine, AbsoluteSeekThenSteps) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(15, 40ms)));
+    pausedAt(h, 12);
+
+    h.engine.seekBy(-3);
+    h.engine.seek(5);
+    h.engine.seekBy(+2);
+    EXPECT_EQ(pumpUntilAResult(h), 7U);
+
+    h.engine.seek(5);
+    h.engine.seekBy(-10);
+    EXPECT_EQ(pumpUntilAResult(h), 0U);
+
+    h.engine.seekBy(+100);
+    EXPECT_EQ(pumpUntilAResult(h), 14U);
+}
+
+// A recording is one unbroken run, as with a restart, and the status says why it stopped.
+TEST(Engine, SeekStopsTheRecording) {
+    const test_support::ScratchFolder folder;
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    h.engine.startRecording(recorderIn(folder.path()));
+    pausedAt(h, 2);
+    ASSERT_TRUE(h.engine.status().recording);
+
+    h.engine.seek(7);
+    EXPECT_EQ(h.nextNumber(), 7U);
+
+    EXPECT_FALSE(h.engine.status().recording);
+    EXPECT_EQ(h.engine.status().message, "recording stopped: the replay moved");
+}
+
+// A video's reading thread may take a while to find the frame: the status says so until it is shown.
+TEST(Engine, SeekingUntilTheFrameArrives) {
+    Harness h;
+    bool ready = true;
+    h.engine.startReplay([&ready](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<ListSource>(framesApart(10, 40ms), true, nullptr);
+        source->readyWhen = [&ready] { return ready; };
+        return source;
+    });
+    pausedAt(h, 2);
+    EXPECT_FALSE(h.engine.status().seeking);
+
+    ready = false;
+    h.engine.seek(7);
+    EXPECT_EQ(h.nextNumber(), std::nullopt);
+    EXPECT_TRUE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(7));
+
+    ready = true;
+    EXPECT_EQ(h.nextNumber(), 7U);
+    EXPECT_FALSE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
+}
+
+// A click on the slider seeks on the press and again on the release, and holding ← at the first frame keeps
+// asking for frame 0: a seek already running to that frame goes on rather than start again.
+TEST(Engine, SameTargetDoesNotRestartTheSeek) {
+    Harness h;
+    ListSource::Counters counters;
+    bool ready = true;
+    h.engine.startReplay([&](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<ListSource>(framesApart(10, 40ms), true, &counters);
+        source->readyWhen = [&ready] { return ready; };
+        return source;
+    });
+    pausedAt(h, 2);
+    ready = false;
+
+    h.engine.seek(7);
+    h.engine.pump();
+    h.engine.seek(7);
+    h.engine.pump();
+    EXPECT_EQ(counters.seeks, 1);
+
+    h.engine.seek(0);
+    h.engine.pump();
+    h.engine.seekBy(-1);
+    h.engine.pump();
+    EXPECT_EQ(counters.seeks, 2);
+
+    ready = true;
+    EXPECT_EQ(pumpUntilAResult(h), 0U);
+}
+
+// A count worked out from a duration can be a frame too many: a seek to the last then finds the end.
+class OverstatedSource : public ListSource {
+public:
+    using ListSource::ListSource;
+    std::optional<std::uint64_t> frameCount() const override { return *ListSource::frameCount() + 1; }
+};
+
+TEST(Engine, SeekingClearsAtTheEnd) {
+    Harness h;
+    h.engine.startReplay([](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        return std::make_unique<OverstatedSource>(framesApart(5, 40ms), true, nullptr);
+    });
+    pausedAt(h, 1);
+
+    h.engine.seek(100);
+    h.engine.pump();
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Ended);
+    EXPECT_FALSE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
+}
+
+// A seek asked for before another source was opened is for the old one: the new one starts at its first
+// frame.
+TEST(Engine, PendingSeekDiesWithTheSource) {
+    Harness h;
+    ListSource::Counters first;
+    ListSource::Counters second;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &first));
+    pausedAt(h, 4);
+
+    h.engine.seekBy(-1);
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &second));
+
+    EXPECT_EQ(pumpUntilAResult(h), 0U);
+    EXPECT_EQ(first.seeks, 0);
+    EXPECT_EQ(second.seeks, 0);
+}
+
+TEST(Engine, StatusHasRateAndSeek) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    h.engine.pump();
+    EXPECT_EQ(h.engine.status().frameRate, std::optional<double>(30.0));
+    EXPECT_TRUE(h.engine.status().canSeek);
+
+    h.engine.startReplay(openerOf(framesApart(3, 40ms), false));
+    h.engine.pump();
+    EXPECT_FALSE(h.engine.status().canSeek);
+
+    h.engine.startLive("camera");
+    h.engine.pump();
+    EXPECT_EQ(h.engine.status().frameRate, std::nullopt);
+    EXPECT_FALSE(h.engine.status().canSeek);
+}
+
 // An image file is processed once; Step and Restart process it again, Play does nothing more, Loop stays off.
 TEST(Engine, OneFrameSource) {
     Harness h;
@@ -342,6 +575,61 @@ TEST(Engine, ReaderErrorStopsWithItsFrame) {
     EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
     EXPECT_EQ(h.engine.status().message, "stopped at frame 3: bad data");
     EXPECT_GT(h.statusChanges, changes);
+}
+
+// Whatever a source throws stops the run with the reason; it never leaves the processing thread, which would
+// end the program.
+TEST(Engine, ThrowingSourceStopsTheRun) {
+    Harness h;
+    h.engine.setAsFastAsPossible(true);
+    h.engine.startReplay([](std::string&) -> std::unique_ptr<frame_io::ReplaySource> {
+        auto source = std::make_unique<ListSource>(framesApart(5, 40ms), true, nullptr);
+        source->throwAtNext = 2;
+        return source;
+    });
+    EXPECT_EQ(h.nextNumber(), 0U);
+    EXPECT_EQ(h.nextNumber(), 1U);
+
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+    EXPECT_NE(h.engine.status().message.find("internal error (disk gone)"), std::string::npos)
+        << h.engine.status().message;
+    EXPECT_FALSE(h.engine.status().busyFrame);
+    EXPECT_TRUE(h.engine.shutDown());
+}
+
+// A command that throws, here something that is not even a std::exception, stops the run too.
+TEST(Engine, ThrowingCommandStopsTheRun) {
+    Harness h;
+    h.engine.startReplay([](std::string&) -> std::unique_ptr<frame_io::ReplaySource> { throw 42; });
+
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+    EXPECT_NE(h.engine.status().message.find("internal error"), std::string::npos)
+        << h.engine.status().message;
+    EXPECT_TRUE(h.engine.shutDown());
+}
+
+// A recording whose writer failed in the background stops at once, also while nothing is pushed to it.
+TEST(Engine, FailureNoticedWhilePaused) {
+    const test_support::ScratchFolder folder;
+    Harness h;
+    std::unique_ptr<RecordingWriter> recorder = recorderIn(folder.path());
+    RecordingWriter* writer = recorder.get();
+    h.engine.startReplay(openerOf(framesApart(5, 40ms)));
+    h.engine.startRecording(std::move(recorder));
+    pausedAt(h, 1);
+    ASSERT_TRUE(h.engine.status().recording);
+    std::filesystem::create_directory(folder.path() / "000001.png"); // where frame 1's file would go
+
+    writer->pump();
+    writer->pump();
+    h.engine.pump();
+
+    EXPECT_FALSE(h.engine.status().recording);
+    EXPECT_EQ(h.engine.status().message.rfind("recording stopped:", 0), 0U) << h.engine.status().message;
 }
 
 TEST(Engine, SourceThatCannotOpenStops) {
@@ -638,6 +926,97 @@ TEST(Engine, ReplacingTheSenderDoesNotWait) {
     EXPECT_TRUE(gone);
 }
 
+// Pumps, a millisecond apart, until the condition holds or ten seconds pass; whether it held.
+bool pumpUntil(Harness& h, const std::function<bool()>& condition) {
+    const auto until = std::chrono::steady_clock::now() + 10s;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() > until) {
+            return false;
+        }
+        h.engine.pump();
+        std::this_thread::sleep_for(1ms);
+    }
+    return true;
+}
+
+// A sender the engine takes over, with pointers the test keeps.
+struct KeptSender {
+    explicit KeptSender(test_support::Latch* holdLive = nullptr, test_support::SendLog* log = nullptr,
+                        lab_core::ResultSender::Mode mode = lab_core::ResultSender::Mode::Immediate) {
+        auto fake = std::make_unique<test_support::RecordingSender>(
+            [](std::string_view) { return visual_debug::SendResult::Delivered; }, holdLive);
+        fake->log = log;
+        recording = fake.get();
+        owned = std::make_unique<lab_core::ResultSender>(mode, std::move(fake));
+        sender = owned.get();
+    }
+    std::unique_ptr<lab_core::ResultSender> owned;
+    lab_core::ResultSender* sender = nullptr;
+    test_support::RecordingSender* recording = nullptr;
+};
+
+// The window disables ▶ from the click of ■ until the old sender has ended its channels, so a new stream's
+// "lab" is never ended by the old sender's late end.
+TEST(Engine, EndingChannelsFromTheCall) {
+    test_support::Latch latch;
+    Harness h;
+    KeptSender kept(&latch, nullptr, lab_core::ResultSender::Mode::Threaded);
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    h.engine.pump();
+    ASSERT_TRUE(latch.waitUntilEntered()); // frame 0 held in its send
+
+    h.engine.stopSending(true);
+    EXPECT_TRUE(h.engine.status().endingChannels); // before the command runs
+    h.engine.pump();
+    EXPECT_TRUE(h.engine.status().endingChannels); // the old sender waits for its send
+    latch.release();
+
+    EXPECT_TRUE(pumpUntil(h, [&] { return !h.engine.status().endingChannels; }));
+}
+
+// ▶ on a paused replay sends the frame on screen at once rather than nothing until the next frame.
+TEST(Engine, NewSenderGetsTheLastResultWhilePaused) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(5, 40ms)));
+    pausedAt(h, 2);
+    KeptSender kept;
+    lab_core::ResultSender* sender = kept.sender;
+    test_support::RecordingSender* recording = kept.recording;
+
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.pump();
+
+    EXPECT_TRUE(sender->pump());
+    const auto calls = recording->calls();
+    ASSERT_FALSE(calls.empty());
+    EXPECT_EQ(calls[0].name, "lab");
+    EXPECT_EQ(calls[0].image.at<cv::Vec3b>(0, 0)[0], 2);
+}
+
+// ⏸ then ▶ while the replay is paused sends the frame on screen again.
+TEST(Engine, ResumeResubmitsWhilePaused) {
+    Harness h;
+    KeptSender kept;
+    lab_core::ResultSender* sender = kept.sender;
+    test_support::RecordingSender* recording = kept.recording;
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.startReplay(openerOf(framesApart(5, 40ms)));
+    h.engine.pauseSending(true);
+    pausedAt(h, 2);
+    EXPECT_FALSE(sender->pump()); // nothing while paused
+    EXPECT_TRUE(sender->stats().paused);
+
+    h.engine.pauseSending(false);
+    h.engine.pump();
+
+    EXPECT_TRUE(sender->pump());
+    const auto calls = recording->calls();
+    ASSERT_FALSE(calls.empty());
+    EXPECT_EQ(calls.back().name, "lab");
+    EXPECT_EQ(calls.back().image.at<cv::Vec3b>(0, 0)[0], 2);
+}
+
 // --- The processing thread
 // ----------------------------------------------------------------------------------
 
@@ -698,6 +1077,27 @@ TEST(Engine, OpensOnTheProcessingThread) {
     }));
     const std::lock_guard lock(mutex);
     EXPECT_NE(*openedOn, std::this_thread::get_id());
+}
+
+// ■ ends the lab's channels in the viewer, after its last frame.
+TEST(Engine, StopSendingEndsChannels) {
+    test_support::SendLog log;
+    Signals signals;
+    Engine engine(Engine::Mode::Threaded, {.resultReady = [&] { signals.notify(); },
+                                           .statusChanged = [&] { signals.notify(); },
+                                           .now = nullptr});
+    KeptSender kept(nullptr, &log, lab_core::ResultSender::Mode::Threaded);
+    test_support::RecordingSender* recording = kept.recording;
+    engine.setSender(std::move(kept.owned));
+    engine.startReplay(openerOf(framesApart(3, 0ms)));
+    ASSERT_TRUE(recording->waitForCalls(1));
+
+    engine.stopSending(true);
+
+    ASSERT_TRUE(signals.waitFor([&] { return !engine.status().endingChannels; }));
+    const std::vector<std::string> lines = log.lines();
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.back(), "end lab");
 }
 
 } // namespace

@@ -56,6 +56,7 @@ public:
         std::vector<LiveFrame> frames;    // one per channel with a frame waiting, in the order they opened
         std::vector<std::string> refused; // channels refused since the last take, each named once
         std::vector<std::string> evicted; // idle channels closed to make room for new ones
+        std::vector<std::string> ended;   // channels their senders ended, each named once
     };
 
     explicit QtImageSink(QObject* parent = nullptr);
@@ -68,6 +69,10 @@ public:
     // flood of them cannot grow Qt's event queue: requestsRejected is emitted only when the first count
     // appears, and the UI then takes them all.
     void onRequestRejected(std::string_view reason) override;
+
+    // The sender has finished with the channel: its place is freed and its waiting frame dropped, as
+    // closeLiveChannel does, and the name waits for the UI in the next LiveBatch's `ended`. Thread-safe.
+    void onLiveEnded(std::string_view name) override;
 
     // The UI calls this after taking each image. Thread-safe.
     void markHandled();

@@ -105,10 +105,17 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   there wakes for a command. Each run has a generation: the window drops results of an older one, and of any
   run once stopped. A camera frame waits in a slot of one (a newer replaces it); a replay never skips a frame
   (`ReplayPacer`); the recorder never drops a replay's frame (it waits for room) but counts a camera frame it
-  has no room for as not recorded. Hooks fire with no lock held. The canvas takes the viewer's glue (view
-  counter, `LiveConverter` jobs numbered by result). Engine and window tests use the immediate modes,
-  `pump()` and an injected clock unless they test the threads.
-- **Wire-format changes:** a new optional header field keeps `version` 2; changing or removing a field
+  has no room for as not recorded. Hooks fire with no lock held, and nothing thrown leaves the processing
+  thread (a catch-all stops the run). A seek is a request under the lock that newer ones replace or add to, one
+  command posted while it waits; a video seeks on its read-ahead thread, and a newer seek, a restart or the
+  source's end abandons it between frames. The `ViewerLink` (pings, Send Frame) has its own sender on its own
+  thread, beside the stream's `ResultSender`: a ZeroMQ REQ socket serves one thread. ■ ends the lab's channels
+  on the retiring sender's thread, and ▶ waits for `endingChannels` to clear. The canvas takes the viewer's glue
+  (view counter, `LiveConverter` jobs numbered by result). Engine, link and window tests use the immediate modes,
+  `pump()` and an injected clock unless they test the threads; window tests give the link and the stream fake
+  senders, so no test reaches a real viewer.
+- **Wire-format changes:** a new optional header field keeps `version` 2, and so does a new message `type` (an
+  older viewer refuses it with `unsupported message type`, which still answers); changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender
   (`python/visual_debug.py`) with them: both encoders must write `tests/wire/header_cases.json`'s golden
   headers, and the Python side is checked only by the venv's pytest and CI's Ubuntu job, not by ctest.

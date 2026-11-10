@@ -287,3 +287,278 @@ TEST(FfmpegVideo, HardwareDecodingOnMacOS) {
 #endif
 
 } // namespace
+
+// --- 8-bit SDR as 8-bit BGR, as the lab replays an ordinary video
+// ----------------------------------------------------------------
+
+namespace {
+
+std::unique_ptr<FfmpegVideo> openEightBit(const std::string& path) {
+    std::string error;
+    std::unique_ptr<FfmpegVideo> video =
+        FfmpegVideo::open(path, {.allowHardware = false, .eightBitAsEightBit = true}, error);
+    EXPECT_NE(video, nullptr) << error;
+    return video;
+}
+
+// The first frame's top-left pixel of an 8-bit clip of one colour, read as 8-bit BGR.
+cv::Vec3b eightBitColourOf(const Clip& clip) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    EXPECT_TRUE(writeClip(path, clip));
+    const std::unique_ptr<FfmpegVideo> video = openEightBit(path);
+    if (!video) {
+        return {};
+    }
+    const std::optional<VideoFrame> frame = video->read();
+    if (!frame || frame->image.type() != CV_8UC3) {
+        ADD_FAILURE() << "no 8-bit frame";
+        return {};
+    }
+    return frame->image.at<cv::Vec3b>(0, 0);
+}
+
+Clip eightBit(int y, int u, int v, AVColorSpace matrix, AVColorRange range = AVCOL_RANGE_MPEG) {
+    return Clip{
+        .format = AV_PIX_FMT_YUV420P, .range = range, .matrix = matrix, .y = {y, y, y, y}, .u = u, .v = v};
+}
+
+void expectNear(const cv::Vec3b& pixel, const cv::Vec3b& expected, const char* what) {
+    for (int channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(pixel[channel], expected[channel], 3) << what << ", channel " << channel;
+    }
+}
+
+TEST(FfmpegVideo, EightBitStaysEightBit) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    ASSERT_TRUE(writeClip(path, eightBit(126, 128, 128, AVCOL_SPC_BT709)));
+    const std::unique_ptr<FfmpegVideo> video = openEightBit(path);
+    ASSERT_NE(video, nullptr);
+
+    const std::optional<VideoFrame> frame = video->read();
+
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(frame->image.type(), CV_8UC3);
+    EXPECT_EQ(video->info().bitDepth, 8);
+    EXPECT_TRUE(video->info().valueRange.empty());
+}
+
+// Red in each matrix, white and black at video range, and white kept where full range puts it.
+TEST(FfmpegVideo, EightBitColoursFollowTheMatrixAndRange) {
+    expectNear(eightBitColourOf(eightBit(81, 90, 240, AVCOL_SPC_SMPTE170M)), {0, 0, 254}, "BT.601 red");
+    expectNear(eightBitColourOf(eightBit(63, 102, 240, AVCOL_SPC_BT709)), {0, 1, 255}, "BT.709 red");
+    expectNear(eightBitColourOf(eightBit(235, 128, 128, AVCOL_SPC_BT709)), {255, 255, 255}, "video white");
+    expectNear(eightBitColourOf(eightBit(16, 128, 128, AVCOL_SPC_BT709)), {0, 0, 0}, "video black");
+    expectNear(eightBitColourOf(eightBit(235, 128, 128, AVCOL_SPC_BT709, AVCOL_RANGE_JPEG)), {235, 235, 235},
+               "full-range 235");
+}
+
+// An untagged video below 720 rows is standard definition: BT.601 (BT.709 would give green 24 here).
+TEST(FfmpegVideo, UnknownMatrixBySize) {
+    expectNear(eightBitColourOf(eightBit(81, 90, 240, AVCOL_SPC_UNSPECIFIED)), {0, 0, 254}, "untagged 64×48");
+}
+
+// An 8-bit HLG video keeps the 16-bit path, whose codes above white survive.
+TEST(FfmpegVideo, EightBitHlgKeepsSixteenBits) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    Clip clip = eightBit(126, 128, 128, AVCOL_SPC_BT2020_NCL);
+    clip.transfer = AVCOL_TRC_ARIB_STD_B67;
+    ASSERT_TRUE(writeClip(path, clip));
+    const std::unique_ptr<FfmpegVideo> video = openEightBit(path);
+    ASSERT_NE(video, nullptr);
+
+    const std::optional<VideoFrame> frame = video->read();
+
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(frame->image.type(), CV_16UC3);
+}
+
+TEST(FfmpegVideo, SeekableWhenTimestamped) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("clip.mkv");
+    ASSERT_TRUE(writeClip(path, Clip{}));
+
+    EXPECT_TRUE(openInSoftware(path)->info().seekable);
+}
+
+} // namespace
+
+// --- Seeking
+// ----------------------------------------------------------------------------------------------------
+
+namespace {
+
+using test_support::NumberedClip;
+using test_support::Written;
+
+std::vector<VideoFrame> readAllFrames(const std::string& path, bool hardware = false) {
+    std::string error;
+    const std::unique_ptr<FfmpegVideo> video = FfmpegVideo::open(path, hardware, error);
+    if (!video) {
+        ADD_FAILURE() << error;
+        return {};
+    }
+    std::vector<VideoFrame> frames;
+    while (std::optional<VideoFrame> frame = video->read()) {
+        frames.push_back(std::move(*frame));
+    }
+    return frames;
+}
+
+// Every frame, reached by a seek, is the frame reading from the start gives: the same pixels and time.
+void expectEverySeekLands(const std::string& path) {
+    const std::vector<VideoFrame> frames = readAllFrames(path);
+    ASSERT_EQ(frames.size(), 60U);
+    const std::unique_ptr<FfmpegVideo> video = openInSoftware(path);
+    ASSERT_NE(video, nullptr);
+    for (std::size_t k = 0; k < frames.size(); ++k) {
+        ASSERT_TRUE(video->seek(frames[k].at)) << "frame " << k << ": " << video->lastError();
+        const std::optional<VideoFrame> read = video->read();
+        ASSERT_TRUE(read) << "frame " << k;
+        EXPECT_EQ(read->at, frames[k].at) << "frame " << k;
+        EXPECT_EQ(cv::norm(read->image, frames[k].image, cv::NORM_INF), 0.0) << "frame " << k;
+    }
+}
+
+TEST(FfmpegVideo, SeekLandsOnEveryFrame) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mkv");
+    ASSERT_EQ(test_support::writeNumberedClip(path, NumberedClip{}), Written::Yes);
+
+    expectEverySeekLands(path);
+}
+
+// B-frames make the file's order differ from the frames' order, and MP4 indexes by decoding time.
+TEST(FfmpegVideo, SeekLandsOnEveryFrameWithBFrames) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mp4");
+    const Written written =
+        test_support::writeNumberedClip(path, NumberedClip{.encoder = "mpeg4", .bFrames = 2});
+    if (written == Written::NoEncoder) {
+        GTEST_SKIP() << "this FFmpeg has no mpeg4 encoder";
+    }
+    ASSERT_EQ(written, Written::Yes);
+
+    expectEverySeekLands(path);
+}
+
+// AVI counts time in frames, one tick each: half a frame must not round up to a whole one, or a seek would
+// take the frame before the one asked for.
+TEST(FfmpegVideo, SeekLandsOnEveryFrameOfAnAvi) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.avi");
+    const Written written = test_support::writeNumberedClip(path, NumberedClip{.encoder = "mpeg4"});
+    if (written == Written::NoEncoder) {
+        GTEST_SKIP() << "this FFmpeg has no mpeg4 encoder";
+    }
+    ASSERT_EQ(written, Written::Yes);
+
+    expectEverySeekLands(path);
+}
+
+TEST(FfmpegVideo, SeekBackwardsAndForwards) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mkv");
+    ASSERT_EQ(test_support::writeNumberedClip(path, NumberedClip{}), Written::Yes);
+    const std::vector<VideoFrame> frames = readAllFrames(path);
+    ASSERT_EQ(frames.size(), 60U);
+    const std::unique_ptr<FfmpegVideo> video = openInSoftware(path);
+    ASSERT_NE(video, nullptr);
+
+    for (const std::size_t k : {50U, 5U, 33U}) {
+        ASSERT_TRUE(video->seek(frames[k].at)) << video->lastError();
+        const std::optional<VideoFrame> read = video->read();
+        ASSERT_TRUE(read);
+        EXPECT_EQ(read->at, frames[k].at) << "frame " << k;
+        // and reading on gives the next one
+        const std::optional<VideoFrame> after = video->read();
+        ASSERT_TRUE(after);
+        EXPECT_EQ(after->at, frames[k + 1].at) << "after frame " << k;
+    }
+}
+
+TEST(FfmpegVideo, SeekPastTheEndEnds) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mkv");
+    ASSERT_EQ(test_support::writeNumberedClip(path, NumberedClip{}), Written::Yes);
+    const std::unique_ptr<FfmpegVideo> video = openInSoftware(path);
+    ASSERT_NE(video, nullptr);
+
+    EXPECT_TRUE(video->seek(std::chrono::seconds(10))) << video->lastError();
+
+    EXPECT_FALSE(video->read());
+    EXPECT_TRUE(video->lastError().empty()) << video->lastError();
+}
+
+// A newer wish abandons the seek at once, without an error.
+TEST(FfmpegVideo, AbandonedSeekReturnsAtOnce) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mkv");
+    ASSERT_EQ(test_support::writeNumberedClip(path, NumberedClip{}), Written::Yes);
+    const std::unique_ptr<FfmpegVideo> video = openInSoftware(path);
+    ASSERT_NE(video, nullptr);
+
+    EXPECT_FALSE(video->seek(std::chrono::milliseconds(1500), [] { return true; }));
+    EXPECT_TRUE(video->lastError().empty()) << video->lastError();
+}
+
+#if defined(__APPLE__)
+// As HardwareDecodingOnMacOS: HEVC when this Mac can encode it, through VideoToolbox when it decodes it.
+TEST(FfmpegVideo, HardwareSeekOnMacOS) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mov");
+    if (test_support::writeNumberedClip(path, NumberedClip{.encoder = "hevc_videotoolbox",
+                                                           .format = AV_PIX_FMT_P010LE,
+                                                           .size = {256, 144}}) != Written::Yes) {
+        GTEST_SKIP() << "this Mac cannot encode HEVC";
+    }
+    const std::vector<VideoFrame> frames = readAllFrames(path, true);
+    ASSERT_GE(frames.size(), 21U);
+    std::string error;
+    const std::unique_ptr<FfmpegVideo> video = FfmpegVideo::open(path, true, error);
+    ASSERT_NE(video, nullptr) << error;
+    if (video->info().decoder != "VideoToolbox") {
+        GTEST_SKIP() << "VideoToolbox does not decode it here";
+    }
+
+    ASSERT_TRUE(video->seek(frames[20].at)) << video->lastError();
+
+    const std::optional<VideoFrame> read = video->read();
+    ASSERT_TRUE(read);
+    EXPECT_EQ(read->at, frames[20].at);
+}
+#endif
+
+// Measured at 4K on Apple silicon, FFmpeg's own H.264 decoder reads and seeks several times faster than
+// VideoToolbox through FFmpeg; HEVC the other way round. D3D11VA has not been measured, so Windows keeps it.
+TEST(FfmpegVideo, H264PrefersSoftwareOnAMac) {
+#if defined(__APPLE__)
+    EXPECT_TRUE(frame_io::codecPrefersSoftware("h264"));
+#else
+    EXPECT_FALSE(frame_io::codecPrefersSoftware("h264"));
+#endif
+    EXPECT_FALSE(frame_io::codecPrefersSoftware("hevc"));
+    EXPECT_FALSE(frame_io::codecPrefersSoftware("prores"));
+}
+
+#if defined(__APPLE__)
+TEST(FfmpegVideo, H264DecodesInSoftware) {
+    const ScratchFolder folder;
+    const std::string path = folder.file("numbered.mp4");
+    // Large enough for VideoToolbox, which would otherwise leave a tiny clip to software anyway.
+    if (test_support::writeNumberedClip(
+            path, NumberedClip{.encoder = "libx264", .frames = 12, .size = {320, 240}}) != Written::Yes) {
+        GTEST_SKIP() << "this FFmpeg has no H.264 encoder";
+    }
+    std::string error;
+
+    const std::unique_ptr<FfmpegVideo> video = FfmpegVideo::open(path, true, error);
+
+    ASSERT_NE(video, nullptr) << error;
+    EXPECT_EQ(video->info().decoder, "software");
+}
+#endif
+
+} // namespace
