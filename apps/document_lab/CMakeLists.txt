@@ -27,8 +27,12 @@ add_library(document_lab_ui STATIC
     lab_settings.h
     main_window.cpp
     main_window.h
+    scan_banner.cpp
+    scan_banner.h
     scan_style.cpp
-    scan_style.h)
+    scan_style.h
+    scan_words.cpp
+    scan_words.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(document_lab_ui
     PUBLIC
