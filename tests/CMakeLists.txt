@@ -103,6 +103,7 @@ target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt
 id_vision_lab_add_test_executable(doc_vision_tests
     SOURCES
         doc_vision/onnx_model_test.cpp
+        doc_vision/page_geometry_test.cpp
     LIBRARIES
         doc_vision::doc_vision
         opencv_imgproc
