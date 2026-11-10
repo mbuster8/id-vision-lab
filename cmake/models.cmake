@@ -33,6 +33,19 @@ function(_id_vision_lab_matches file sha256 result)
     endif()
 endfunction()
 
+# Copies build/models into a program after each build, where it looks for its models: the bundle's Resources/models
+# on macOS, a models folder beside the program elsewhere (apps/document_lab/model_folder.cpp).
+function(id_vision_lab_copy_models target)
+    if(APPLE)
+        set(destination "$<TARGET_BUNDLE_CONTENT_DIR:${target}>/Resources/models")
+    else()
+        set(destination "$<TARGET_FILE_DIR:${target}>/models")
+    endif()
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_BINARY_DIR}/models" "${destination}"
+        VERBATIM)
+endfunction()
+
 # id_vision_lab_resolve_model(<out-var> FILE <name> URL <url> SHA256 <hex> [MODEL_DIR <dir>] [CACHE_DIR <dir>])
 # Sets <out-var> to a copy of FILE whose SHA-256 is SHA256, or stops with an error saying where it looked.
 # MODEL_DIR defaults to ID_VISION_LAB_MODEL_DIR, CACHE_DIR to id_vision_lab_model_cache_dir().

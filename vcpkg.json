@@ -17,6 +17,7 @@
     "zeromq",
     "cppzmq",
     "nlohmann-json",
+    "onnxruntime",
     "gtest",
     {
       "name": "pkgconf",

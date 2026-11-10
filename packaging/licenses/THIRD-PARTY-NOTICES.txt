@@ -32,6 +32,29 @@ libtiff                                    libtiff                      vcpkg\ti
 zlib                                       zlib                         vcpkg\zlib\copyright
 liblzma (XZ Utils)                         0BSD                         vcpkg\liblzma\copyright
 
+ONNX Runtime, the Document Lab's model runtime, built by vcpkg (never Microsoft's prebuilt packages), with the
+libraries vcpkg builds it from, linked into onnxruntime.dll or shipped beside it:
+ONNX Runtime                               MIT                          vcpkg\onnxruntime\copyright
+Protocol Buffers (with utf8_range)         BSD-3-Clause                 vcpkg\protobuf\copyright
+Abseil                                     Apache License 2.0           vcpkg\abseil\copyright
+ONNX                                       Apache License 2.0           vcpkg\onnx\copyright
+RE2                                        BSD-3-Clause                 vcpkg\re2\copyright
+FlatBuffers                                Apache License 2.0           vcpkg\flatbuffers\copyright
+Eigen (compiled in)                        Mozilla Public License 2.0   vcpkg\eigen3\copyright
+date (compiled in)                         MIT                          vcpkg\date\copyright
+cpuinfo                                    BSD-2-Clause                 vcpkg\cpuinfo\copyright
+WIL (compiled in)                          MIT                          vcpkg\wil\copyright
+DLPack (compiled in)                       Apache License 2.0           vcpkg\dlpack\copyright
+optional-lite (compiled in)                Boost Software License 1.0   vcpkg\optional-lite\copyright
+GSL (compiled in)                          MIT                          vcpkg\ms-gsl\copyright
+SafeInt (compiled in)                      MIT                          vcpkg\safeint\copyright
+Boost.Config, Boost.Mp11 (compiled in)     Boost Software License 1.0   vcpkg\boost-config, vcpkg\boost-mp11
+A port whose copyright file is missing from this folder was not part of the build.
+
+DocAligner LC100 weights (models\lcnet100_h_e_bifpn_256_fp32.onnx), the Document Lab's page detector, unmodified
+from DocsaidLab's release 1.1.1
+    Licence: Apache License 2.0 (Apache-2.0.txt). DocsaidLab's notice: DocAligner-NOTICE.txt.
+
 The libraries come from vcpkg (https://github.com/microsoft/vcpkg); the exact versions are pinned by the
 builtin-baseline in vcpkg.json of this project's source, https://github.com/mbuster8/id-vision-lab.
 

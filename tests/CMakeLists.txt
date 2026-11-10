@@ -18,6 +18,10 @@ endfunction()
 add_test(NAME model_lookup
     COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/model_lookup
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/model_lookup_test.cmake")
+# Windows and Linux build ONNX Runtime from the same vcpkg baseline.
+add_test(NAME vcpkg_baseline
+    COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vcpkg_baseline_test.cmake")
 
 id_vision_lab_add_test_executable(visual_debug_tests
     SOURCES
@@ -110,6 +114,7 @@ target_compile_definitions(doc_vision_tests PRIVATE
     ID_VISION_LAB_ONNXRUNTIME_VERSION="${onnxruntime_VERSION}")
 target_include_directories(doc_vision_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
 id_vision_lab_use_utf8_code_page(doc_vision_tests)
+id_vision_lab_copy_runtime_dlls(doc_vision_tests)
 
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
@@ -264,5 +269,14 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
         # its own so that it also runs from the installed Windows package.
         add_test(NAME media_smoke COMMAND media_smoke)
         set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
+        # The page model inside the Document Lab, where it looks for it: the bundle's Resources on macOS, a models
+        # folder beside the program elsewhere.
+        if(APPLE)
+            set(lab_models "$<TARGET_BUNDLE_CONTENT_DIR:document_lab>/Resources/models")
+        else()
+            set(lab_models "$<TARGET_FILE_DIR:document_lab>/models")
+        endif()
+        add_test(NAME document_lab_ships_its_model
+            COMMAND "${CMAKE_COMMAND}" -E sha256sum "${lab_models}/lcnet100_h_e_bifpn_256_fp32.onnx")
     endif()
 endif()

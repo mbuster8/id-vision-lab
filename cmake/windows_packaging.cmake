@@ -86,11 +86,24 @@ install(FILES
     "${PROJECT_SOURCE_DIR}/packaging/licenses/THIRD-PARTY-NOTICES.txt"
     "${PROJECT_SOURCE_DIR}/packaging/licenses/LGPL-3.0.txt"
     "${PROJECT_SOURCE_DIR}/packaging/licenses/GPL-3.0.txt"
+    "${PROJECT_SOURCE_DIR}/packaging/licenses/Apache-2.0.txt"
+    "${PROJECT_SOURCE_DIR}/packaging/licenses/DocAligner-NOTICE.txt"
     DESTINATION licenses)
 foreach(port IN ITEMS opencv4 ffmpeg zeromq cppzmq nlohmann-json libjpeg-turbo libpng libwebp tiff zlib liblzma)
     install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${port}/copyright"
         DESTINATION licenses/vcpkg/${port})
 endforeach()
+# ONNX Runtime and the ports vcpkg builds it from (the list the Legion's build made); a port this baseline does not
+# build is skipped.
+foreach(port IN ITEMS onnxruntime protobuf abseil onnx re2 flatbuffers eigen3 utf8-range date cpuinfo wil dlpack
+                      optional-lite ms-gsl safeint boost-config boost-mp11)
+    set(copyright "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${port}/copyright")
+    if(EXISTS "${copyright}")
+        install(FILES "${copyright}" DESTINATION licenses/vcpkg/${port})
+    endif()
+endforeach()
+# The page model, next to the programs as the build tree has it (apps/document_lab/model_folder.cpp looks there).
+install(DIRECTORY "${CMAKE_BINARY_DIR}/models/" DESTINATION ${CMAKE_INSTALL_BINDIR}/models)
 
 set(CPACK_PACKAGE_NAME "ID Vision Lab")
 set(CPACK_PACKAGE_VENDOR "Matej Suster")

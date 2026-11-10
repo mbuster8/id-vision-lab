@@ -4,6 +4,9 @@
 # Python sender's local environment, so the host's own builds are never touched or reused.
 set -euo pipefail
 
+# ONNX Runtime from the image (docker/ubuntu-24.04.Dockerfile), found through onnxruntime_ROOT alone.
+export onnxruntime_ROOT="$(cat /opt/onnxruntime/root)"
+
 mkdir -p /work
 tar --exclude=./build --exclude=./.git --exclude=./python/.venv -C /src -cf - . | tar -C /work -xf -
 cd /work

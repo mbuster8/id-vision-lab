@@ -28,7 +28,14 @@ jobs:
           persist-credentials: false
 
       - name: Install dependencies
-        run: brew install ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest
+        run: brew install ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest onnxruntime
+
+      # The page model the configure resolves (cmake/models.cmake): from this cache, else from its release.
+      - name: Cache the models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/id-vision-lab/models
+          key: models-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure, build and test (debug)
         run: |
@@ -52,13 +59,47 @@ jobs:
   ubuntu:
     name: Ubuntu 24.04 (OpenCV 4.6, Qt 6.4)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The first run, with an empty cache, builds ONNX Runtime from source.
+    timeout-minutes: 200
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - uses: ./.github/actions/install-ubuntu-deps
+
+      # ONNX Runtime from vcpkg at the repository's baseline (scripts/install-onnxruntime.sh): Ubuntu has no
+      # package of it. Built once, then restored; saved straight after it is built, so a later failure keeps it.
+      # In the runner's home: /opt belongs to root.
+      - name: Restore ONNX Runtime
+        id: ort-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/onnxruntime/installed
+          key: onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/onnxruntime-vcpkg/**', 'scripts/install-onnxruntime.sh') }}
+
+      - name: Build ONNX Runtime
+        id: ort-build
+        if: steps.ort-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 150
+        run: scripts/install-onnxruntime.sh "$HOME/onnxruntime"
+
+      - name: Save ONNX Runtime
+        if: always() && steps.ort-build.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/onnxruntime/installed
+          key: onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/onnxruntime-vcpkg/**', 'scripts/install-onnxruntime.sh') }}
+
+      # Found through onnxruntime_ROOT alone, so Ubuntu's own packages stay what the rest of the build uses.
+      - name: Point CMake at ONNX Runtime
+        run: echo "onnxruntime_ROOT=$(ls -d "$HOME"/onnxruntime/installed/*-linux-dynamic-release)" >> "$GITHUB_ENV"
+
+      - name: Cache the models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/id-vision-lab/models
+          key: models-${{ hashFiles('CMakeLists.txt') }}
 
       # Ubuntu's own numpy, pyzmq, pytest and black, installed with the other packages; the versions are printed
       # because they are the ones the sender is tested with.
@@ -97,8 +138,8 @@ jobs:
   windows:
     name: Windows (MSVC, vcpkg, Qt 6.12.0)
     runs-on: windows-2025
-    # The first run, with empty caches, builds OpenCV and FFmpeg from source.
-    timeout-minutes: 120
+    # The first run, with empty caches, builds OpenCV, FFmpeg and ONNX Runtime from source.
+    timeout-minutes: 300
     env:
       QT_VERSION: 6.12.0
       QT_ARCH: win64_msvc2022_64
@@ -196,6 +237,39 @@ jobs:
         shell: pwsh
         run: '"QT_ROOT_DIR=C:\Qt\$env:QT_VERSION\msvc2022_64" >> $env:GITHUB_ENV'
 
+      # The page model the configure resolves (cmake/models.cmake): from this cache, else from its release.
+      - name: Cache the models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\AppData\Local\id-vision-lab\models
+          key: models-${{ hashFiles('CMakeLists.txt') }}
+
+      # vcpkg's ports built in a step of their own, before the configure asks for them, with a time limit of its
+      # own: a cold cache builds ONNX Runtime and what it needs for the first time. What it built is saved at once,
+      # so a later failure or a timeout of the job keeps it, and the configure restores it from the file cache.
+      - name: Build vcpkg's ports
+        id: vcpkg-build
+        timeout-minutes: 200
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+          for ($attempt = 1; ; $attempt++) {
+            & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows --x-install-root "$env:RUNNER_TEMP\vcpkg-installed"
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { exit $LASTEXITCODE }
+            Write-Host "vcpkg attempt $attempt failed; trying again in $(120 * $attempt) seconds."
+            Start-Sleep -Seconds (120 * $attempt)
+          }
+
+      - name: Save vcpkg's binary cache after the ports
+        if: always() && steps.vcpkg-build.outcome != 'skipped'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-ports
+
       # One step: the Visual Studio developer environment does not survive between steps.
       - name: Configure, build and test (debug)
         shell: pwsh
@@ -242,6 +316,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP\lab\bin\media_smoke.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The page model and ONNX Runtime ship beside the programs (cmake/windows_packaging.cmake).
+          foreach ($file in "bin\models\lcnet100_h_e_bifpn_256_fp32.onnx", "bin\onnxruntime.dll", "licenses\DocAligner-NOTICE.txt") {
+            if (-not (Test-Path "$env:RUNNER_TEMP\lab\$file")) { Write-Error "The package lacks $file"; exit 1 }
+          }
           Get-ChildItem "$env:RUNNER_TEMP\lab\bin" -Name
           Get-ChildItem "$env:RUNNER_TEMP\lab\bin\av*.dll", "$env:RUNNER_TEMP\lab\bin\sw*.dll" |
             ForEach-Object { "$($_.Name): $($_.VersionInfo.ProductVersion)" }

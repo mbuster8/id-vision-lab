@@ -1,0 +1,18 @@
+DocAligner LC100 weights (lcnet100_h_e_bifpn_256_fp32.onnx)
+
+Shipped unmodified with the Document Lab, as its page detector. From DocsaidLab's DocAligner release 1.1.1:
+https://github.com/DocsaidLab/DocAligner/releases/download/1.1.1/lcnet100_h_e_bifpn_256_fp32.onnx
+SHA-256 f4117b786e3a18470f3865c93f3c2bd69d9b998edd60f385574a5c665e79594e
+
+Licensed under the Apache License, Version 2.0 (Apache-2.0.txt beside this file). The relevant part of DocsaidLab's
+notice (https://docsaid.org/licenses/NOTICE.txt, read 11 November 2026), verbatim:
+
+    Unmodified public ONNX weights: DocsaidLab DocAligner and MRZScanner.
+    Licensed under Apache License 2.0 by the project owner.
+    Full licenses: /licenses/docaligner-Apache-2.0.txt and
+    /licenses/mrzscanner-Apache-2.0.txt
+    Pinned revisions, source URLs and SHA-256: /api/v1/catalog
+    Training datasets are not included and retain their original providers' terms.
+
+The training data DocsaidLab names include MIDV-2020 (CC BY-SA 2.5; its faces were made with Generated Photos,
+https://generated.photos/). None of that data is shipped here.

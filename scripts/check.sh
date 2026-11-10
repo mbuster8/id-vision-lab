@@ -91,8 +91,15 @@ linux_in_docker() {
         echo "Docker is not running. Start Docker Desktop, or run scripts/check.sh --quick."
         return 1
     fi
+    # The model cache as cmake/models.cmake finds it, mounted read-only when it holds the page model, so the
+    # container needs no download; otherwise the container fetches the model itself.
+    local models="${XDG_CACHE_HOME:-$HOME/.cache}/id-vision-lab/models"
+    local model_args=()
+    if [[ -f "$models/lcnet100_h_e_bifpn_256_fp32.onnx" ]]; then
+        model_args=(--volume "$models":/models:ro --env ID_VISION_LAB_MODEL_DIR=/models)
+    fi
     docker build --tag "$kDockerImage" --file docker/ubuntu-24.04.Dockerfile scripts &&
-        docker run --rm --volume "$repo":/src:ro "$kDockerImage"
+        docker run --rm --volume "$repo":/src:ro ${model_args[@]+"${model_args[@]}"} "$kDockerImage"
 }
 
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then

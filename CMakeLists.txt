@@ -22,6 +22,7 @@ include(cmake/coverage.cmake)
 include(cmake/utf8_code_page.cmake)
 include(cmake/ffmpeg_dlls.cmake)
 include(cmake/models.cmake)
+include(cmake/runtime_dlls.cmake)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
 find_package(cppzmq REQUIRED)
