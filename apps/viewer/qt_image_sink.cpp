@@ -122,11 +122,15 @@ void QtImageSink::closeLiveChannel(const std::string& name) {
     std::erase_if(m_liveChannels, [&name](const LiveChannel& open) { return open.name == name; });
 }
 
+// Only an open channel can end, so the names waiting are at most kMaxLiveChannels, whatever a sender sends.
 void QtImageSink::onLiveEnded(std::string_view name) {
     bool tell = false;
     {
         const std::lock_guard lock(m_mutex);
-        std::erase_if(m_liveChannels, [name](const LiveChannel& open) { return open.name == name; });
+        if (std::erase_if(m_liveChannels, [name](const LiveChannel& open) { return open.name == name; }) ==
+            0) {
+            return;
+        }
         std::vector<std::string>& ended = m_liveNews.ended;
         if (std::find(ended.begin(), ended.end(), name) == ended.end()) {
             ended.emplace_back(name);

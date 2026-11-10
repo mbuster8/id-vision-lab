@@ -241,6 +241,20 @@ TEST(QtImageSink, EndTwiceIsOneName) {
     EXPECT_EQ(sink.takeLiveFrames().ended, std::vector<std::string>{"camera"});
 }
 
+// Only an open channel can end: ends for names never sent leave nothing to take and wake nobody, so a sender
+// cannot grow the list with them.
+TEST(QtImageSink, EndOfAChannelNeverOpenIsNothing) {
+    QtImageSink sink;
+    QSignalSpy news(&sink, &QtImageSink::liveFramesWaiting);
+
+    for (int i = 0; i < 100; ++i) {
+        sink.onLiveEnded("never sent " + std::to_string(i));
+    }
+
+    EXPECT_TRUE(sink.takeLiveFrames().ended.empty());
+    EXPECT_EQ(news.count(), 0);
+}
+
 // Header-only Mats over a small buffer: the sink counts bytes from the header and never reads the pixels.
 TEST(QtImageSink, RefusesBeyondTheByteBudget) {
     unsigned char buffer[16] = {};
