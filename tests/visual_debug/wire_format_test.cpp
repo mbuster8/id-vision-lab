@@ -567,9 +567,10 @@ TEST(WireFormat, DecodeControlReasons) {
               "unsupported message type");
     EXPECT_EQ(controlReason(R"({"protocol":"visual_debug","version":2,"type":"end"})"),
               "name is missing or not a string");
-    EXPECT_EQ(controlReason(R"({"protocol":"visual_debug","version":2,"type":"end","name":")" +
-                            std::string(1025, 'n') + "\"}"),
-              "name too long");
+    // Built outside EXPECT_EQ: MSVC 19.44's preprocessor misreads a raw string ending in a quote inside a
+    // macro argument.
+    const std::string endPrefix = R"({"protocol":"visual_debug","version":2,"type":"end","name":")";
+    EXPECT_EQ(controlReason(endPrefix + std::string(1025, 'n') + "\"}"), "name too long");
     EXPECT_EQ(controlReason("[]"), "header is not a JSON object");
     EXPECT_EQ(controlReason("{"), "header is not valid JSON");
     EXPECT_EQ(controlReason(std::string(visual_debug::kMaxHeaderBytes + 1, ' ')), "header too large");
