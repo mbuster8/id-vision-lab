@@ -32,6 +32,8 @@ FittedLine fitBigLine(QFont font, const QString& text, int availableWidth);
 // big line and a small one. It carries its 28 px gap from the canvas's top as transparent margin, and keeps
 // 16 px clear of each side. Transparent to the mouse, so zoom, pan and the pixel readout work beneath.
 class ScanBanner : public QWidget {
+    Q_OBJECT
+
 public:
     explicit ScanBanner(QWidget* parent = nullptr);
 
@@ -64,6 +66,8 @@ private:
 // wrapping onto more rows when narrow. It carries its 22 px gap from the canvas's bottom as transparent
 // margin. Transparent to the mouse.
 class GateChips : public QWidget {
+    Q_OBJECT
+
 public:
     explicit GateChips(QWidget* parent = nullptr);
 

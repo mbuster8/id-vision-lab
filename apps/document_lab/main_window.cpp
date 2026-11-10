@@ -6,14 +6,17 @@
 #include "camera_formats.h"
 #include "image_tags_conversion.h"
 #include "live_drawing.h"
+#include "model_folder.h"
 #include "outline_icons.h"
 #include "private_files.h"
 #include "scan_style.h"
 #include "shades.h"
 
+#include <doc_vision/guidance.h>
 #include <frame_io/capture.h>
 #include <frame_io/image_folder.h>
 #include <viewer_core/image_tags.h>
+#include <viewer_core/overlay.h>
 #include <visual_debug/client.h>
 #include <visual_debug/endpoint.h>
 
@@ -57,6 +60,8 @@
 #include <limits>
 #include <string_view>
 #include <utility>
+#include <variant>
+#include <vector>
 
 namespace document_lab {
 
@@ -65,7 +70,7 @@ namespace {
 const QString kFrameEntry = QStringLiteral("Frame");
 
 constexpr std::array kProcessors{lab_core::ProcessorKind::None, lab_core::ProcessorKind::Edges,
-                                 lab_core::ProcessorKind::Outline};
+                                 lab_core::ProcessorKind::Outline, lab_core::ProcessorKind::Document};
 
 constexpr int kResultsMinimumWidth = 120;
 // Where a results row keeps its value's tone (lab_core::Finding::Tone), to colour it again for another
@@ -94,6 +99,33 @@ QString hostOf(const QString& endpoint) {
     }
     const qsizetype colon = rest.lastIndexOf(u':');
     return colon > 0 ? rest.left(colon) : rest;
+}
+
+viewer_core::Colour coreColour(const QColor& colour) {
+    return {static_cast<std::uint8_t>(colour.red()), static_cast<std::uint8_t>(colour.green()),
+            static_cast<std::uint8_t>(colour.blue())};
+}
+
+// The Document processor's outline as the canvas's guide (spec §3.5): a thick line on a halo, in the shown
+// hint's colour, with no label. toImageTags keeps one overlay per input and in order
+// (image_tags_conversion.cpp), so the processor's i-th overlay follows the frame's own. The viewer and
+// captures keep the plain "Document" polygon.
+void markGuide(viewer_core::ImageTags& tags, const lab_core::LabResult& result) {
+    const std::optional<lab_core::Guidance>& guidance = result.processed.guidance;
+    if (!guidance || !guidance->outlineOverlay ||
+        *guidance->outlineOverlay >= result.processed.overlays.size()) {
+        return;
+    }
+    std::vector<viewer_core::Overlay> overlays = tags.overlayList();
+    const std::size_t index = result.frame.tags.overlays.size() + *guidance->outlineOverlay;
+    auto* polygon = index < overlays.size() ? std::get_if<viewer_core::Polygon>(&overlays[index]) : nullptr;
+    if (polygon == nullptr) {
+        return;
+    }
+    polygon->style = viewer_core::Polygon::Style::Guide;
+    polygon->label.clear();
+    polygon->colour = coreColour(guidance->shownHint == doc_vision::Hint::Good ? kGuideGood : kGuideBad);
+    tags.overlays = viewer_core::makeOverlays(std::move(overlays));
 }
 
 QString timeStamp() { return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH.mm.ss")); }
@@ -186,8 +218,10 @@ LabWindow::LabWindow(LabDependencies dependencies, QWidget* parent)
         m_dependencies.clock = [] { return Clock::now(); };
     }
     if (!m_dependencies.makeProcessor) {
-        m_dependencies.makeProcessor = [](lab_core::ProcessorKind kind) {
-            return lab_core::makeProcessor(kind);
+        const QString folder =
+            m_dependencies.modelFolder.isEmpty() ? defaultModelFolder() : m_dependencies.modelFolder;
+        m_dependencies.makeProcessor = [model = toPath(folder)](lab_core::ProcessorKind kind) {
+            return lab_core::makeProcessor(kind, lab_core::ProcessorSettings{.modelFolder = model});
         };
     }
     if (!m_dependencies.conversion) {
@@ -455,6 +489,16 @@ void LabWindow::buildUi() {
     m_placeholder->setAutoFillBackground(true); // covers the picture of an earlier frame
     m_placeholder->hide();
     canvasLayout->addWidget(m_placeholder, 0, 0);
+    // The Document processor's banner and chips, in the same cell after the placeholder and raised, so it
+    // never covers them; each carries its gap from the canvas's edge as transparent margin.
+    m_banner = new ScanBanner(canvasArea);
+    m_banner->setObjectName(QStringLiteral("scanBanner"));
+    canvasLayout->addWidget(m_banner, 0, 0, Qt::AlignTop | Qt::AlignHCenter);
+    m_chips = new GateChips(canvasArea);
+    m_chips->setObjectName(QStringLiteral("gateChips"));
+    canvasLayout->addWidget(m_chips, 0, 0, Qt::AlignBottom | Qt::AlignHCenter);
+    m_banner->raise();
+    m_chips->raise();
     // Findings as rows of a name and a value; the panel keeps its width as the window grows, the canvas takes
     // the rest.
     m_results = new QTreeWidget(splitter);
@@ -574,11 +618,14 @@ void LabWindow::startReplay(lab_core::ReplayOpener open) {
 void LabWindow::beginRun() {
     m_running = true;
     m_message.clear();
+    m_windowState.reset();
     // Space now plays and pauses this run, not the button that started it.
     m_canvas->setFocus(Qt::OtherFocusReason);
     m_minimumGeneration = m_engine->status().generation + 1;
+    m_scanFrom = m_resultSequence + 1;
     m_fitNext = true;
     updateStartStop();
+    updateScan(); // the first hint from the moment the run starts, before its first result
 }
 
 void LabWindow::stop() {
@@ -605,6 +652,7 @@ void LabWindow::stop() {
     m_results->clear();
     m_fitNext = true;
     updateStartStop();
+    updateScan();
     refreshStatus();
 }
 
@@ -642,6 +690,7 @@ void LabWindow::fillCameras() {
     }
     fillFormats();
     updateStartStop();
+    updateScan();
 }
 
 // The chosen camera's formats, once each, with the one chosen last time for it, else its default.
@@ -718,6 +767,8 @@ void LabWindow::startCamera() {
 #else
         window->m_message = tr("Camera access was refused: allow it in the system's privacy settings.");
 #endif
+        window->m_windowState = WindowState::AccessOff;
+        window->updateScan();
         window->refreshStatus();
     });
 }
@@ -768,6 +819,9 @@ void LabWindow::cameraFailed(const QString& reason) {
     }
     stop();
     m_message = reason;
+    m_windowState = WindowState::CameraStopped;
+    m_windowStateDetail = reason;
+    updateScan();
     refreshStatus();
 }
 
@@ -812,6 +866,7 @@ void LabWindow::takeResult() {
     showResults(*m_current);
     display(m_fitNext ? ImageView::KeepView::No : ImageView::KeepView::IfSameSize);
     m_fitNext = false;
+    updateScan();
     // The frame's number, the slider and the time follow each result, not only the refresh twice a second.
     refreshStatus();
 }
@@ -899,7 +954,10 @@ void LabWindow::display(ImageView::KeepView keep) {
         return;
     }
     m_placeholder->hide();
-    const viewer_core::ImageTags tags = toImageTags(description);
+    viewer_core::ImageTags tags = toImageTags(description);
+    if (currentShow() == kFrameEntry.toStdString()) {
+        markGuide(tags, *m_current);
+    }
     // While a fit converts, the zoom on screen is about to go: a picture cut for it would show only that part
     // of the fitted view.
     if (m_fitPending) {
@@ -936,13 +994,16 @@ void LabWindow::applyPicture(LiveResult result) {
     // The result this picture is of is now the one on screen: the newest, or the one before it.
     if (result.job.frameNumber == m_resultSequence && m_current) {
         m_onScreen = m_current;
+        m_onScreenSequence = m_resultSequence;
     } else if (result.job.frameNumber == m_previousSequence && m_previous) {
         m_onScreen = m_previous;
+        m_onScreenSequence = m_previousSequence;
     }
     const ImageView::KeepView keep = result.job.keep;
     const cv::Rect& area = result.job.area;
     m_canvas->setImage(result.picture, keep, result.imageSize, result.job.tags.overlays,
                        QRect(area.x, area.y, area.width, area.height));
+    updateScan(); // the banner and chips change with the picture and its outline
     // The view fits only now: if the fitted view draws another area or size than the job assumed (the window
     // was resized meanwhile), draw it again for that.
     if (keep == ImageView::KeepView::No) {
@@ -1051,6 +1112,15 @@ void LabWindow::refreshStatus() {
                      .arg(*status.busyFrame + 1)
                      .arg(std::chrono::duration_cast<std::chrono::seconds>(at - *status.busySince).count());
     }
+    if (documentChosen() && m_running) {
+        const lab_core::Guidance* guidance = drawnGuidance();
+        if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
+            parts
+                << tr("State: %1").arg(stateWord(guidance ? guidance->shownHint : doc_vision::Hint::NoPage));
+        } else {
+            parts << QString::fromStdString(guidance->reason);
+        }
+    }
     if (!status.message.empty()) {
         parts << QString::fromStdString(status.message);
     }
@@ -1067,7 +1137,63 @@ void LabWindow::chooseProcessor(int index) {
     const auto kind = static_cast<lab_core::ProcessorKind>(m_processorCombo->itemData(index).toInt());
     m_settings.setProcessor(qtString(lab_core::nameOf(kind)));
     m_engine->setProcessor(m_dependencies.makeProcessor(kind));
+    // The guidance on screen is the earlier processor's: the new one's first hint shows until it has a
+    // result.
+    m_scanFrom = m_resultSequence + 1;
     forgetShowEntries();
+    updateScan();
+}
+
+bool LabWindow::documentChosen() const {
+    return static_cast<lab_core::ProcessorKind>(m_processorCombo->currentData().toInt()) ==
+           lab_core::ProcessorKind::Document;
+}
+
+const lab_core::Guidance* LabWindow::drawnGuidance() const {
+    if (!m_running) {
+        return nullptr;
+    }
+    // While the placeholder shows, no picture keeps the banner in step with anything: the newest result does.
+    const bool placeholder = !m_placeholder->isHidden();
+    const std::optional<lab_core::LabResult>& result = placeholder ? m_current : m_onScreen;
+    const std::uint64_t sequence = placeholder ? m_resultSequence : m_onScreenSequence;
+    if (!result || sequence < m_scanFrom || !result->processed.guidance) {
+        return nullptr;
+    }
+    return &*result->processed.guidance;
+}
+
+void LabWindow::updateScan() {
+    if (!documentChosen()) {
+        m_banner->setContent(std::nullopt);
+        m_chips->setStates({});
+        m_canvas->setEmptyText(
+            m_cameras.empty()
+                ? tr("No camera found. Connect one, or open a video, an image or a folder of images.")
+                : tr("Start a camera, or open a video, an image or a folder of images."));
+        return;
+    }
+    m_canvas->setEmptyText(QString()); // the banner is the one message
+    std::optional<BannerContent> content;
+    doc_vision::ChipStates chips{};
+    if (const lab_core::Guidance* guidance = drawnGuidance()) {
+        if (guidance->unavailable != lab_core::Guidance::Unavailable::None) {
+            content = bannerFor(guidance->unavailable == lab_core::Guidance::Unavailable::Runtime
+                                    ? WindowState::RuntimeMissing
+                                    : WindowState::ModelMissing);
+        } else {
+            content = bannerFor(guidance->shownHint);
+            chips = guidance->chips;
+        }
+    } else if (m_running) {
+        content = bannerFor(doc_vision::Hint::NoPage);
+    } else if (m_windowState) {
+        content = bannerFor(*m_windowState, m_windowStateDetail);
+    } else {
+        content = bannerFor(m_cameras.empty() ? WindowState::NoCamera : WindowState::Idle);
+    }
+    m_banner->setContent(std::move(content));
+    m_chips->setStates(chips);
 }
 
 // Show lists the pictures of the processor chosen: the earlier one's go, the frame shows until the choice
@@ -1095,6 +1221,7 @@ void LabWindow::chooseShow(int index) {
     m_settings.setShow(m_wantedShow);
     viewChanged();
     display(ImageView::KeepView::IfSameSize);
+    updateScan(); // the placeholder may have come or gone
 }
 
 std::string LabWindow::currentShow() const { return m_showCombo->currentText().toStdString(); }
@@ -1392,6 +1519,13 @@ void LabWindow::closeEvent(QCloseEvent* event) {
 
 // Space plays and pauses unless a button has the focus, which Space then presses. In the address field too:
 // an address never holds a space.
+void LabWindow::changeEvent(QEvent* event) {
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) {
+        colourResults();
+    }
+    QMainWindow::changeEvent(event);
+}
+
 bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::KeyPress && watched == m_endpoint) {
         const auto* key = static_cast<QKeyEvent*>(event);

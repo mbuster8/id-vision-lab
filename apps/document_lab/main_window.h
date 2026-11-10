@@ -5,6 +5,8 @@
 #include "image_view.h"
 #include "lab_settings.h"
 #include "live_converter.h"
+#include "scan_banner.h"
+#include "scan_words.h"
 
 #include <frame_io/recording.h>
 #include <lab_core/engine.h>
@@ -69,6 +71,7 @@ struct LabDependencies {
     std::function<QString()> chooseFolder;
     std::function<QString()> chooseLabFolder; // null: QFileDialog
     QString labFolder;                        // empty: the app's local data folder
+    QString modelFolder;                      // empty: defaultModelFolder(), beside the program
     std::function<Clock::time_point()> clock; // null: steady_clock::now
 };
 
@@ -100,6 +103,8 @@ protected:
     // Waits, with the window open and its progress shown, until the recording has written every frame.
     void closeEvent(QCloseEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    // A change of appearance colours the results' values again.
+    void changeEvent(QEvent* event) override;
 
 private:
     void buildUi();
@@ -117,6 +122,12 @@ private:
     void viewChanged();
     void refreshStatus();
     void chooseProcessor(int index);
+    bool documentChosen() const;
+    // The guidance of the result the canvas shows (the newest while the placeholder shows), of this run and
+    // processor; null when there is none.
+    const lab_core::Guidance* drawnGuidance() const;
+    // The banner, the chips and the canvas's empty text, from the drawn guidance or the window's state.
+    void updateScan();
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
@@ -212,6 +223,8 @@ private:
     QPushButton* m_overlaysCheck = nullptr;
     ImageView* m_canvas = nullptr;
     QLabel* m_placeholder = nullptr;
+    ScanBanner* m_banner = nullptr;
+    GateChips* m_chips = nullptr;
     QSplitter* m_splitter = nullptr;
     QTreeWidget* m_results = nullptr;
     QAction* m_resultsAction = nullptr;
@@ -220,6 +233,10 @@ private:
 
     QString m_wantedShow; // the Show entry chosen last, selected again when a frame has it
     QString m_message;    // the window's own: a refused permission, a camera gone
+    // Why nothing runs, for the Document processor's banner: a refused permission or a camera gone; cleared
+    // by the next run. No camera, or one and nothing running, the banner reads from m_cameras.
+    std::optional<WindowState> m_windowState;
+    QString m_windowStateDetail; // the camera's failure
 
     std::vector<CameraInfo> m_cameras;   // as the camera picker lists them
     std::vector<CameraFormat> m_formats; // the chosen camera's, as the format picker lists them
@@ -237,8 +254,10 @@ private:
     std::optional<lab_core::LabResult> m_previous; // the one before, whose picture may still be on screen
     std::uint64_t m_previousSequence = 0;
     std::optional<lab_core::LabResult> m_onScreen; // the result whose picture the canvas shows: Capture's
-    std::uint64_t m_resultSequence = 0;            // a number per result taken, for the converter's jobs
-    std::uint64_t m_viewCounter = 0;               // bumped by each change of what is shown
+    std::uint64_t m_onScreenSequence = 0;          // its number among the results taken
+    std::uint64_t m_scanFrom = 0; // results numbered from this on are of the processor and run chosen now
+    std::uint64_t m_resultSequence = 0; // a number per result taken, for the converter's jobs
+    std::uint64_t m_viewCounter = 0;    // bumped by each change of what is shown
     bool m_fitPending = false;
     bool m_fitNext = true; // the next result is fitted: the first, and the first after a stop or a new source
     std::uint64_t m_notDrawn = 0;
