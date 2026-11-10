@@ -23,9 +23,14 @@ struct Colour {
 inline constexpr Colour kOverlayGreen{0x78, 0xE6, 0x78};
 
 struct Polygon {
+    // Standard: a see-through fill, an edge and a label tab, as every overlay. Guide: the Document Lab's page
+    // outline, a thick line on a dark halo with no fill and no tab, which reads over any picture.
+    enum class Style { Standard, Guide };
+
     std::vector<cv::Point2d> points{};
     std::string label{};
     Colour colour = kOverlayGreen;
+    Style style = Style::Standard;
 
     bool operator==(const Polygon&) const = default;
 };
