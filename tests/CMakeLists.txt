@@ -14,6 +14,11 @@ function(id_vision_lab_add_test_executable target)
     set_tests_properties("${target} (whole program)" PROPERTIES LABELS whole TIMEOUT 120)
 endfunction()
 
+# The configure-time model lookup (cmake/models.cmake), against a fake model served from a file:// URL.
+add_test(NAME model_lookup
+    COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/model_lookup
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/model_lookup_test.cmake")
+
 id_vision_lab_add_test_executable(visual_debug_tests
     SOURCES
         visual_debug/wire_format_test.cpp
@@ -90,6 +95,21 @@ id_vision_lab_use_utf8_code_page(frame_io_tests)
 target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
                                                   ${PROJECT_SOURCE_DIR}/libs/frame_io/src)
+
+id_vision_lab_add_test_executable(doc_vision_tests
+    SOURCES
+        doc_vision/onnx_model_test.cpp
+    LIBRARIES
+        doc_vision::doc_vision
+        opencv_imgproc
+        GTest::gtest_main)
+# The model resolved at configure time, and the ONNX Runtime version built against; scratch_folder.h. With the
+# UTF-8 code page on Windows, so a model under a non-ASCII user folder opens.
+target_compile_definitions(doc_vision_tests PRIVATE
+    ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}"
+    ID_VISION_LAB_ONNXRUNTIME_VERSION="${onnxruntime_VERSION}")
+target_include_directories(doc_vision_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
+id_vision_lab_use_utf8_code_page(doc_vision_tests)
 
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
