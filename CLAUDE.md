@@ -47,7 +47,9 @@ python/.venv/bin/black --check python            # black 24.2.0, Ubuntu 24.04's,
 ```
 
 On Windows the presets are `windows-debug`, `windows-release` and `windows-asan` (MSVC, vcpkg from
-`vcpkg.json`, Qt from `$env:QT_ROOT_DIR`), run inside the VS x64 developer environment; `scripts/check.sh
+`vcpkg.json`, Qt from `$env:QT_ROOT_DIR`), run inside the VS x64 developer environment (it also provides `cmake`
+and `ninja`, and it overwrites `VCPKG_ROOT` with Visual Studio's bundled vcpkg, which is why the presets read
+`VCPKG_INSTALLATION_ROOT`); `scripts/check.sh
 --linux` from Git Bash covers the Ubuntu job, and clang-format is Qt Creator's copy. `cpack --config
 build\windows-release\CPackConfig.cmake -B build\windows-release\packages` makes the `.zip` and the `.msi`
 (WiX 3) from `cmake/windows_packaging.cmake`; licences shipped with them are in `packaging/licenses/`. Setup and commands:
