@@ -3,10 +3,12 @@
 # ORT_API_MANUAL_INIT: the API is taken only after checking that the loaded library offers it (an older
 # onnxruntime.dll ships with Windows), and MSVC's detect_mismatch requires every unit that includes them to agree.
 add_library(doc_vision STATIC
+    include/doc_vision/guidance.h
     include/doc_vision/onnx_model.h
     include/doc_vision/page_detector.h
     include/doc_vision/page_geometry.h
     include/doc_vision/quality_gates.h
+    src/guidance.cpp
     src/onnx_model.cpp
     src/page_detector.cpp
     src/page_geometry.cpp

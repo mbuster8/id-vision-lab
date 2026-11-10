@@ -48,8 +48,8 @@ struct Thresholds {
     Band dark{70.0, 75.0};         // median luma; fails under
     Band bright{215.0, 210.0};     // median luma; fails over
     double clippedBright = 0.25;   // a share at 250 or more over this is too bright too
-    double fitsWithin =
-        0.70; // a cut page whose longer side is under this would fit: "Move the page to the middle"
+    // A cut page whose longer side is under this would fit: "Move the page to the middle".
+    double fitsWithin = 0.70;
 };
 
 struct Verdicts {
