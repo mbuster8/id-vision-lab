@@ -313,14 +313,14 @@ TEST(LabWindow, FindingsInTheResultsPanel) {
     lab.pump();
 
     ASSERT_EQ(lab.results().size(), 1);
-    EXPECT_TRUE(lab.results().front().startsWith(QStringLiteral("edges: ")))
+    EXPECT_TRUE(lab.results().front().startsWith(QStringLiteral("Edges: ")))
         << lab.results().front().toStdString();
 }
 
 // Findings a test chooses, and an error when asked; it stands in for Edges.
 class ScriptedProcessor : public lab_core::FrameProcessor {
 public:
-    ScriptedProcessor(std::vector<std::string> findings, std::string error,
+    ScriptedProcessor(std::vector<lab_core::Finding> findings, std::string error,
                       std::vector<std::chrono::nanoseconds>* times)
         : m_findings(std::move(findings)), m_error(std::move(error)), m_times(times) {}
 
@@ -336,7 +336,7 @@ public:
     void reset() override {}
 
 private:
-    std::vector<std::string> m_findings;
+    std::vector<lab_core::Finding> m_findings;
     std::string m_error;
     std::vector<std::chrono::nanoseconds>* m_times;
 };
@@ -349,14 +349,15 @@ void edgesAre(LabDependencies& dependencies,
     };
 }
 
-// A finding "name: value" is a row of two; one without ": " fills the first column; an error is a row of its
-// own.
+// A finding is a row of its name and its value; one without a value fills the first column; an error is a row
+// of its own.
 TEST(LabWindow, ResultsAreNameAndValueRows) {
     Lab lab([](LabDependencies& dependencies) {
         edgesAre(dependencies, [] {
             return std::make_unique<ScriptedProcessor>(
-                std::vector<std::string>{"document: not found", "corners: 4: estimated", "plain note"}, "",
-                nullptr);
+                std::vector<lab_core::Finding>{
+                    {"Document", "not found"}, {"Corners", "4: estimated"}, {"Plain note", ""}},
+                "", nullptr);
         });
     });
     lab.choose("processorCombo", QStringLiteral("Edges"));
@@ -368,18 +369,40 @@ TEST(LabWindow, ResultsAreNameAndValueRows) {
     ASSERT_EQ(tree->columnCount(), 2);
     EXPECT_TRUE(tree->isHeaderHidden());
     ASSERT_EQ(tree->topLevelItemCount(), 3);
-    EXPECT_EQ(tree->topLevelItem(0)->text(0), QStringLiteral("document"));
+    EXPECT_EQ(tree->topLevelItem(0)->text(0), QStringLiteral("Document"));
     EXPECT_EQ(tree->topLevelItem(0)->text(1), QStringLiteral("not found"));
-    EXPECT_EQ(tree->topLevelItem(1)->text(0), QStringLiteral("corners"));
+    EXPECT_EQ(tree->topLevelItem(1)->text(0), QStringLiteral("Corners"));
     EXPECT_EQ(tree->topLevelItem(1)->text(1), QStringLiteral("4: estimated"));
-    EXPECT_EQ(tree->topLevelItem(2)->text(0), QStringLiteral("plain note"));
+    EXPECT_EQ(tree->topLevelItem(2)->text(0), QStringLiteral("Plain note"));
     EXPECT_TRUE(tree->topLevelItem(2)->text(1).isEmpty());
+}
+
+// A finding's tone colours its value: red for a problem, green for good, the palette's text otherwise.
+TEST(LabWindow, ToneColoursTheValue) {
+    Lab lab([](LabDependencies& dependencies) {
+        edgesAre(dependencies, [] {
+            return std::make_unique<ScriptedProcessor>(
+                std::vector<lab_core::Finding>{{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad},
+                                               {"Gates", "all pass", lab_core::Finding::Tone::Good},
+                                               {"Fill", "34 %"}},
+                "", nullptr);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    const QTreeWidget* tree = lab.resultsTree();
+    ASSERT_EQ(tree->topLevelItemCount(), 3);
+    EXPECT_EQ(tree->topLevelItem(0)->foreground(1).color(), QColor(0xC2, 0x39, 0x2E));
+    EXPECT_EQ(tree->topLevelItem(1)->foreground(1).color(), QColor(0x1E, 0x7D, 0x45));
+    EXPECT_EQ(tree->topLevelItem(2)->foreground(1).style(), Qt::NoBrush);
 }
 
 TEST(LabWindow, ProcessorErrorIsARow) {
     Lab lab([](LabDependencies& dependencies) {
         edgesAre(dependencies, [] {
-            return std::make_unique<ScriptedProcessor>(std::vector<std::string>{}, "it broke", nullptr);
+            return std::make_unique<ScriptedProcessor>(std::vector<lab_core::Finding>{}, "it broke", nullptr);
         });
     });
     lab.choose("processorCombo", QStringLiteral("Edges"));
@@ -854,7 +877,7 @@ TEST(LabWindow, CameraFrameTimeFromTheFirstFrame) {
     Lab lab([&times](LabDependencies& dependencies) {
         twoCameras(dependencies);
         edgesAre(dependencies, [&times] {
-            return std::make_unique<ScriptedProcessor>(std::vector<std::string>{}, "", &times);
+            return std::make_unique<ScriptedProcessor>(std::vector<lab_core::Finding>{}, "", &times);
         });
     });
     lab.choose("processorCombo", QStringLiteral("Edges"));
@@ -1282,6 +1305,33 @@ TEST(LabWindow, CaptureKeepsTheOverlays) {
     ASSERT_TRUE(json.contains("overlays")) << json.dump();
     ASSERT_FALSE(json["overlays"].empty());
     EXPECT_EQ(json["overlays"][0]["label"], "Document");
+}
+
+// capture.json keeps its findings as "Name: value" text, whatever their tone.
+TEST(LabWindow, CaptureWritesFindingsAsText) {
+    Lab lab([](LabDependencies& dependencies) {
+        edgesAre(dependencies, [] {
+            return std::make_unique<ScriptedProcessor>(
+                std::vector<lab_core::Finding>{{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}},
+                "", nullptr);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    button(lab, "captureButton")->click();
+
+    std::vector<std::filesystem::path> jsons;
+    for (const auto& entry : std::filesystem::directory_iterator(lab.folder.path() / "Captures")) {
+        if (entry.path().extension() == ".json") {
+            jsons.push_back(entry.path());
+        }
+    }
+    ASSERT_EQ(jsons.size(), 1U);
+    std::ifstream stream(jsons[0]);
+    const nlohmann::json json = nlohmann::json::parse(stream);
+    EXPECT_EQ(json["findings"], nlohmann::json::array({"Sharpness: 41 (min 200)"})) << json.dump();
 }
 
 TEST(LabWindow, CapturesFolderIsPrivate) {

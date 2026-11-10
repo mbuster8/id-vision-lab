@@ -18,11 +18,25 @@ struct ProcessedImage {
     visual_debug::ImageDescription description{}; // its tags and its own overlays
 };
 
+// One row of the results panel: a name, its value, and whether the value is good news, bad news or neither
+// (the panel colours it green or red).
+struct Finding {
+    enum class Tone { Plain, Good, Bad };
+    std::string name;
+    std::string value;
+    Tone tone = Tone::Plain;
+
+    bool operator==(const Finding&) const = default;
+};
+
+// "Name: value", or the name alone when there is no value: how captures keep findings.
+std::string toText(const Finding& finding);
+
 // What a processor found in one frame.
 struct ProcessorResult {
     std::vector<visual_debug::Overlay> overlays{}; // over the camera frame: on the canvas and sent with it
     std::vector<ProcessedImage> images{};          // debug pictures
-    std::vector<std::string> findings{}; // short lines for the results panel, such as "edges: 4.2 %"
+    std::vector<Finding> findings{};               // the results panel's rows, such as {"Edges", "4.2 %"}
 };
 
 // The Document Lab's hook for vision work: one processor at a time, called on the processing thread only, one

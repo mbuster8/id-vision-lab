@@ -8,6 +8,8 @@
 #include "live_drawing.h"
 #include "outline_icons.h"
 #include "private_files.h"
+#include "scan_style.h"
+#include "shades.h"
 
 #include <frame_io/capture.h>
 #include <frame_io/image_folder.h>
@@ -66,6 +68,9 @@ constexpr std::array kProcessors{lab_core::ProcessorKind::None, lab_core::Proces
                                  lab_core::ProcessorKind::Outline};
 
 constexpr int kResultsMinimumWidth = 120;
+// Where a results row keeps its value's tone (lab_core::Finding::Tone), to colour it again for another
+// appearance.
+constexpr int kToneRole = Qt::UserRole + 1;
 
 // A processor busy this long on one frame is named in the status bar.
 constexpr auto kBusyShownAfter = std::chrono::seconds(1);
@@ -824,20 +829,35 @@ void LabWindow::updateShowEntries(const lab_core::LabResult& result) {
     }
 }
 
-// "name: value" as a row of two, split at the first ": "; a finding without one fills the first column.
+// A finding as a row of its name and its value, the value coloured by its tone; the tone is kept in the row,
+// so a change of appearance can colour it again.
 void LabWindow::showResults(const lab_core::LabResult& result) {
     m_results->clear();
-    for (const std::string& finding : result.processed.findings) {
-        const QString text = QString::fromStdString(finding);
-        const qsizetype split = text.indexOf(QStringLiteral(": "));
-        m_results->addTopLevelItem(new QTreeWidgetItem(
-            split < 0 ? QStringList{text} : QStringList{text.left(split), text.mid(split + 2)}));
+    for (const lab_core::Finding& finding : result.processed.findings) {
+        auto* row = new QTreeWidgetItem(
+            QStringList{QString::fromStdString(finding.name), QString::fromStdString(finding.value)});
+        row->setData(1, kToneRole, static_cast<int>(finding.tone));
+        m_results->addTopLevelItem(row);
     }
     if (!result.processorError.empty()) {
-        m_results->addTopLevelItem(
-            new QTreeWidgetItem(QStringList{tr("error"), QString::fromStdString(result.processorError)}));
+        auto* row =
+            new QTreeWidgetItem(QStringList{tr("error"), QString::fromStdString(result.processorError)});
+        row->setData(1, kToneRole, static_cast<int>(lab_core::Finding::Tone::Bad));
+        m_results->addTopLevelItem(row);
     }
+    colourResults();
     m_results->resizeColumnToContents(0);
+}
+
+// Each row's value in its tone's colour for the appearance the application now has.
+void LabWindow::colourResults() {
+    const bool dark = qt_common::isDarkAppearance(QApplication::palette());
+    for (int i = 0; i < m_results->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* row = m_results->topLevelItem(i);
+        const QColor colour =
+            toneColour(static_cast<lab_core::Finding::Tone>(row->data(1, kToneRole).toInt()), dark);
+        row->setForeground(1, colour.isValid() ? QBrush(colour) : QBrush());
+    }
 }
 
 // The picture Show names, with what is drawn over it; null when this result has none.
@@ -1280,8 +1300,12 @@ void LabWindow::capture() {
         return;
     }
     const frame_io::Frame frame = m_onScreen->frame; // shares the pixels, which nothing changes
+    std::vector<std::string> findings;
+    for (const lab_core::Finding& finding : m_onScreen->processed.findings) {
+        findings.push_back(lab_core::toText(finding));
+    }
     const frame_io::CaptureInfo info{.source = m_engine->status().source,
-                                     .findings = m_onScreen->processed.findings,
+                                     .findings = std::move(findings),
                                      .overlays = m_onScreen->processed.overlays};
     const std::string baseName = timeStamp().toStdString();
     const std::filesystem::path path = toPath(folder);

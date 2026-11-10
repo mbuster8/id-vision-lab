@@ -110,6 +110,7 @@ private:
     void updateShowEntries(const lab_core::LabResult& result);
     void forgetShowEntries();
     void showResults(const lab_core::LabResult& result);
+    void colourResults();
     void display(ImageView::KeepView keep);
     void applyPicture(LiveResult result);
     void redrawForView();

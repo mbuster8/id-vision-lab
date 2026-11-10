@@ -33,7 +33,7 @@ public:
         const double share =
             edges.empty() ? 0.0 : 100.0 * cv::countNonZero(edges) / static_cast<double>(edges.total());
         ProcessorResult result;
-        result.findings.push_back("edges: " + oneDecimal(share) + " %");
+        result.findings.push_back({"Edges", oneDecimal(share) + " %"});
         result.images.push_back({.name = "edges", .image = std::move(edges), .description = {}});
         return result;
     }
@@ -45,9 +45,9 @@ public:
         ProcessorResult result;
         if (std::optional<std::vector<cv::Point2d>> corners = m_hold.next(documentOutline(frame.image))) {
             result.overlays.push_back(visual_debug::Polygon{std::move(*corners), "Document"});
-            result.findings.push_back("document: found");
+            result.findings.push_back({"Document", "found"});
         } else {
-            result.findings.push_back("document: not found");
+            result.findings.push_back({"Document", "not found"});
         }
         return result;
     }
@@ -59,6 +59,10 @@ private:
 };
 
 } // namespace
+
+std::string toText(const Finding& finding) {
+    return finding.value.empty() ? finding.name : finding.name + ": " + finding.value;
+}
 
 std::string_view nameOf(ProcessorKind kind) {
     switch (kind) {

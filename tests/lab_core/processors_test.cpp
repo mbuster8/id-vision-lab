@@ -56,7 +56,8 @@ TEST(Processors, EdgesGivesTheEdgeImageAndItsShare) {
     const int edgePixels = cv::countNonZero(result.images[0].image);
     EXPECT_GT(edgePixels, 0);
     ASSERT_EQ(result.findings.size(), 1U);
-    EXPECT_EQ(result.findings[0], "edges: " + oneDecimal(100.0 * edgePixels / (100 * 100)) + " %");
+    EXPECT_EQ(result.findings[0],
+              (lab_core::Finding{"Edges", oneDecimal(100.0 * edgePixels / (100 * 100)) + " %"}));
     EXPECT_TRUE(result.overlays.empty());
 }
 
@@ -77,7 +78,7 @@ TEST(Processors, OutlineFindsTheCard) {
     ASSERT_NE(polygon, nullptr);
     EXPECT_TRUE(test_support::findsTheCorners(polygon->points, 1, 4.0));
     EXPECT_EQ(polygon->colour, visual_debug::kOverlayGreen);
-    EXPECT_EQ(result.findings, std::vector<std::string>{"document: found"});
+    EXPECT_EQ(result.findings, (std::vector<lab_core::Finding>{{"Document", "found"}}));
     EXPECT_TRUE(result.images.empty());
 }
 
@@ -89,12 +90,18 @@ TEST(Processors, OutlineHoldsAndResets) {
 
     const lab_core::ProcessorResult held = processor->process(frameOf(plain, 1));
     EXPECT_NE(documentPolygonIn(held), nullptr);
-    EXPECT_EQ(held.findings, std::vector<std::string>{"document: found"});
+    EXPECT_EQ(held.findings, (std::vector<lab_core::Finding>{{"Document", "found"}}));
 
     processor->reset();
     const lab_core::ProcessorResult afterReset = processor->process(frameOf(plain, 2));
     EXPECT_TRUE(afterReset.overlays.empty());
-    EXPECT_EQ(afterReset.findings, std::vector<std::string>{"document: not found"});
+    EXPECT_EQ(afterReset.findings, (std::vector<lab_core::Finding>{{"Document", "not found"}}));
+}
+
+TEST(Processors, FindingAsText) {
+    EXPECT_EQ(lab_core::toText(lab_core::Finding{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}),
+              "Sharpness: 41 (min 200)");
+    EXPECT_EQ(lab_core::toText(lab_core::Finding{"Plain note", ""}), "Plain note");
 }
 
 } // namespace
