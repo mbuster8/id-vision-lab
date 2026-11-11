@@ -275,6 +275,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
                 document_lab/measurement_test.cpp
                 document_lab/scan_banner_test.cpp
                 document_lab/scan_style_test.cpp
+                document_lab/uvc_descriptor_test.cpp
             LIBRARIES
                 document_lab_ui
                 opencv_imgproc

@@ -34,7 +34,9 @@ add_library(document_lab_ui STATIC
     scan_style.cpp
     scan_style.h
     scan_words.cpp
-    scan_words.h)
+    scan_words.h
+    uvc_descriptor.cpp
+    uvc_descriptor.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(document_lab_ui
     PUBLIC
