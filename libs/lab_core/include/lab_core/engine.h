@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lab_core/focus_control.h"
 #include "lab_core/frame_processor.h"
 #include "lab_core/lab_result.h"
 #include "lab_core/result_sender.h"
@@ -25,6 +26,8 @@
 namespace lab_core {
 
 using Clock = std::chrono::steady_clock;
+
+class FocusController;
 
 // A camera frame not yet converted: the conversion runs on the processing thread, so the camera's thread only
 // hands over its buffer. Nothing, with `error`, when the frame cannot be converted.
@@ -88,8 +91,14 @@ public:
     // Stops, waits for process() to return, writes the recording's queue, retires the sender, and joins.
     ~Engine();
 
-    // A camera run, named for the status line; its frames come through offer().
-    void startLive(std::string name);
+    // A camera run, named for the status line; its frames come through offer(). `focus`: the camera's own
+    // focus control, opened and used on the processing thread only, and destroyed there when the run ends;
+    // null when the lab cannot set this camera's focus. The run's FocusController puts the camera's focus
+    // back.
+    void startLive(std::string name, std::unique_ptr<FocusControl> focus = nullptr);
+    // A click at (x, y), shares of the frame: the camera run's focus searches there. A newer one replaces one
+    // still waiting; outside a camera run, nothing.
+    void focusAt(double x, double y);
     // A frame of the camera run; one still waiting is replaced and counted, and destroyed without the lock.
     void offer(PendingFrame frame);
     // A replay, opened on the processing thread, then playing from frame 0.
@@ -188,7 +197,11 @@ private:
     void closeDown();
 
     // Commands, on the processing thread.
-    void doStartLive(const std::string& name, std::uint64_t run);
+    void doStartLive(const std::string& name, std::uint64_t run, std::unique_ptr<FocusControl> focus);
+    void doFocusAt(std::uint64_t run);
+    // Ends the camera run's focus: puts the camera's focus back, then destroys the controller and its
+    // control. The restore-failure message, or nothing.
+    std::string endFocusRun();
     void doStartReplay(const ReplayOpener& open);
     void doStop();
     void doPlay();
@@ -240,7 +253,9 @@ private:
     std::optional<frame_io::Frame> m_onScreen; // the frame processed last
     std::optional<LabResult> m_lastResult;     // its result, until the source closes
     std::optional<frame_io::Frame>
-        m_waitingToRecord; // a replay's frame the full recorder has no room for yet
+        m_waitingToRecord;                    // a replay's frame the full recorder has no room for yet
+    std::unique_ptr<FocusController> m_focus; // a camera run's
+    bool m_restoreFailedReported = false;
     Totals m_recordingBase;
     bool m_notifyStatus = false;
     bool m_notifyResult = false;
@@ -254,6 +269,7 @@ private:
     std::deque<std::function<void()>> m_commands;
     std::optional<Pending> m_pending;
     std::optional<SeekRequest> m_seekRequest; // a doSeek command is in the mailbox while there is one
+    std::optional<std::pair<double, double>> m_focusRequest; // the newest click, for doFocusAt
     bool m_acceptLive = false;
     std::uint64_t m_offered = 0;
     std::uint64_t m_run = 0; // camera runs started, and stopped

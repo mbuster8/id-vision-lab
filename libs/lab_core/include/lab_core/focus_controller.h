@@ -61,6 +61,10 @@ inline constexpr double kClickRegionShare = 0.20;
 inline constexpr double kClickFactor = 3.0;
 inline constexpr double kClickFloor = 20.0;
 
+// What the status bar says when the camera's own focus could not be put back.
+inline constexpr const char* kFocusRestoreFailed =
+    "The camera's autofocus could not be turned back on: unplug the camera and plug it in again.";
+
 // One measured position of a search.
 struct FocusStep {
     int position = 0;

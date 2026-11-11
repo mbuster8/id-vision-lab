@@ -25,6 +25,7 @@ struct FocusLog {
     bool positionReadable = true;
     bool failSetPosition = false;
     bool failSetAuto = false;
+    bool failAutoOn = false; // only turning autofocus back on fails
     // Every call in order: "range", "has auto", "auto?", "auto on", "auto off", "position?", "position 30".
     std::vector<std::string> calls{};
     // The `at` of the frame being processed, set by the test, so a move knows when it was made.
@@ -70,7 +71,7 @@ public:
     }
     bool setAutoFocus(bool on) noexcept override {
         note(on ? "auto on" : "auto off");
-        if (m_log->failSetAuto) {
+        if (m_log->failSetAuto || (on && m_log->failAutoOn)) {
             return false;
         }
         m_log->autoFocus = on;

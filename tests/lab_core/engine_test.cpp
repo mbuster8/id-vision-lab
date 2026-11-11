@@ -1,5 +1,7 @@
 #include "lab_core/engine.h"
+#include "lab_core/focus_controller.h"
 
+#include "fake_focus_control.h"
 #include "fake_sender.h"
 #include "latch.h"
 #include "list_source.h"
@@ -1098,6 +1100,271 @@ TEST(Engine, StopSendingEndsChannels) {
     const std::vector<std::string> lines = log.lines();
     ASSERT_FALSE(lines.empty());
     EXPECT_EQ(lines.back(), "end lab");
+}
+
+// --- A3.3: the focus controller in camera runs
+// -------------------------------------------------------------------------------------------------
+
+std::shared_ptr<test_support::FocusLog> focusLog() { return std::make_shared<test_support::FocusLog>(); }
+
+std::unique_ptr<lab_core::FocusControl> controlFor(const std::shared_ptr<test_support::FocusLog>& log) {
+    return std::make_unique<test_support::FakeFocusControl>(log);
+}
+
+const lab_core::Finding* focusRow(const lab_core::LabResult& result) {
+    for (const lab_core::Finding& finding : result.processed.findings) {
+        if (finding.name == "Focus") {
+            return &finding;
+        }
+    }
+    return nullptr;
+}
+
+// A camera run whose lab has switched the camera to manual focus: a click and one frame.
+void manualFocus(Harness& h, const std::shared_ptr<test_support::FocusLog>& log) {
+    h.engine.startLive("camera", controlFor(log));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next());
+    h.engine.focusAt(0.5, 0.5);
+    h.engine.offer(pending(1, 33ms));
+    ASSERT_TRUE(h.next());
+    ASSERT_FALSE(log->autoFocus);
+}
+
+TEST(Engine, CameraRunCarriesFocus) {
+    Harness h;
+    const auto log = focusLog();
+    h.engine.startLive("camera", controlFor(log));
+    h.engine.offer(pending(0, 0ms));
+    const auto result = h.next();
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->focus);
+    EXPECT_TRUE(result->focus->controllable);
+    ASSERT_FALSE(result->processed.findings.empty());
+    EXPECT_EQ(result->processed.findings.back(),
+              (lab_core::Finding{"Focus", "camera", lab_core::Finding::Tone::Plain}));
+
+    h.engine.startReplay(openerOf(framesApart(1, 0ms)));
+    const auto replayed = h.next();
+    ASSERT_TRUE(replayed);
+    EXPECT_FALSE(replayed->focus);
+    EXPECT_EQ(focusRow(*replayed), nullptr);
+}
+
+TEST(Engine, NoControlStillCarriesFocus) {
+    Harness h;
+    h.engine.startLive("camera");
+    h.engine.offer(pending(0, 0ms));
+    const auto result = h.next();
+    ASSERT_TRUE(result && result->focus);
+    EXPECT_FALSE(result->focus->controllable);
+    ASSERT_NE(focusRow(*result), nullptr);
+    EXPECT_EQ(focusRow(*result)->value, "camera (lab can't set it)");
+}
+
+TEST(Engine, FocusAtIsNewestWins) {
+    Harness h;
+    const auto log = focusLog();
+    h.engine.startLive("camera", controlFor(log));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next());
+    h.engine.focusAt(0.1, 0.1);
+    h.engine.focusAt(0.9, 0.9);
+    h.engine.offer(pending(1, 33ms));
+    const auto result = h.next();
+    ASSERT_TRUE(result && result->focus);
+    EXPECT_EQ(result->focus->kind, lab_core::FocusStatus::Kind::Click);
+    EXPECT_EQ(log->count("auto off"), 1);
+    EXPECT_EQ(log->count("has auto"), 1);
+}
+
+// Review Focus 1, end to end: a frame offered while the move was being decided never counts for it.
+TEST(Engine, EngineReadsTheOfferNumberAfterTheMove) {
+    Harness h;
+    const auto log = focusLog();
+    // Offers the camera's next frame while it processes one, as a camera does.
+    class OfferingProcessor final : public lab_core::FrameProcessor {
+    public:
+        explicit OfferingProcessor(Engine& engine) : m_engine(engine) {}
+        lab_core::ProcessorResult process(const frame_io::Frame& frame) override {
+            m_engine.offer(pending(frame.number + 100, frame.at + 33ms));
+            return {};
+        }
+
+    private:
+        Engine& m_engine;
+    };
+    h.engine.setProcessor(std::make_unique<OfferingProcessor>(h.engine));
+    h.engine.startLive("camera", controlFor(log));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next()); // frame 0; frame 1 offered meanwhile
+    h.engine.focusAt(0.5, 0.5);
+    const auto result = h.next(); // frame 1 makes the move; frame 2 is offered while it is processed
+    ASSERT_TRUE(result && result->focus);
+    ASSERT_EQ(result->frame.number, 1U);
+    ASSERT_EQ(result->focus->state, lab_core::FocusStatus::State::Searching);
+    EXPECT_EQ(result->focus->countingFrom, 3U);
+}
+
+// Review Focus 2: every end of a camera run puts the camera's focus back, and destroys its control.
+TEST(Engine, EveryEndOfACameraRunRestores) {
+    const auto check = [](const std::shared_ptr<test_support::FocusLog>& log, const char* how) {
+        EXPECT_TRUE(log->autoFocus) << how;
+        EXPECT_TRUE(log->destroyed) << how;
+    };
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        h.engine.stop();
+        h.engine.pump();
+        check(log, "stop");
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        h.engine.startLive("another camera");
+        h.engine.pump();
+        check(log, "another camera");
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        h.engine.startReplay(openerOf(framesApart(1, 0ms)));
+        h.engine.pump();
+        check(log, "a replay");
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        h.engine.offer({[](std::string&) -> std::optional<frame_io::Frame> { throw 42; }});
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+        check(log, "an internal error");
+    }
+    {
+        const auto log = focusLog();
+        {
+            Harness h;
+            manualFocus(h, log);
+        }
+        check(log, "the engine's end");
+    }
+}
+
+TEST(Engine, FailedRestoreSetsTheMessage) {
+    const std::string failed = lab_core::kFocusRestoreFailed;
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.stop();
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().message, failed) << "stop";
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.startLive("another camera");
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().message, failed) << "another camera";
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.startReplay(openerOf(framesApart(1, 0ms)));
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().message, failed) << "a replay";
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.startReplay([](std::string& error) -> std::unique_ptr<frame_io::ReplaySource> {
+            error = "no such file";
+            return nullptr;
+        });
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().message, "no such file · " + failed) << "a replay that cannot open";
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.offer({[](std::string&) -> std::optional<frame_io::Frame> { throw 42; }});
+        h.engine.pump();
+        EXPECT_NE(h.engine.status().message.find("internal error"), std::string::npos);
+        EXPECT_NE(h.engine.status().message.find(" · " + failed), std::string::npos) << "an internal error";
+    }
+}
+
+TEST(Engine, FailedLetGoRestoreSetsTheMessage) {
+    Harness h;
+    const auto log = focusLog();
+    log->failSetPosition = true; // the click's first move fails: the lab gives up and restores
+    log->failAutoOn = true;      // and that restore fails
+    h.engine.startLive("camera", controlFor(log));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next());
+    h.engine.focusAt(0.5, 0.5);
+    h.engine.offer(pending(1, 33ms));
+    const auto result = h.next();
+    ASSERT_TRUE(result && result->focus);
+    EXPECT_TRUE(result->focus->restoreFailed);
+    EXPECT_EQ(h.engine.status().state, EngineState::Live);
+    EXPECT_EQ(h.engine.status().message, lab_core::kFocusRestoreFailed);
+}
+
+TEST(Engine, FocusSlotClearedByANewRun) {
+    Harness h;
+    const auto first = focusLog();
+    h.engine.startLive("camera", controlFor(first));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next());
+    h.engine.focusAt(0.5, 0.5);
+    const auto second = focusLog();
+    h.engine.startLive("another camera", controlFor(second));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next());
+    EXPECT_EQ(first->count("auto off"), 0);
+    EXPECT_EQ(second->count("auto off"), 0);
+}
+
+TEST(Engine, PendingStartDestroyedWithTheEngineMakesNoCall) {
+    const auto log = focusLog();
+    {
+        Harness h;
+        h.engine.startLive("camera", controlFor(log));
+    }
+    EXPECT_TRUE(log->destroyed);
+    EXPECT_TRUE(log->calls.empty());
+}
+
+TEST(Engine, ControlDestroyedOnTheProcessingThread) {
+    Signals signals;
+    const auto log = focusLog();
+    {
+        Engine engine(Engine::Mode::Threaded,
+                      {.resultReady = [&] { signals.notify(); }, .statusChanged = nullptr, .now = nullptr});
+        engine.startLive("camera", controlFor(log));
+        engine.offer(pending(0, 0ms));
+        ASSERT_TRUE(signals.waitFor([&] { return engine.status().frameNumber == 0U; }));
+        engine.stop();
+    }
+    // Read once the engine is gone: its destructor joined the processing thread.
+    EXPECT_TRUE(log->destroyed);
+    EXPECT_NE(log->destroyedOn, std::this_thread::get_id());
+    EXPECT_EQ(log->destroyedOn, log->lastThread);
 }
 
 } // namespace
