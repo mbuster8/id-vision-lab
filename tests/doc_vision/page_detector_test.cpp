@@ -69,6 +69,12 @@ TEST(PageDetector, ToBgr8) {
     EXPECT_EQ(doc_vision::toBgr8(bgra).at<cv::Vec3b>(0, 0), cv::Vec3b(1, 2, 3));
 }
 
+// No exception leaves doc_vision: an empty image, or one of two channels, is no picture rather than a throw.
+TEST(PageDetector, ToBgr8OfNothingIsEmpty) {
+    EXPECT_TRUE(doc_vision::toBgr8(cv::Mat()).empty());
+    EXPECT_TRUE(doc_vision::toBgr8(cv::Mat(2, 2, CV_8UC2, cv::Scalar::all(9))).empty());
+}
+
 TEST(PageDetector, MissingModelIsAnError) {
     std::string error;
     EXPECT_EQ(doc_vision::PageDetector::open("missing.onnx", error), nullptr);

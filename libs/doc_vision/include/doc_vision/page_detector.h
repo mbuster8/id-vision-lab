@@ -49,6 +49,7 @@ private:
 
 // An 8- or 16-bit image of 1, 3 or 4 channels as 8-bit BGR. A 16-bit image is scaled by its value range when
 // it has one (rangeMax > rangeMin), else by 1/257 so 65535 becomes 255; alpha is dropped and grey repeated.
+// Empty for an empty image or any other depth or channel count.
 cv::Mat toBgr8(const cv::Mat& image, double rangeMin = 0.0, double rangeMax = 0.0);
 
 // Each heatmap (CV_32F, any size): values under 0.3 set to 0, ×255 to 8 bits, Otsu, the largest external

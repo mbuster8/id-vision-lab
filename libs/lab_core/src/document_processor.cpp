@@ -15,19 +15,33 @@ using Tone = Finding::Tone;
 
 constexpr std::size_t gateIndex(doc_vision::Gate gate) { return static_cast<std::size_t>(gate); }
 
+// The edge a failing measure must reach now: the one it fell past, or, while it recovers inside the band, the
+// edge where it passes again.
+double edgeToReach(double value, const doc_vision::Band& band, bool failsWhenLow) {
+    const bool pastFailEdge = failsWhenLow ? value < band.failsAt : value > band.failsAt;
+    return pastFailEdge ? band.failsAt : band.passesAgainAt;
+}
+
 std::vector<Finding> pageFindings(const doc_vision::Measures& m, const doc_vision::Verdicts& verdicts,
                                   const doc_vision::Thresholds& thresholds) {
     std::vector<Finding> findings;
     findings.push_back({"Document", "TD3 page", Tone::Plain});
     findings.push_back({"Fill", wholeNumber(100 * m.fill) + " %", Tone::Plain});
-    findings.push_back({"Tilt", wholeNumber(m.tiltDegrees) + "°", Tone::Plain});
+    if (verdicts.passed[gateIndex(doc_vision::Gate::Flat)]) {
+        findings.push_back({"Tilt", wholeNumber(m.tiltDegrees) + "°", Tone::Plain});
+    } else {
+        findings.push_back({"Tilt",
+                            wholeNumber(m.tiltDegrees) + "° (max " +
+                                wholeNumber(edgeToReach(m.tiltDegrees, thresholds.tilt, false)) + ")",
+                            Tone::Bad});
+    }
     if (verdicts.passed[gateIndex(doc_vision::Gate::Sharp)]) {
         findings.push_back({"Sharpness", wholeNumber(m.sharpness), Tone::Plain});
     } else {
-        findings.push_back(
-            {"Sharpness",
-             wholeNumber(m.sharpness) + " (min " + wholeNumber(thresholds.sharpness.failsAt) + ")",
-             Tone::Bad});
+        findings.push_back({"Sharpness",
+                            wholeNumber(m.sharpness) + " (min " +
+                                wholeNumber(edgeToReach(m.sharpness, thresholds.sharpness, true)) + ")",
+                            Tone::Bad});
     }
     findings.push_back({"Glare", oneDecimal(100 * m.glareShare) + " %",
                         verdicts.passed[gateIndex(doc_vision::Gate::Glare)] ? Tone::Plain : Tone::Bad});

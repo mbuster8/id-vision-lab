@@ -90,8 +90,8 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
 - **The libraries stay Qt-free.** No Qt include or link in `libs/`. Automatic moc/uic/rcc is enabled in
   `apps/CMakeLists.txt` only. The no-Qt configure above must keep building.
 - **ONNX Runtime and the models:** only `doc_vision` uses ORT, and only in its `.cpp` files, with
-  `ORT_API_MANUAL_INIT` (`Ort::InitApi` after checking the loaded runtime), so a missing or older
-  `onnxruntime` is an error value, never a crash; no exception leaves `doc_vision`. ORT comes from Homebrew or
+  `ORT_API_MANUAL_INIT` (`Ort::InitApi` after checking the loaded runtime), so an older `onnxruntime` is an
+  error value, never a crash (a missing one stops the program from starting: it is linked); no exception leaves `doc_vision`. ORT comes from Homebrew or
   vcpkg (`scripts/install-onnxruntime.sh` on Linux), never Microsoft's binaries. On Windows every program linking
   `doc_vision` gets vcpkg's `onnxruntime.dll` beside it (`id_vision_lab_copy_runtime_dlls`), or System32's older
   one loads. Models are never committed: `cmake/models.cmake` fetches each at configure time from its pinned

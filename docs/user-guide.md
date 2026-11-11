@@ -680,9 +680,10 @@ connected. From the moment a camera or a replay starts, it asks for the page.
 **The model and privacy.** Everything runs on this computer: no frame, page or result leaves it, unless you
 stream or send to a viewer yourself. The model comes with the lab: the build fetches it once, checks it and
 copies it beside the program ([build guide](build-guide.md#the-models)); the lab never downloads anything. If
-the model or ONNX Runtime cannot be loaded, the banner says "The document model is missing" or "ONNX Runtime
-could not be loaded" for the whole run, the status bar gives the reason, and the other processors work as
-before.
+the model is missing, or the ONNX Runtime the lab loads is older than the one it was built with (on Windows,
+the one in `System32` when the lab's own copy is gone), the banner says "The document model is missing" or
+"ONNX Runtime could not be loaded" for the whole run, the status bar gives the reason, and the other processors
+work as before.
 
 ### Replay
 

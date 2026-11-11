@@ -120,6 +120,12 @@ std::optional<PageFound> PageDetector::find(const cv::Mat& bgr8, std::string& er
 }
 
 cv::Mat toBgr8(const cv::Mat& image, double rangeMin, double rangeMax) {
+    // Nothing to convert is no picture, not an exception (none leaves doc_vision).
+    const int channels = image.channels();
+    if (image.empty() || (image.depth() != CV_8U && image.depth() != CV_16U) ||
+        (channels != 1 && channels != 3 && channels != 4)) {
+        return {};
+    }
     cv::Mat eightBit;
     if (image.depth() == CV_16U) {
         if (rangeMax > rangeMin) {

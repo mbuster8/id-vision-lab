@@ -2098,6 +2098,19 @@ TEST(LabWindow, StatusSaysTheState) {
         << lab.status().toStdString();
 }
 
+// Leaving Document takes its state out of the status bar at once, not at the next refresh.
+TEST(LabWindow, StatusDropsTheStateWithTheProcessor) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(lab.status().contains(QStringLiteral("State: "))) << lab.status().toStdString();
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("State: "))) << lab.status().toStdString();
+}
+
 const viewer_core::Polygon* guideOn(const Lab& lab) {
     for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
         const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);

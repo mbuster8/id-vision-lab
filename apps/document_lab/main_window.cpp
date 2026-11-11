@@ -1142,6 +1142,7 @@ void LabWindow::chooseProcessor(int index) {
     m_scanFrom = m_resultSequence + 1;
     forgetShowEntries();
     updateScan();
+    refreshStatus(); // the Document processor's state comes and goes with it
 }
 
 bool LabWindow::documentChosen() const {
@@ -1517,8 +1518,7 @@ void LabWindow::closeEvent(QCloseEvent* event) {
     m_closeTimer->start(kClosePollMs);
 }
 
-// Space plays and pauses unless a button has the focus, which Space then presses. In the address field too:
-// an address never holds a space.
+// The results' tones come in the appearance's own shades, so a change of appearance colours them again.
 void LabWindow::changeEvent(QEvent* event) {
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) {
         colourResults();
@@ -1526,6 +1526,8 @@ void LabWindow::changeEvent(QEvent* event) {
     QMainWindow::changeEvent(event);
 }
 
+// Space plays and pauses unless a button has the focus, which Space then presses. In the address field too:
+// an address never holds a space.
 bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::KeyPress && watched == m_endpoint) {
         const auto* key = static_cast<QKeyEvent*>(event);

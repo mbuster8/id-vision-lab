@@ -9,12 +9,21 @@
 
 #include <cstddef>
 #include <exception>
+#include <filesystem>
 #include <mutex>
+#include <string>
 #include <utility>
 
 namespace doc_vision {
 
 namespace {
+
+// A path as UTF-8 for a message: path::string() throws on Windows for a name the code page cannot hold, and
+// no exception may leave doc_vision.
+std::string utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
 
 // The API this was built against, checked before any ORT call. The C++ header is compiled with
 // ORT_API_MANUAL_INIT, so nothing touches the API before this has.
@@ -86,7 +95,7 @@ std::unique_ptr<OnnxModel> OnnxModel::open(const std::filesystem::path& file, st
     }
     std::error_code exists;
     if (!std::filesystem::is_regular_file(file, exists)) {
-        return fail(OpenFailure::Model, "no model file at " + file.string());
+        return fail(OpenFailure::Model, "no model file at " + utf8(file));
     }
     try {
         Ort::SessionOptions options;
@@ -109,16 +118,16 @@ std::unique_ptr<OnnxModel> OnnxModel::open(const std::filesystem::path& file, st
             impl->outputNames.emplace_back(impl->session.GetOutputNameAllocated(i, allocator).get());
         }
         if (impl->inputNames.size() != 1 || impl->outputNames.empty()) {
-            return fail(OpenFailure::Model, file.filename().string() + ": not a model with one input");
+            return fail(OpenFailure::Model, utf8(file.filename()) + ": not a model with one input");
         }
         if (failure != nullptr) {
             *failure = OpenFailure::None;
         }
         return std::unique_ptr<OnnxModel>(new OnnxModel(std::move(impl)));
     } catch (const std::exception& e) {
-        return fail(OpenFailure::Model, file.filename().string() + ": " + e.what());
+        return fail(OpenFailure::Model, utf8(file.filename()) + ": " + e.what());
     } catch (...) {
-        return fail(OpenFailure::Model, file.filename().string() + ": could not be opened");
+        return fail(OpenFailure::Model, utf8(file.filename()) + ": could not be opened");
     }
 }
 

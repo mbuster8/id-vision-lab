@@ -267,6 +267,46 @@ TEST(DocumentProcessor, JudgesByTheGivenThresholds) {
     EXPECT_EQ(result.guidance->frameHint, Hint::Blurred);
 }
 
+// A failing measure is red with the limit it must reach, as Sharpness is: Tilt too.
+TEST(DocumentProcessor, TiltedPageIsBadWithItsLimit) {
+    const doc_vision::Quad tilted{{{430, 160}, {850, 160}, {1180, 660}, {100, 660}}};
+    ASSERT_GT(doc_vision::tiltDegrees(tilted, kFrameSize), 25.0);
+    auto script = std::make_shared<Script>();
+    script->steps = {page(tilted)};
+    DocumentProcessor processor(scripted(script));
+    const cv::Mat frame = test_support::pageInFrame(test_support::proceduralPage(), tilted, kFrameSize);
+
+    const ProcessorResult result = processor.process(frameAt(frame, 0));
+
+    const Finding* tilt = findingNamed(result, "Tilt");
+    ASSERT_NE(tilt, nullptr);
+    EXPECT_EQ(tilt->tone, Finding::Tone::Bad);
+    EXPECT_NE(tilt->value.find("\xC2\xB0 (max 25)"), std::string::npos) << tilt->value;
+}
+
+// A page still failing inside the band is told the edge it must now pass, not the one it already crossed.
+TEST(DocumentProcessor, RecoveringSharpnessShowsThePassAgainEdge) {
+    const cv::Mat sharp = goodFrame();
+    const double measured = doc_vision::measure(sharp, test_support::kPageQuad).sharpness;
+    doc_vision::Thresholds thresholds;
+    thresholds.sharpness = {measured - 10, measured + 10};
+    auto script = std::make_shared<Script>();
+    script->steps = {page(test_support::kPageQuad)};
+    DocumentProcessor processor(scripted(script), thresholds);
+    cv::Mat blurred;
+    cv::GaussianBlur(sharp, blurred, {0, 0}, 8.0);
+
+    processor.process(frameAt(blurred, 0));
+    const ProcessorResult recovering = processor.process(frameAt(sharp, 1));
+
+    const Finding* sharpness = findingNamed(recovering, "Sharpness");
+    ASSERT_NE(sharpness, nullptr);
+    EXPECT_EQ(sharpness->tone, Finding::Tone::Bad);
+    EXPECT_NE(sharpness->value.find("(min " + std::to_string(std::lround(measured + 10)) + ")"),
+              std::string::npos)
+        << sharpness->value;
+}
+
 TEST(DocumentProcessor, DarkPageIsTooDark) {
     auto script = std::make_shared<Script>();
     script->steps = {page(test_support::kPageQuad)};

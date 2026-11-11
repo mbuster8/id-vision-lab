@@ -15,8 +15,8 @@ struct Tensor {
     std::vector<float> data;
 };
 
-// Why a model could not be opened: ONNX Runtime itself (missing, or older than the version built against), or
-// the model file (missing, unreadable, not a model).
+// Why a model could not be opened: ONNX Runtime itself (older than the version built against; a missing one
+// stops the program from starting, as it is linked), or the model file (missing, unreadable, not a model).
 enum class OpenFailure { None, Runtime, Model };
 
 // ONNX Runtime's own choice of intra-op threads (its physical cores): LC100 was fastest so on the Mac mini M4
