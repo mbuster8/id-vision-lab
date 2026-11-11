@@ -265,6 +265,13 @@ std::string fileNameOf(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+// How labels and clips are matched: the file name up to any ':'. A clip copied on the Mac can carry a
+// ":Users:…" tail that a Windows file name cannot hold, so the same clip has its plain name there.
+std::string clipKey(const std::string& path) {
+    const std::string name = fileNameOf(path);
+    return name.substr(0, name.find(':'));
+}
+
 // clip file name → frame → label.
 std::map<std::string, std::map<int, Label>> readLabels(const std::filesystem::path& path) {
     std::map<std::string, std::map<int, Label>> labels;
@@ -291,7 +298,7 @@ std::map<std::string, std::map<int, Label>> readLabels(const std::filesystem::pa
             }
             label.quad = quad;
         }
-        labels[fileNameOf(fields[0])][std::stoi(fields[1])] = label;
+        labels[clipKey(fields[0])][std::stoi(fields[1])] = label;
     }
     return labels;
 }
@@ -316,7 +323,7 @@ void runLabelled(const Options& options, Scorer& scorer, Run& run) {
         if (!(fps > 1.0 && fps < 1000.0)) {
             fps = 30.0;
         }
-        const auto clipLabels = labels.find(fileNameOf(options.inputs[c]));
+        const auto clipLabels = labels.find(clipKey(options.inputs[c]));
         scorer.startClip();
         cv::Mat image;
         int i = 0;
