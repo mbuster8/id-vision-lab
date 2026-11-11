@@ -292,6 +292,20 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
                                                                  ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
                                                                  ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
                                                                  ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug)
+        # The README's labelled picture of the lab (docs/images/document-lab.png), made by hand and never by
+        # ctest: the real window and page model on the drawn page, with the tests' fake cameras and senders.
+        add_executable(document_lab_picture document_lab/document_lab_picture.cpp)
+        target_link_libraries(document_lab_picture PRIVATE document_lab_ui opencv_imgproc)
+        target_include_directories(document_lab_picture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/document_lab
+                                                                ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
+                                                                ${CMAKE_CURRENT_SOURCE_DIR}/doc_vision
+                                                                ${CMAKE_CURRENT_SOURCE_DIR}/qt_common)
+        target_compile_definitions(document_lab_picture
+                                   PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}")
+        id_vision_lab_set_warnings(document_lab_picture)
+        id_vision_lab_use_utf8_code_page(document_lab_picture)
+        id_vision_lab_copy_ffmpeg_dlls(document_lab_picture)
+        id_vision_lab_copy_runtime_dlls(document_lab_picture)
         # Qt Multimedia's backend beside frame_io's readers (apps/document_lab/media_smoke.cpp), a program of
         # its own so that it also runs from the installed Windows package.
         add_test(NAME media_smoke COMMAND media_smoke)

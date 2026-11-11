@@ -78,7 +78,8 @@ the Document processor, the focus controller, and sender; no Qt) · `apps/viewer
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
 `tests/{visual_debug,viewer_core,frame_io,doc_vision,lab_core,qt_common,viewer,example_sender,document_lab,examples}`
-(`tests/doc_vision` also holds `doc_vision_eval`, the evaluation run by hand, and `procedural_page.h`)
+(`tests/doc_vision` also holds `doc_vision_eval`, the evaluation run by hand, and `procedural_page.h`;
+`tests/document_lab` holds `document_lab_picture`, which makes the README's picture by hand)
 (`tests/qt_common` also holds the shared Qt test `main()` and helpers) · `tests/wire/header_cases.json` (golden
 headers both senders must write) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
 manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`

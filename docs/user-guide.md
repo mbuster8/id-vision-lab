@@ -585,6 +585,8 @@ open build/debug/apps/document_lab/document_lab.app
 Start it with `open` or from Finder: macOS asks for camera access on behalf of the app that started it, so
 started from a terminal it asks for the terminal (see the [build guide](build-guide.md#building)).
 
+![The Document Lab replaying a drawn page through the Document processor, its parts numbered as in the README](images/document-lab.png)
+
 The window has four rows of controls above the canvas: the source (a camera, or **Open File…** and **Open
 Folder…**), the replay, the processing (the processor, Show, Overlays, Record and Capture) and the viewer. Every
 button has a tooltip. The green ▶ starts (a camera, a replay, a stream), the red ■ stops, and the red ● records;
@@ -635,24 +637,22 @@ found. Connect one, or open a video, an image or a folder of images."
 **Document** guides you to hold a passport's data page so that the next steps can read it. DocAligner LC100, a
 small page model run on ONNX Runtime, finds the page's four corners in each frame; six checks judge the page;
 and one hint at a time, in a banner at the top of the canvas, says what to change. It works on a camera and on
-every replay, so the checks can be tried on recorded clips.
-
-![Searching for the page](images/scan-flow/01-searching.png)
-
-![A blurred page: hold still](images/scan-flow/02-adjust-blurred.png)
+every replay, so the checks can be tried on recorded clips. What it says speaks of the **document**, since an ID
+card has no page; until the MRZ is read (A4), the lab cannot tell a passport from a card, and its checks measure
+the passport's data page (TD3).
 
 - **The banner** shows the first hint that applies, checked from the top:
 
   | # | When | Banner |
   |---|---|---|
-  | 1 | No page found | Show the passport's photo page · Hold it so the whole page is in view |
-  | 2 | The page is cut by the frame's edge | ✗ Move back · the whole page must be in view |
-  | 2b | Cut by the edge, but small enough to fit | ✗ Move the page to the middle · the whole page must be in view |
+  | 1 | No page found | Show the document · the side with the photo, all of it in view |
+  | 2 | The page is cut by the frame's edge | ✗ Move back · the whole document must be in view |
+  | 2b | Cut by the edge, but small enough to fit | ✗ Move the document to the middle · the whole document must be in view |
   | 3 | Too far: its longer side under 40% of the frame's | ✗ Move closer |
   | 4 | Too close: it fills more than 92% of the frame's width or height | ✗ Move a little further away |
-  | 5 | Tilted more than 25° from facing the camera | ✗ Hold the page flat to the camera |
+  | 5 | Tilted more than 25° from facing the camera | ✗ Hold the document flat to the camera |
   | 6 | Blurred | ✗ Blurred: hold still · or move a little closer or further away |
-  | 7 | Glare on the page | ✗ Glare on the page · tilt it slightly away from the light |
+  | 7 | Glare on the page | ✗ Glare on the document · tilt it slightly away from the light |
   | 8 | Too dark | ✗ Too dark · add more light |
   | 9 | Too bright | ✗ Too bright · move out of direct light |
   | 10 | Every check passes | ✓ Good: hold still |
@@ -666,17 +666,17 @@ every replay, so the checks can be tried on recorded clips.
   **Sharp**, **No glare** and **Light**, while a page is found.
 - **The outline** of the page is red, and turns green with "Good: hold still". It shows only over the Frame,
   and hides with **Overlays**; the banner and the chips do not.
-- **The results** list `Document` (`TD3 page` or `not found`), `Fill`, `Tilt`, `Sharpness`, `Glare` and
-  `Exposure` while a page is found, then `Gates` (`all pass` in green, `5 of 6 pass` in red) and `Detector`
-  (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 50)`.
-- **Show → page** shows the page flattened, as the checks see it.
+- **The results** list `Document` (`found` or `not found`), `Fill`, `Tilt`, `Sharpness`, `Glare` and
+  `Exposure` while a page is found, then `Gates` (`all pass` in green, `5 of 6 pass` in red, `no document yet`)
+  and `Detector` (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 50)`.
+- **Show → document** shows the page flattened, as the checks see it.
 - **The status bar** adds the state: `State: searching`, `State: adjust (sharpness)` (the check to fix) or
   `State: good`.
 - **The viewer and captures** get the outline as an ordinary polygon labelled `Document`, green or red.
 
 While Document is chosen and nothing runs, the banner says why instead: **No camera found**, **Camera access is
 off** (with where to allow it), **The camera stopped** (with the reason), or **Start the camera** when one is
-connected. From the moment a camera or a replay starts, it asks for the page.
+connected. From the moment a camera or a replay starts, it asks for the document.
 
 **The model and privacy.** Everything runs on this computer: no frame, page or result leaves it, unless you
 stream or send to a viewer yourself. The model comes with the lab: the build fetches it once, checks it and
@@ -710,8 +710,8 @@ these cameras, so the lab reaches each camera's own controls directly ([ADR-005]
 
   | When | Banner |
   |---|---|
-  | The lab searched every position and none was sharp | ✗ This camera can't focus this close · Move the page a little further away |
-  | The lab cannot set this camera's focus (its own autofocus, if any, did not manage in 3 s, the page held steady) | ✗ This camera can't make the page sharp · Try more light, or another camera |
+  | The lab searched every position and none was sharp | ✗ This camera can't focus this close · Move the document a little further away |
+  | The lab cannot set this camera's focus (its own autofocus, if any, did not manage in 3 s, the page held steady) | ✗ This camera can't make the document sharp · Try more light, or another camera |
 
   Either shows only while the shown hint is **Blurred**: a page that is too far, cut off or tilted keeps its own
   hint. On Linux the lab cannot set any camera's focus yet, so only the second applies.

@@ -118,6 +118,7 @@ or library cannot break the build, but a new warning from project code should be
 | `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels; reads files through `frame_io` | `examples/live_sender/live_sender` |
 | `visual_debug_tests`, `viewer_core_tests`, `frame_io_tests`, `doc_vision_tests`, `lab_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `document_lab_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
 | `doc_vision_eval` | The Document processor's evaluation on labelled clips and MIDV-2020, run by hand ([below](#evaluating-the-document-processor)) | `tests/doc_vision_eval` |
+| `document_lab_picture` | The README's labelled picture of the Document Lab, made by hand ([below](#the-document-labs-picture)) | `tests/document_lab_picture` |
 
 FFmpeg's reader in `frame_io` (`FfmpegVideo`) is built only when CMake finds FFmpeg's development files
 (`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not.
@@ -174,6 +175,21 @@ The build copies the model into `build/<preset>/models`, into the Document Lab's
 (`document_lab.app/Contents/Resources/models`) on macOS, and into a `models` folder beside `document_lab` on
 Linux and Windows, where the lab looks for it. A lab that cannot open it says so in its banner, "The document
 model is missing", and the other processors work as before. The programs never download anything.
+
+### The Document Lab's picture
+
+`document_lab_picture` makes `docs/images/document-lab.png`, the README's labelled picture of the lab: the real
+window and page model replaying the drawn page of `tests/doc_vision/procedural_page.h` (no real document), with
+the tests' fake cameras and senders, so nothing reaches a camera or a viewer. Each part is outlined and numbered
+where the window put it. Run it on a Mac, in the appearance the picture should have, after a change to the
+window:
+
+```sh
+cmake --build --preset debug --target document_lab_picture
+build/debug/tests/document_lab_picture docs/images/document-lab.png
+```
+
+The window shows briefly while it is made.
 
 ### Evaluating the Document processor
 

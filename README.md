@@ -85,9 +85,29 @@ model run on ONNX Runtime, finds the page's corners; six checks (in view, size, 
 judge it; and one hint at a time says what to change, with the page outlined in red until everything passes and
 it turns green. Everything runs on this computer: no frame leaves it.
 
-![Searching for the page](docs/images/scan-flow/01-searching.png)
+![The Document Lab replaying a drawn page (no real document) through the Document processor, every check passed: the window's parts outlined and numbered as listed below](docs/images/document-lab.png)
 
-![A blurred page: hold still](docs/images/scan-flow/02-adjust-blurred.png)
+1. **Source**: a camera and its format, with Start and Stop, or Open File… and Open Folder… to replay a video,
+   an image, a folder of images or a recording.
+2. **Replay**: play and pause, step a frame either way, ten seconds back or forward, restart, loop, as fast as
+   possible, and the position in the video.
+3. **Processor**: what runs on each frame (None, Edges, Outline or Document), what the canvas shows (the frame
+   or a processor's picture), and whether what the processor found is drawn over it.
+4. **Record and capture**: record every frame processed, losslessly; keep the frame on screen at full
+   resolution; open or choose the lab's folder for both.
+5. **Viewer**: the Visual Debug Viewer's address and whether it is there; stream every frame to it, pause or stop
+   the stream, or send it one frame.
+6. **Canvas**: the frame, zoomed with the wheel, panned with a drag and fitted with a double-click; during a
+   camera run, a click focuses the camera there.
+7. **Banner**: one hint at a time, what to change or "Good: hold still".
+8. **Guide outline**: the document the page model found, red until every check passes, then green.
+9. **Chips**: the six checks at once (in view, size, flat, sharp, no glare, light).
+10. **Results**: what the processor found, with a failing value in red beside its limit.
+11. **Status bar**: the run, its news (the document's state, a focus note, why something failed), the source,
+    the frame, and how many frames were processed, shown, dropped and not drawn, sent or recorded.
+
+The picture is made by `document_lab_picture` ([build guide](docs/build-guide.md#the-document-labs-picture)),
+from the real window and page model on a drawn page.
 
 ## Coming next
 
