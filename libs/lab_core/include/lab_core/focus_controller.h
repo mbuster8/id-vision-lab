@@ -100,6 +100,8 @@ public:
     bool end() noexcept;
 
     const FocusStatus& status() const { return m_status; }
+    // The lab changed the camera's focus at some time in this run (and so had something to put back).
+    bool changedFocus() const { return m_found.has_value(); }
     // The steps of the search running, or of the last one.
     const std::vector<FocusStep>& curve() const { return m_curve; }
 
@@ -115,6 +117,7 @@ private:
         double side = 0.0;
         int searches = 0;
         bool blocked = false;
+        bool failed = false; // a page search found nothing sharp, or the searches ran out: "can't focus"
     };
     enum class Stage { Coarse, Fine, Local };
     struct Search {

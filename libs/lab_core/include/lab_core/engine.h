@@ -200,8 +200,8 @@ private:
     void doStartLive(const std::string& name, std::uint64_t run, std::unique_ptr<FocusControl> focus);
     void doFocusAt(std::uint64_t run);
     // Ends the camera run's focus: puts the camera's focus back, then destroys the controller and its
-    // control. The restore-failure message, or nothing.
-    std::string endFocusRun();
+    // control. A failed restore, at the end or during the run, is kept in m_restoreFailure.
+    void endFocusRun();
     void doStartReplay(const ReplayOpener& open);
     void doStop();
     void doPlay();
@@ -256,6 +256,10 @@ private:
         m_waitingToRecord;                    // a replay's frame the full recorder has no room for yet
     std::unique_ptr<FocusController> m_focus; // a camera run's
     bool m_restoreFailedReported = false;
+    // A camera's focus could not be put back: added to every message until a later restore succeeds, so the
+    // stop and start that the window sends together never hide it.
+    std::string m_restoreFailure;
+    std::string m_messageBase; // the message as set, before the restore failure is added
     Totals m_recordingBase;
     bool m_notifyStatus = false;
     bool m_notifyResult = false;

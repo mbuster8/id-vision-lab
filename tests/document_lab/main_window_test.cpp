@@ -6,6 +6,7 @@
 #include "fake_camera_backend.h"
 #include "fake_focus_control.h"
 #include "fake_sender.h"
+#include "lab_core/focus_controller.h"
 #include "latch.h"
 #include "list_source.h"
 #include "owner_only.h"
@@ -2429,6 +2430,52 @@ TEST(LabWindow, NoteOfANewRunShows) {
     cameraFrames(lab, 1);
 
     EXPECT_TRUE(lab.status().contains(QStringLiteral("Focusing…"))) << lab.status().toStdString();
+}
+
+// Final review F1, as the user meets it: the window stops before it starts another camera or a replay.
+TEST(LabWindow, FailedRestoreShowsAfterACameraChange) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    ASSERT_FALSE(lab.focusLog->autoFocus);
+    lab.focusLog->failSetAuto = true;
+
+    lab.choose("cameraCombo", QStringLiteral("C920"));
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().contains(QString::fromUtf8(lab_core::kFocusRestoreFailed)))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, FailedRestoreShowsAfterOpeningAFile) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    lab.focusLog->failSetAuto = true;
+
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().contains(QString::fromUtf8(lab_core::kFocusRestoreFailed)))
+        << lab.status().toStdString();
+}
+
+// Final review F8: F is the focus key only while a camera runs; otherwise the window's lists keep it.
+TEST(LabWindow, FKeyOnlyDuringACameraRun) {
+    Lab lab(twoCameras);
+    QAction* focus = lab.window->findChild<QAction*>(QStringLiteral("focusAction"));
+    ASSERT_NE(focus, nullptr);
+    EXPECT_FALSE(focus->isEnabled());
+
+    startStop(lab)->click();
+    EXPECT_TRUE(focus->isEnabled());
+
+    startStop(lab)->click();
+    EXPECT_FALSE(focus->isEnabled());
 }
 
 } // namespace

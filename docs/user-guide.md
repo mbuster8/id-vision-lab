@@ -698,11 +698,13 @@ these cameras, so the lab reaches each camera's own controls directly ([ADR-005]
   sharpest, then holds it. The banner says **Hold still: focusing** meanwhile, the Sharp chip shows ✗, the
   outline stays red, and the status bar ends with the time it took: `Focused at 30 in 2.4 s`. Moving the page
   nearer or further (its size changing by more than 15%), or taking it away for a second, gives the focus back to
-  the camera.
+  the camera. The lab searches at most twice for the same page; if it is blurred again after that, the camera's
+  own autofocus gets it back.
 - **A click on the picture** (with Show on **Frame**, during a camera run) focuses on the area around the click,
-  a fifth of the frame's height wide; **F** focuses on the centre of what the canvas shows. The status bar says
-  `Focusing…`, then `Focused at 30: 12 → 210` (the area's sharpness before and after) or `Could not focus
-  there`. A double-click still fits the picture to the window and never focuses.
+  a square a fifth of the frame's shorter side wide; **F** focuses on the centre of what the canvas shows. The
+  status bar says `Focusing…`, then `Focused at 30: 12 → 210` (the area's sharpness before and after) or `Could
+  not focus there`. A click's focus stays until another click, a page search or the end of the run. A
+  double-click still fits the picture to the window and never focuses.
 - **When the page cannot be made sharp:**
 
   | When | Banner |
@@ -716,7 +718,8 @@ these cameras, so the lab reaches each camera's own controls directly ([ADR-005]
   can't set it)`, `lab searching`, `lab, 30` (the position held) or `can't focus` (red).
 - **Putting the focus back:** when the lab lets go, and whenever the camera stops, changes or the lab quits, the
   camera's focus goes back to what it was: its autofocus on, or the position it had. If that fails, the status bar
-  says so: unplug the camera and plug it in again.
+  says so, through later runs and files too, until a camera's focus has been put back: unplug the camera and plug
+  it in again.
 - **If the lab crashes** while it holds the focus, the camera stays in manual focus until it is unplugged and
   plugged in again, or until another program turns its autofocus on.
 - **Recordings** made while the lab searches hold deliberately blurred frames; for an evaluation, record with

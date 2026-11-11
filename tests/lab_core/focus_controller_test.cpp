@@ -483,10 +483,13 @@ TEST(FocusController, AtMostTwoSearchesPerPage) {
     ASSERT_EQ(run.searchToTheEnd(), State::Holding);
     EXPECT_EQ(run.last.position, 60);
     EXPECT_EQ(run.searches, 2);
+    // Final review F4: no third search; the lab gives the focus back to the camera rather than hold a
+    // position known not to work.
     run.curve.at = 120;
     run.framesFor(8s);
     EXPECT_EQ(run.searches, 2);
-    EXPECT_EQ(run.last.state, State::Holding);
+    EXPECT_NE(run.last.state, State::Holding);
+    EXPECT_TRUE(run.log->autoFocus);
 }
 
 TEST(FocusController, LightFailingAbortsTheSearch) {
@@ -837,6 +840,43 @@ TEST(FocusController, ClickSearchCoolsDownPageSearches) {
     EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
     EXPECT_TRUE(run.until(State::Searching, 3s));
     EXPECT_EQ(run.last.kind, FocusStatus::Kind::Page);
+}
+
+// Final review F2: a search aborted because the page changed size holds its passing best, then lets go at
+// once: the page is no longer the size the search was for.
+TEST(FocusController, AbortForASizeChangeLetsGo) {
+    CameraRun run;
+    ASSERT_TRUE(run.until(State::Searching));
+    const auto measured30 = [&] {
+        for (const lab_core::FocusStep& step : run.controller->curve()) {
+            if (step.position == 30) {
+                return true;
+            }
+        }
+        return false;
+    };
+    while (!measured30() && run.at < 20s) {
+        run.frame();
+    }
+    run.side = 0.48 * 1.25;
+    run.frame(); // the abort: 30 passed, so it is held
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
+// Final review F3: one noisy sharp frame after a failed search does not lose "can't focus" for good.
+TEST(FocusController, CannotFocusComesBackAfterANoisyFrame) {
+    CameraRun run;
+    run.curve.peak = 36;
+    ASSERT_EQ(run.searchToTheEnd(), State::CannotFocus);
+    run.sharpFlicker = true;
+    run.frame();
+    ASSERT_EQ(run.last.state, State::Camera);
+    run.framesFor(3100ms);
+    EXPECT_EQ(run.last.state, State::CannotFocus);
+    EXPECT_TRUE(run.last.afterSearch);
+    EXPECT_EQ(run.searches, 1);
 }
 
 } // namespace

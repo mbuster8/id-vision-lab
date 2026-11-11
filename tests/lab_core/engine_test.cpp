@@ -1367,4 +1367,46 @@ TEST(Engine, ControlDestroyedOnTheProcessingThread) {
     EXPECT_EQ(log->destroyedOn, log->lastThread);
 }
 
+// Final review F1: the window always stops before it starts another camera or a replay; a failed restore's
+// message must survive that start, and a failure during the run must survive the stop.
+TEST(Engine, FailedRestoreSurvivesTheNextStart) {
+    const std::string failed = lab_core::kFocusRestoreFailed;
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.stop();
+        h.engine.startLive("another camera");
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().message, failed) << "stop, then another camera";
+    }
+    {
+        Harness h;
+        const auto log = focusLog();
+        manualFocus(h, log);
+        log->failSetAuto = true;
+        h.engine.stop();
+        h.engine.startReplay(openerOf(framesApart(1, 0ms)));
+        h.engine.pump();
+        EXPECT_EQ(h.engine.status().message, failed) << "stop, then a replay";
+    }
+}
+
+TEST(Engine, FailedLetGoRestoreSurvivesTheStop) {
+    Harness h;
+    const auto log = focusLog();
+    log->failSetPosition = true;
+    log->failAutoOn = true;
+    h.engine.startLive("camera", controlFor(log));
+    h.engine.offer(pending(0, 0ms));
+    ASSERT_TRUE(h.next());
+    h.engine.focusAt(0.5, 0.5);
+    h.engine.offer(pending(1, 33ms));
+    ASSERT_TRUE(h.next());
+    h.engine.stop();
+    h.engine.pump();
+    EXPECT_EQ(h.engine.status().message, lab_core::kFocusRestoreFailed);
+}
+
 } // namespace

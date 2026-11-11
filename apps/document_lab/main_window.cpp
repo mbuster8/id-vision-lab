@@ -392,7 +392,9 @@ void LabWindow::buildUi() {
     addActions({m_playPauseAction, m_stepAction, m_stepBackAction, m_back10Action, m_forward10Action});
     // F focuses the camera on the centre of what the canvas shows (A3.3).
     m_focusAction = new QAction(tr("Focus on the Centre"), this);
+    m_focusAction->setObjectName(QStringLiteral("focusAction"));
     m_focusAction->setShortcut(QKeySequence(Qt::Key_F));
+    m_focusAction->setEnabled(false); // during a camera run only
     addAction(m_focusAction);
 
     auto* processingRow = new QHBoxLayout;
@@ -648,6 +650,7 @@ void LabWindow::stop() {
     m_running = false;
     if (m_cameraRunning) {
         m_cameraRunning = false;
+        m_focusAction->setEnabled(false);
         m_session = 0;
         m_dependencies.cameras->stop();
     }
@@ -796,6 +799,7 @@ void LabWindow::startCameraGranted() {
     stop(); // a replay running stops first
     beginRun();
     m_cameraRunning = true;
+    m_focusAction->setEnabled(true);
     m_firstFrameAt.reset();
     m_geometry = {.frontCamera = camera->front};
     m_engine->startLive(

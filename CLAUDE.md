@@ -72,7 +72,8 @@ macOS, so the camera prompt names the Document Lab rather than the terminal.
 `libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `libs/frame_io` (videos,
 image folders, recordings and captures; YUV conversion; no Qt) · `libs/doc_vision` (ONNX Runtime, the page model,
 page geometry, quality gates, hint timers; no Qt) · `libs/lab_core` (the Document Lab's engine, processors,
-the Document processor, the focus controller, and sender; no Qt) · `apps/viewer` · `apps/example_sender` · `apps/document_lab` · `apps/qt_common`
+the Document processor, the focus controller, and sender; no Qt) · `apps/viewer` · `apps/example_sender` ·
+`apps/document_lab` · `apps/qt_common`
 (what the apps share, the canvas among it: `ImageView`, `LiveConverter`, `live_drawing`, `overlay_painter`) ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
@@ -128,11 +129,12 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   `pump()` and an injected clock unless they test the threads; window tests give the link and the stream fake
   senders, so no test reaches a real viewer. The Document processor opens its model lazily on the processing
   thread, once per run (`reset()` keeps a model that opened); ORT's intra-op pool works only inside
-  `OnnxModel::run` and does not spin. A camera run's `FocusController` and its `FocusControl` (the camera's own
-  focus: IOKit on macOS, DirectShow on Windows, ADR-005) live on the processing thread too: native calls only
-  there, bounded by timeouts on macOS; a move counts only frames offered after it; every end of a camera run puts
-  the camera's focus back there, and window tests give a fake control, so no test reaches a real camera. Its hints are timed by the frames' own `at`, never a clock; the banner,
-  chips and the canvas's guide outline follow the result whose picture is on screen.
+  `OnnxModel::run` and does not spin. Its hints are timed by the frames' own `at`, never a clock; the banner,
+  chips and the canvas's guide outline follow the result whose picture is on screen. A camera run's
+  `FocusController` and its `FocusControl` (the camera's own focus: IOKit on macOS, DirectShow on Windows,
+  ADR-005) live on the processing thread too: native calls only there, bounded by timeouts on macOS; a move
+  counts only frames offered after it; every end of a camera run puts the camera's focus back there, and window
+  tests give a fake control, so no test reaches a real camera.
 - **Wire-format changes:** a new optional header field keeps `version` 2, and so does a new message `type` (an
   older viewer refuses it with `unsupported message type`, which still answers); changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender
@@ -154,8 +156,8 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   makes them from `QString` through UTF-16); under it `std::filesystem::path` throws on bytes that are not
   UTF-8, so split names from raw strings yourself (`live_sender::fileNameOf`); Qt's permission bits do not reach
   access lists, so the apps set their folders' lists in `apps/qt_common/private_files.cpp` and privacy tests
-  use `tests/qt_common/owner_only.h`; those two `.cpp` files and `apps/document_lab/camera_focus_windows.cpp` (DirectShow's focus, ADR-005) are
-  the only ones that include `<windows.h>`.
+  use `tests/qt_common/owner_only.h`; those two `.cpp` files and `apps/document_lab/camera_focus_windows.cpp`
+  (DirectShow's focus, ADR-005) are the only ones that include `<windows.h>`.
   `frame_io` sets owner-only bits on the files it writes; on Windows they inherit the folder's list, so the
   lab makes its recording and capture folders private through `private_files` before writing into them.
 - **Warnings:** zero from project code under `-Wall -Wextra -Wpedantic`, and under MSVC's `/W4`.

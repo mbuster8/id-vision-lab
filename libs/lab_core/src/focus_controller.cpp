@@ -121,6 +121,12 @@ void FocusController::step(const frame_io::Frame& frame, const std::optional<Pag
         if (canFocus()) {
             if (page && mayStartPageSearch(at)) {
                 startPageSearch(frame, *page, false);
+            } else if (m_memory && m_memory->failed && steady() && m_blurredSince &&
+                       at - *m_blurredSince >= kCannotFocusAfter) {
+                // A search already failed for this page: a noisy sharp frame does not lose "can't focus".
+                m_status.state = FocusStatus::State::CannotFocus;
+                m_status.afterSearch = true;
+                m_cannotSide = m_lastSide;
             }
         } else if (steady() && m_blurredSince && at - *m_blurredSince >= kCannotFocusAfter) {
             m_status.state = FocusStatus::State::CannotFocus;
@@ -135,6 +141,17 @@ void FocusController::step(const frame_io::Frame& frame, const std::optional<Pag
             const nanoseconds seen = m_lastFreshAt ? std::max(*m_lastFreshAt, m_heldSince) : m_heldSince;
             if (at - seen >= kLostAfter || (page && sizeChanged(page->longerSide, m_heldSide))) {
                 letGo();
+                break;
+            }
+            // The page's searches have run out and it is blurred again: the held position no longer works, so
+            // the camera's own focus gets its turn, and "can't focus" may follow.
+            if (page && m_memory && m_memory->searches >= kSearchesPerMemory && steady() && m_blurredSince &&
+                at - *m_blurredSince >= kTakeOverAfter &&
+                (!m_lastSearchEnd || at - *m_lastSearchEnd >= kCoolDown)) {
+                letGo();
+                m_memory->blocked = true;
+                m_memory->failed = true;
+                m_blurredSince.reset();
                 break;
             }
         }
@@ -480,6 +497,7 @@ void FocusController::finishSearch(const frame_io::Frame& frame) {
         m_cannotSide = m_lastSide;
         if (m_memory) {
             m_memory->blocked = true;
+            m_memory->failed = true;
             m_memory->side = m_lastSide;
         }
         setNote("Could not focus on the page");
@@ -523,7 +541,7 @@ void FocusController::hold(const Search& search, const frame_io::Frame& frame) {
     m_status.kind = search.kind;
     m_status.position = search.bestPosition;
     m_status.countingFrom = 0;
-    m_heldSide = m_lastSide;
+    m_heldSide = search.side; // the search's page: one that changed size since lets go at once
     m_heldSince = frame.at;
     if (search.kind == FocusStatus::Kind::Page) {
         m_predictions.emplace_back(search.side, search.bestPosition);

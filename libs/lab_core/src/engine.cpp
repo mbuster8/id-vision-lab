@@ -437,8 +437,8 @@ void Engine::stopAfterThrow(const std::string& what) {
     }
     closeSource();
     m_live = false;
-    const std::string failed = endFocusRun();
-    setMessage("stopped: internal error (" + what + ")" + (failed.empty() ? std::string() : " · " + failed));
+    endFocusRun();
+    setMessage("stopped: internal error (" + what + ")");
     setState(EngineState::Stopped);
 }
 
@@ -583,7 +583,8 @@ void Engine::process(frame_io::Frame frame, bool record) {
             result.processed.findings.push_back(focusFinding(*result.focus));
             if (result.focus->restoreFailed && !m_restoreFailedReported) {
                 m_restoreFailedReported = true;
-                setMessage(kFocusRestoreFailed);
+                m_restoreFailure = kFocusRestoreFailed;
+                setMessage(m_messageBase);
             }
         } catch (...) {
             // Nothing leaves the processing thread; the result goes on without focus.
@@ -719,10 +720,12 @@ void Engine::closeDown() {
     endFocusRun();
 }
 
-std::string Engine::endFocusRun() {
+void Engine::endFocusRun() {
     if (!m_focus) {
-        return {};
+        return;
     }
+    const bool changed = m_focus->changedFocus();
+    const bool failedDuringTheRun = m_focus->status().restoreFailed;
     bool restored = false;
     try {
         restored = m_focus->end();
@@ -731,14 +734,18 @@ std::string Engine::endFocusRun() {
         m_focus.reset();
     }
     m_restoreFailedReported = false;
-    return restored ? std::string() : std::string(kFocusRestoreFailed);
+    if (!restored || failedDuringTheRun) {
+        m_restoreFailure = kFocusRestoreFailed;
+    } else if (changed) {
+        m_restoreFailure.clear(); // a camera's focus went back this time: it answers again
+    }
 }
 
 // --- Commands, on the processing thread
 // ---------------------------------------------------------------------
 
 void Engine::doStartLive(const std::string& name, std::uint64_t run, std::unique_ptr<FocusControl> focus) {
-    const std::string failed = endFocusRun();
+    endFocusRun();
     stopRecordingNow();
     closeSource();
     m_live = true;
@@ -758,7 +765,7 @@ void Engine::doStartLive(const std::string& name, std::uint64_t run, std::unique
         m_status.canStepBack = false;
         m_status.loop = m_loop;
     }
-    setMessage(failed); // last, so a failed restore of the previous camera's focus shows
+    setMessage({}); // a failed restore of a camera's focus still shows: setMessage adds it
     setState(EngineState::Live);
 }
 
@@ -776,7 +783,7 @@ void Engine::doFocusAt(std::uint64_t run) {
 }
 
 void Engine::doStartReplay(const ReplayOpener& open) {
-    const std::string failed = endFocusRun();
+    endFocusRun();
     stopRecordingNow();
     closeSource();
     m_live = false;
@@ -792,8 +799,7 @@ void Engine::doStartReplay(const ReplayOpener& open) {
         error = exception.what();
     }
     if (!source) {
-        const std::string why = error.empty() ? "the source could not be opened" : error;
-        setMessage(failed.empty() ? why : why + " · " + failed);
+        setMessage(error.empty() ? "the source could not be opened" : error);
         setState(EngineState::Stopped);
         return;
     }
@@ -815,7 +821,7 @@ void Engine::doStartReplay(const ReplayOpener& open) {
         m_status.canStepBack = false;
         m_status.loop = m_loop && !m_oneFrame;
     }
-    setMessage(failed);
+    setMessage({});
     setState(EngineState::Playing);
 }
 
@@ -823,7 +829,8 @@ void Engine::doStop() {
     stopRecordingNow();
     closeSource();
     m_live = false;
-    setMessage(endFocusRun()); // nothing, unless the camera's focus could not be put back
+    endFocusRun();
+    setMessage({}); // nothing, unless a camera's focus could not be put back
     setState(EngineState::Stopped);
 }
 
@@ -1114,6 +1121,10 @@ void Engine::setState(EngineState state) {
 }
 
 void Engine::setMessage(std::string message) {
+    m_messageBase = message;
+    if (!m_restoreFailure.empty()) {
+        message = message.empty() ? m_restoreFailure : message + " · " + m_restoreFailure;
+    }
     const std::lock_guard lock(m_mutex);
     if (m_status.message == message) {
         return;
