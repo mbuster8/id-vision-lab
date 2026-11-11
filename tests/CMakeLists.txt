@@ -120,6 +120,13 @@ target_compile_definitions(doc_vision_tests PRIVATE
 target_include_directories(doc_vision_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
 id_vision_lab_use_utf8_code_page(doc_vision_tests)
 id_vision_lab_copy_runtime_dlls(doc_vision_tests)
+# A3.1's evaluation on labelled clips and MIDV-2020 (aggregates only): a program to run by hand, not a test.
+add_executable(doc_vision_eval doc_vision/doc_vision_eval.cpp)
+target_link_libraries(doc_vision_eval PRIVATE lab_core::lab_core doc_vision::doc_vision opencv_videoio
+                                              opencv_imgcodecs opencv_imgproc nlohmann_json::nlohmann_json)
+id_vision_lab_set_warnings(doc_vision_eval)
+id_vision_lab_use_utf8_code_page(doc_vision_eval)
+id_vision_lab_copy_runtime_dlls(doc_vision_eval)
 
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES

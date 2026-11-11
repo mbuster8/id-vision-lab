@@ -27,7 +27,8 @@ public:
     using MakeFinder = std::function<std::unique_ptr<doc_vision::PageFinder>(
         std::string& error, doc_vision::OpenFailure& failure)>;
 
-    explicit DocumentProcessor(MakeFinder makeFinder);
+    // `thresholds`: the gates' bands, the defaults unless an evaluation tries others.
+    explicit DocumentProcessor(MakeFinder makeFinder, doc_vision::Thresholds thresholds = {});
 
     ProcessorResult process(const frame_io::Frame& frame) override;
     // Clears the timers, the page hold, the GateJudge, the previous quad, and a failed open (the next frame

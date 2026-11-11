@@ -254,6 +254,19 @@ TEST(DocumentProcessor, FailingMeasuresAreBad) {
     EXPECT_EQ(result.guidance->frameHint, Hint::Blurred);
 }
 
+// The evaluation tries other thresholds: they are the processor's, not GateJudge's defaults.
+TEST(DocumentProcessor, JudgesByTheGivenThresholds) {
+    auto script = std::make_shared<Script>();
+    script->steps = {page(test_support::kPageQuad)};
+    doc_vision::Thresholds strict;
+    strict.sharpness = {1e9, 1e9};
+    DocumentProcessor processor(scripted(script), strict);
+
+    const ProcessorResult result = processor.process(frameAt(goodFrame(), 0));
+
+    EXPECT_EQ(result.guidance->frameHint, Hint::Blurred);
+}
+
 TEST(DocumentProcessor, DarkPageIsTooDark) {
     auto script = std::make_shared<Script>();
     script->steps = {page(test_support::kPageQuad)};

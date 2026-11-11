@@ -60,7 +60,8 @@ std::vector<Finding> noPageFindings() {
 
 } // namespace
 
-DocumentProcessor::DocumentProcessor(MakeFinder makeFinder) : m_makeFinder(std::move(makeFinder)) {}
+DocumentProcessor::DocumentProcessor(MakeFinder makeFinder, doc_vision::Thresholds thresholds)
+    : m_makeFinder(std::move(makeFinder)), m_judge(thresholds) {}
 
 ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
     // Opened lazily, so a run that never picks the Document processor never loads the model; tried once per

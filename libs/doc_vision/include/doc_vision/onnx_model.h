@@ -19,7 +19,9 @@ struct Tensor {
 // the model file (missing, unreadable, not a model).
 enum class OpenFailure { None, Runtime, Model };
 
-inline constexpr int kDefaultIntraOpThreads = 4;
+// ONNX Runtime's own choice of intra-op threads (its physical cores): LC100 was fastest so on the Mac mini M4
+// Pro, against 1 and 4 threads (tests/doc_vision/doc_vision_eval.cpp, --threads).
+inline constexpr int kDefaultIntraOpThreads = 0;
 
 // The ONNX Runtime version loaded at run time, such as "1.31.1"; empty, with `error`, when the loaded library
 // does not offer the API this was built against. On Windows an older onnxruntime.dll ships in System32, which
