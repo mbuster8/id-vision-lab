@@ -8,7 +8,9 @@
 //   camera_focus_probe [--camera <number or part of its name>] [--model <file>] [--out <file>]
 //       A window with the camera's picture and the page's outline. Hold the page still and press Space: each
 //       focus setting the camera offers is tried for 5 s (2 s to settle, 3 to measure). Then press Space and
-//       move the page slowly from near to far for 20 s. Esc ends it.
+//       move the page slowly from near to far for 20 s. Esc ends it. Where the camera's own focus can be set
+//       (UVC on macOS, DirectShow on Windows), the probe also focuses on the page itself five times between
+//       the two; --search does only that.
 //
 // It prints aggregates only (how often the page was found, its sharpness and its size), never a frame or
 // anything read from the page; the report also goes to --out (by default a file in the system's temporary
@@ -76,6 +78,14 @@ using Clock = std::chrono::steady_clock;
 constexpr int kSettleMs = 2000;
 constexpr int kMeasureMs = 3000;
 constexpr int kSweepMs = 20000;
+// Our own focus on the page: trials, focus steps, and how long a step waits before its frames count.
+constexpr int kTrials = 5;
+constexpr int kCoarseStep = 10;
+constexpr int kFineStep = 5;
+constexpr int kStepSettleMs = 150;
+constexpr int kStepTimeoutMs = 800;
+constexpr int kDefocusMs = 800;
+constexpr int kHoldMs = 1500;
 
 // Printed at once and kept for the report file.
 class Report {
@@ -402,8 +412,9 @@ double quantile(std::vector<double> values, double q) {
 
 class ProbeWindow final : public QWidget {
 public:
-    ProbeWindow(const QCameraDevice& device, std::filesystem::path model, QString outPath, Report& report)
-        : m_outPath(std::move(outPath)), m_report(report) {
+    ProbeWindow(const QCameraDevice& device, std::filesystem::path model, QString outPath, bool searchOnly,
+                Report& report)
+        : m_outPath(std::move(outPath)), m_report(report), m_searchOnly(searchOnly) {
         setWindowTitle(QStringLiteral("Camera Focus Probe: ") + device.description());
         auto* layout = new QVBoxLayout(this);
         m_status = new QLabel(this);
@@ -497,8 +508,17 @@ protected:
             QWidget::keyPressEvent(event);
             return;
         }
-        if (m_phase == Phase::Aim) {
+        if (m_phase == Phase::Aim && m_searchOnly) {
+            if (canSearch()) {
+                startSearch();
+            } else {
+                m_report.say(QStringLiteral("No native focus control to search with."));
+                finish();
+            }
+        } else if (m_phase == Phase::Aim) {
             startSettings();
+        } else if (m_phase == Phase::SearchReady) {
+            startSearch();
         } else if (m_phase == Phase::SweepReady) {
             m_report.say(QStringLiteral("\nSweep: near to far for %1 s, focus mode %2")
                              .arg(kSweepMs / 1000)
@@ -510,7 +530,13 @@ protected:
     }
 
 private:
-    enum class Phase { Aim, Settings, SweepReady, Sweep, Done };
+    enum class Phase { Aim, Settings, SearchReady, Search, SweepReady, Sweep, Done };
+    enum class SearchStage { Defocus, Coarse, Fine, Hold };
+
+    struct Step {
+        int position = 0;
+        double sharpness = 0.0;
+    };
 
     struct Setting {
         QString name;
@@ -538,6 +564,8 @@ private:
             m_samples.push_back(sample);
         } else if (m_phase == Phase::Sweep) {
             m_samples.push_back(sample);
+        } else if (m_phase == Phase::Search) {
+            searchTake(analysis);
         }
         showStatus();
     }
@@ -636,13 +664,193 @@ private:
             } else {
                 m_camera->setFocusMode(m_startMode);
                 restoreUvc();
-                m_phase = Phase::SweepReady;
+                m_phase = canSearch() ? Phase::SearchReady : Phase::SweepReady;
             }
+        } else if (m_phase == Phase::Search) {
+            searchTick();
         } else if (m_phase == Phase::Sweep && m_phaseClock.elapsed() >= kSweepMs) {
             reportSweep();
             finish();
         }
         showStatus();
+    }
+
+    bool canSearch() {
+        if (!m_uvc || !m_uvc->hasAbsoluteFocus()) {
+            return false;
+        }
+        const std::optional<uvc::FocusRange> range = m_uvc->focusRange();
+        return range && range->maximum > range->minimum;
+    }
+
+    // Our own focus on the page: the camera's focus set by hand, every kCoarseStep from one end, then every
+    // kFineStep around the best, judged by the page's sharpness in the first frame kStepSettleMs after each
+    // move.
+    void startSearch() {
+        m_range = *m_uvc->focusRange();
+        m_report.say(
+            QStringLiteral("\nFocus on the page, %1 trials, the page held still: every %2 from one end, then "
+                           "every %3 around the best; a step's frame counts from %4 ms after the move")
+                .arg(kTrials)
+                .arg(std::max(kCoarseStep, m_range.resolution))
+                .arg(std::max(kFineStep, m_range.resolution))
+                .arg(kStepSettleMs));
+        m_report.say(QStringLiteral("  %1 %2 %3 %4 %5 %6 %7 %8 %9")
+                         .arg(QStringLiteral("trial"), -6)
+                         .arg(QStringLiteral("from"), 5)
+                         .arg(QStringLiteral("steps"), 6)
+                         .arg(QStringLiteral("best"), 5)
+                         .arg(QStringLiteral("peak"), 6)
+                         .arg(QStringLiteral("time s"), 7)
+                         .arg(QStringLiteral("held p10"), 9)
+                         .arg(QStringLiteral("held p50"), 9)
+                         .arg(QStringLiteral("held found"), 11));
+        m_trial = 0;
+        m_phase = Phase::Search;
+        startTrial();
+    }
+
+    void startTrial() {
+        m_curve.clear();
+        m_uvcChanged = true;
+        if (m_uvc->hasAutoFocus()) {
+            m_uvc->setAutoFocus(false);
+        }
+        m_trialStart = m_trial % 2 == 0 ? m_range.maximum : m_range.minimum;
+        moveTo(m_trialStart);
+        m_stage = SearchStage::Defocus;
+    }
+
+    void moveTo(int position) {
+        m_uvc->setFocus(position);
+        m_position = position;
+        m_stepClock.start();
+    }
+
+    void beginStage(SearchStage stage, std::vector<int> positions) {
+        m_stage = stage;
+        m_positions = std::move(positions);
+        m_positionIndex = 0;
+        if (m_positions.empty()) {
+            holdBest();
+        } else {
+            moveTo(m_positions.front());
+        }
+    }
+
+    void searchTake(const Analysis& analysis) {
+        if (m_stepClock.elapsed() < kStepSettleMs) {
+            return;
+        }
+        if ((m_stage == SearchStage::Coarse || m_stage == SearchStage::Fine) && analysis.found) {
+            recordStep(analysis.measures.sharpness);
+        } else if (m_stage == SearchStage::Hold) {
+            ++m_heldFrames;
+            if (analysis.found) {
+                m_held.push_back(analysis.measures.sharpness);
+            }
+        }
+    }
+
+    void searchTick() {
+        const qint64 waited = m_stepClock.elapsed();
+        if (m_stage == SearchStage::Defocus && waited >= kDefocusMs) {
+            m_trialClock.start();
+            const int step = std::max(kCoarseStep, m_range.resolution);
+            std::vector<int> coarse;
+            for (int position = m_range.minimum; position <= m_range.maximum; position += step) {
+                coarse.push_back(position);
+            }
+            if (m_trialStart == m_range.maximum) {
+                std::reverse(coarse.begin(), coarse.end());
+            }
+            beginStage(SearchStage::Coarse, std::move(coarse));
+        } else if ((m_stage == SearchStage::Coarse || m_stage == SearchStage::Fine) &&
+                   waited >= kStepTimeoutMs) {
+            recordStep(0.0); // no page in time
+        } else if (m_stage == SearchStage::Hold && waited >= kStepSettleMs + kHoldMs) {
+            finishTrial();
+        }
+    }
+
+    void recordStep(double sharpness) {
+        m_curve.push_back({m_position, sharpness});
+        if (++m_positionIndex < m_positions.size()) {
+            moveTo(m_positions[m_positionIndex]);
+            return;
+        }
+        if (m_stage != SearchStage::Coarse) {
+            holdBest();
+            return;
+        }
+        const int best = bestStep().position;
+        const int coarse = std::max(kCoarseStep, m_range.resolution);
+        const int fine = std::max(kFineStep, m_range.resolution);
+        std::vector<int> around;
+        for (int position = best - coarse + fine; position < best + coarse; position += fine) {
+            const bool measured = std::any_of(m_curve.begin(), m_curve.end(), [position](const Step& step) {
+                return step.position == position;
+            });
+            if (!measured && position >= m_range.minimum && position <= m_range.maximum) {
+                around.push_back(position);
+            }
+        }
+        beginStage(SearchStage::Fine, std::move(around));
+    }
+
+    Step bestStep() const {
+        Step best;
+        for (const Step& step : m_curve) {
+            if (step.sharpness > best.sharpness) {
+                best = step;
+            }
+        }
+        return best;
+    }
+
+    void holdBest() {
+        m_focusMs = m_trialClock.elapsed();
+        const Step best = bestStep();
+        m_best = best.position;
+        m_peak = best.sharpness;
+        m_held.clear();
+        m_heldFrames = 0;
+        moveTo(m_best);
+        m_stage = SearchStage::Hold;
+    }
+
+    void finishTrial() {
+        m_report.say(QStringLiteral("  %1 %2 %3 %4 %5 %6 %7 %8 %9%")
+                         .arg(m_trial + 1, -6)
+                         .arg(m_trialStart, 5)
+                         .arg(m_curve.size(), 6)
+                         .arg(m_best, 5)
+                         .arg(m_peak, 6, 'f', 0)
+                         .arg(static_cast<double>(m_focusMs) / 1000.0, 7, 'f', 2)
+                         .arg(quantile(m_held, 0.1), 9, 'f', 0)
+                         .arg(quantile(m_held, 0.5), 9, 'f', 0)
+                         .arg(m_heldFrames == 0 ? 0.0
+                                                : 100.0 * static_cast<double>(m_held.size()) /
+                                                      static_cast<double>(m_heldFrames),
+                              10, 'f', 0));
+        std::vector<Step> curve = m_curve;
+        std::sort(curve.begin(), curve.end(),
+                  [](const Step& a, const Step& b) { return a.position < b.position; });
+        QStringList points;
+        for (const Step& step : curve) {
+            points << QStringLiteral("%1:%2").arg(step.position).arg(step.sharpness, 0, 'f', 0);
+        }
+        m_report.say(QStringLiteral("        curve (focus:sharpness) ") + points.join(QLatin1Char(' ')));
+        if (++m_trial < kTrials) {
+            startTrial();
+            return;
+        }
+        restoreUvc();
+        if (m_searchOnly) {
+            finish();
+        } else {
+            m_phase = Phase::SweepReady;
+        }
     }
 
     // The camera's own focus as it was when the probe started: UVC settings outlast the program.
@@ -769,9 +977,24 @@ private:
                     .arg(m_settings[m_settingIndex].name)
                     .arg(std::max<qint64>(0, (kSettleMs + kMeasureMs - m_phaseClock.elapsed()) / 1000 + 1));
             break;
+        case Phase::SearchReady:
+            instruction =
+                QStringLiteral("Settings done. Hold the page still again and press Space: the probe "
+                               "focuses on it %1 times (about 40 s).")
+                    .arg(kTrials);
+            break;
+        case Phase::Search: {
+            static const char* const kStages[] = {"defocusing", "coarse search", "fine search", "holding"};
+            instruction = QStringLiteral("Keep the page still: focusing, trial %1 of %2, %3 at %4")
+                              .arg(m_trial + 1)
+                              .arg(kTrials)
+                              .arg(QLatin1String(kStages[static_cast<int>(m_stage)]))
+                              .arg(m_position);
+            break;
+        }
         case Phase::SweepReady:
             instruction =
-                QStringLiteral("Settings done. Bring the page as close as the camera shows it whole, press "
+                QStringLiteral("Now the sweep. Bring the page as close as the camera shows it whole, press "
                                "Space, then move it slowly to arm's length over 20 s.");
             break;
         case Phase::Sweep:
@@ -801,6 +1024,22 @@ private:
     std::optional<bool> m_uvcAutoAtStart;
     std::optional<int> m_uvcFocusAtStart;
     bool m_uvcChanged = false; // since the start or the last restore
+    bool m_searchOnly = false;
+    uvc::FocusRange m_range{};
+    int m_trial = 0;
+    int m_trialStart = 0;
+    int m_position = 0;
+    int m_best = 0;
+    double m_peak = 0.0;
+    qint64 m_focusMs = 0;
+    SearchStage m_stage = SearchStage::Defocus;
+    std::vector<int> m_positions;
+    std::size_t m_positionIndex = 0;
+    std::vector<Step> m_curve;
+    std::vector<double> m_held;
+    int m_heldFrames = 0;
+    QElapsedTimer m_stepClock;
+    QElapsedTimer m_trialClock;
     QTimer m_ticker;
     QElapsedTimer m_clock;
     QElapsedTimer m_phaseClock;
@@ -877,7 +1116,7 @@ int main(int argc, char* argv[]) {
         report.say(QStringLiteral(
             "usage: camera_focus_probe --list [--no-prompt] [--no-start]\n"
             "       camera_focus_probe --self-test [--model <file>]\n"
-            "       camera_focus_probe [--camera <number or part of its name>] [--model <file>] "
+            "       camera_focus_probe [--camera <number or part of its name>] [--search] [--model <file>] "
             "[--out <file>]"));
         return 0;
     }
@@ -928,7 +1167,7 @@ int main(int argc, char* argv[]) {
             return;
         }
         window = std::make_unique<ProbeWindow>(*device, std::filesystem::path(model.toStdU16String()), out,
-                                               report);
+                                               arguments.contains(QStringLiteral("--search")), report);
         window->show();
     });
     return QApplication::exec();
