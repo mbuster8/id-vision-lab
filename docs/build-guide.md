@@ -515,9 +515,12 @@ checks that the plug-in loads with them.
 **ONNX Runtime beside every program.** Windows 11 ships an older `onnxruntime.dll` in `System32`, for Windows
 ML. A program without vcpkg's copy beside it would load that one, which lacks the API the project is built
 against: the Document processor would then say "ONNX Runtime could not be loaded". So every program that links
-`doc_vision` (the Document Lab, `live_sender`, `doc_vision_eval` and their tests) has vcpkg's DLLs copied beside
-it after each build, and the build stops if `onnxruntime.dll` is not there (`cmake/runtime_dlls.cmake`). The
-packages ship it beside `document_lab.exe`, with the model in `bin\models`.
+`doc_vision` (the Document Lab, `live_sender`, `doc_vision_eval` and their tests) has vcpkg's release
+`onnxruntime.dll`, and the release DLLs only it uses (Protocol Buffers, Abseil, RE2), copied beside it after each
+build, and the build stops if `onnxruntime.dll` is not there (`cmake/runtime_dlls.cmake`). Release in debug
+builds too: vcpkg's debug `onnxruntime.dll` fails ONNX's debug-only check of its operator schemas as soon as it
+loads a model, and the programs reach ONNX Runtime through its C API only, so the two C runtimes never share an
+object. The packages ship it beside `document_lab.exe`, with the model in `bin\models`.
 
 ### The developer environment
 

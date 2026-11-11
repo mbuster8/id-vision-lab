@@ -91,10 +91,11 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   `apps/CMakeLists.txt` only. The no-Qt configure above must keep building.
 - **ONNX Runtime and the models:** only `doc_vision` uses ORT, and only in its `.cpp` files, with
   `ORT_API_MANUAL_INIT` (`Ort::InitApi` after checking the loaded runtime), so an older `onnxruntime` is an
-  error value, never a crash (a missing one stops the program from starting: it is linked); no exception leaves `doc_vision`. ORT comes from Homebrew or
-  vcpkg (`scripts/install-onnxruntime.sh` on Linux), never Microsoft's binaries. On Windows every program linking
-  `doc_vision` gets vcpkg's `onnxruntime.dll` beside it (`id_vision_lab_copy_runtime_dlls`), or System32's older
-  one loads. Models are never committed: `cmake/models.cmake` fetches each at configure time from its pinned
+  error value, never a crash (a missing one stops the program from starting: it is linked); no exception leaves
+  `doc_vision`. ORT comes from Homebrew or vcpkg (`scripts/install-onnxruntime.sh` on Linux), never Microsoft's
+  binaries. On Windows every program linking `doc_vision` gets vcpkg's release `onnxruntime.dll` and the release
+  DLLs only it uses beside it, debug builds too (`id_vision_lab_copy_runtime_dlls`): System32's older one would
+  load otherwise, and vcpkg's debug one fails ONNX's schema check on loading a model. Models are never committed: `cmake/models.cmake` fetches each at configure time from its pinned
   release, checks its SHA-256 and caches it per user (`ID_VISION_LAB_MODEL_DIR` first); the programs never
   download.
 - **Threading:** `ImageSink::onImageReceived` runs on the server's worker thread. `QtImageSink` hands images
