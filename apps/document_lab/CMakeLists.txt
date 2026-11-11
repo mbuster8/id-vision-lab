@@ -19,6 +19,7 @@ id_vision_lab_copy_ffmpeg_dlls(media_smoke)
 add_library(document_lab_ui STATIC
     camera_backend.cpp
     camera_backend.h
+    camera_focus.h
     camera_formats.cpp
     camera_formats.h
     camera_frame.cpp
@@ -38,6 +39,17 @@ add_library(document_lab_ui STATIC
     uvc_descriptor.cpp
     uvc_descriptor.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# The camera's own focus, one implementation per platform (A3.3): IOKit on macOS, DirectShow on Windows, none
+# elsewhere.
+if(APPLE)
+    target_sources(document_lab_ui PRIVATE camera_focus_mac.cpp)
+    target_link_libraries(document_lab_ui PRIVATE "-framework IOKit" "-framework CoreFoundation")
+elseif(WIN32)
+    target_sources(document_lab_ui PRIVATE camera_focus_windows.cpp)
+    target_link_libraries(document_lab_ui PRIVATE strmiids ole32 oleaut32)
+else()
+    target_sources(document_lab_ui PRIVATE camera_focus_none.cpp)
+endif()
 target_link_libraries(document_lab_ui
     PUBLIC
         Qt6::Widgets
