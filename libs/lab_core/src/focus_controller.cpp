@@ -3,6 +3,7 @@
 #include "number_text.h"
 
 #include <doc_vision/guidance.h>
+#include <doc_vision/page_detector.h>
 #include <doc_vision/page_geometry.h>
 
 #include <opencv2/core.hpp>
@@ -93,9 +94,14 @@ void FocusController::step(const frame_io::Frame& frame, const std::optional<Pag
     watch(frame, page);
     const nanoseconds at = frame.at;
     if (m_request) {
+        const auto [x, y] = *m_request;
         m_request.reset();
         if (!canFocus()) {
             setNote("This camera's focus can't be set from the lab");
+        } else {
+            // A click always wins: it ends any search and starts its own.
+            startClickSearch(frame, x, y);
+            return;
         }
     }
     if (m_search) {
@@ -278,9 +284,55 @@ void FocusController::startPageSearch(const frame_io::Frame& frame, const PageFa
     }
 }
 
-void FocusController::startClickSearch(const frame_io::Frame&, double, double) {}
+void FocusController::startClickSearch(const frame_io::Frame& frame, double x, double y) {
+    std::optional<int> lens;
+    if (m_search) {
+        lens = m_search->lensFrom;
+    } else if (m_status.state == FocusStatus::State::Holding) {
+        lens = m_status.position;
+    }
+    m_search.reset();
+    if (!takeControl()) {
+        return;
+    }
+    if (!lens) {
+        lens = m_control->position();
+    }
+    const int width = frame.image.cols;
+    const int height = frame.image.rows;
+    const int side = std::max(1, static_cast<int>(std::lround(kClickRegionShare * std::min(width, height))));
+    const int cx = static_cast<int>(std::lround(x * width));
+    const int cy = static_cast<int>(std::lround(y * height));
+    Search search;
+    search.kind = FocusStatus::Kind::Click;
+    search.startedAt = frame.at;
+    search.region = cv::Rect(cx - side / 2, cy - side / 2, side, side) & cv::Rect(0, 0, width, height);
+    search.before = clickValue(frame, search.region);
+    search.lensFrom = lens.value_or(m_range->minimum);
+    m_curve.clear();
+    m_status.state = FocusStatus::State::Searching;
+    m_status.kind = FocusStatus::Kind::Click;
+    m_status.afterSearch = false;
+    setNote("Focusing…");
+    m_search = search;
+    beginStage(Stage::Coarse, coarsePositions(search.lensFrom), frame);
+}
 
-double FocusController::clickValue(const frame_io::Frame&, cv::Rect) const { return 0.0; }
+// The region's sharpness, the crop first turned into 8-bit BGR by the frame's own value range (as the
+// Document processor turns the whole frame).
+double FocusController::clickValue(const frame_io::Frame& frame, cv::Rect region) const {
+    if (frame.image.empty()) {
+        return 0.0;
+    }
+    const cv::Rect inside = region & cv::Rect(0, 0, frame.image.cols, frame.image.rows);
+    if (inside.empty()) {
+        return 0.0;
+    }
+    const visual_debug::ValueRange range =
+        frame.tags.valueRange.empty() ? visual_debug::ValueRange{} : frame.tags.valueRange;
+    const cv::Mat crop = doc_vision::toBgr8(frame.image(inside), range.min, range.max);
+    return doc_vision::regionSharpness(crop, cv::Rect(0, 0, crop.cols, crop.rows));
+}
 
 void FocusController::beginStage(Stage stage, std::vector<int> positions, const frame_io::Frame& frame) {
     Search& search = *m_search;

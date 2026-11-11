@@ -13,9 +13,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -132,7 +135,8 @@ public:
             m_startPosition = log->position;
         }
         log->now = at;
-        frame_io::Frame frame{.image = image, .number = number, .at = at, .tags = {}};
+        frame_io::Frame frame{
+            .image = picture ? picture(lensAt(at)) : image, .number = number, .at = at, .tags = tags};
         const State before = last.state;
         last = controller->next(frame, facts());
         if (last.state == State::Searching && before != State::Searching) {
@@ -163,7 +167,9 @@ public:
         return false;
     }
 
-    cv::Mat image; // the frames' picture: empty unless a click test draws one
+    cv::Mat image;                            // the frames' picture: empty unless a click test draws one
+    std::function<cv::Mat(int lens)> picture; // or one drawn for where the lens is
+    visual_debug::ImageDescription tags{};
 
     // The camera's own autofocus moved the lens to `position` while the lab was not driving it.
     void wander(int position) {
@@ -659,6 +665,178 @@ TEST(FocusController, FailedLetGoRestoreIsReported) {
     run.framesFor(1100ms);
     EXPECT_EQ(run.last.state, State::Camera);
     EXPECT_TRUE(run.last.restoreFailed);
+}
+
+// --- Task 5: click-to-focus ---
+
+const cv::Size kClickFrame{640, 360};
+
+// An 8-pixel checkerboard in `where` (flat grey elsewhere), blurred with σ = 0.2 × the lens's distance from
+// `peak`; no blur at the peak.
+cv::Mat checkerboard(int lens, double peak, cv::Rect where = cv::Rect(0, 0, 640, 360)) {
+    // Drawn once for each region and blur: thousands of frames ask for a few dozen pictures.
+    static std::map<std::tuple<int, int, int, int, int>, cv::Mat> drawn;
+    const double sigma = 0.2 * std::abs(lens - peak);
+    const auto key =
+        std::tuple{where.x, where.y, where.width, where.height, static_cast<int>(std::lround(sigma * 10))};
+    if (const auto found = drawn.find(key); found != drawn.end()) {
+        return found->second;
+    }
+    cv::Mat image(kClickFrame, CV_8UC3, cv::Scalar::all(128));
+    for (int y = where.y; y < where.y + where.height; ++y) {
+        for (int x = where.x; x < where.x + where.width; ++x) {
+            image.at<cv::Vec3b>(y, x) =
+                (x / 8 + y / 8) % 2 == 0 ? cv::Vec3b(30, 30, 30) : cv::Vec3b(225, 225, 225);
+        }
+    }
+    if (sigma > 0.0) {
+        cv::GaussianBlur(image, image, cv::Size(0, 0), sigma);
+    }
+    drawn.emplace(key, image);
+    return image;
+}
+
+TEST(FocusController, ClickFocusesTheRegion) {
+    CameraRun run;
+    run.page = false;
+    run.picture = [&run](int lens) { return checkerboard(lens, run.curve.at); };
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+    EXPECT_GE(*run.last.position, 25);
+    EXPECT_LE(*run.last.position, 35);
+    // "Before" is the region at the lens's own position, 120, before any move.
+    const double before = doc_vision::regionSharpness(checkerboard(120, 30), cv::Rect(284, 144, 72, 72));
+    EXPECT_EQ(run.last.note.rfind("Focused at ", 0), 0u) << run.last.note;
+    EXPECT_NE(run.last.note.find(": " + std::to_string(std::lround(before)) + " → "), std::string::npos)
+        << run.last.note;
+}
+
+TEST(FocusController, ClickSaysFocusing) {
+    CameraRun run;
+    run.page = false;
+    run.picture = [&run](int lens) { return checkerboard(lens, run.curve.at); };
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Searching);
+    EXPECT_EQ(run.last.note, "Focusing…");
+}
+
+TEST(FocusController, ClickOnAFlatRegionFails) {
+    CameraRun run;
+    run.page = false;
+    run.picture = [](int) { return cv::Mat(kClickFrame, CV_8UC3, cv::Scalar::all(128)); };
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    EXPECT_EQ(run.searchToTheEnd(), State::Camera);
+    EXPECT_EQ(run.last.note, "Could not focus there");
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
+TEST(FocusController, ClickAbortsAPageSearch) {
+    CameraRun run;
+    run.picture = [&run](int lens) { return checkerboard(lens, run.curve.at); };
+    ASSERT_TRUE(run.until(State::Searching));
+    ASSERT_EQ(run.last.kind, FocusStatus::Kind::Page);
+    run.controller->requestAt(0.5, 0.5);
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Searching);
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+}
+
+TEST(FocusController, ClickNoPageSearchMeanwhile) {
+    CameraRun run;
+    run.curve.at = 200; // the page stays blurred near 30, where the checkerboard is sharp
+    run.picture = [](int lens) { return checkerboard(lens, 30); };
+    run.framesFor(1s);
+    run.controller->requestAt(0.5, 0.5);
+    run.frame();
+    while (run.last.state == State::Searching && run.at < 20s) {
+        EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+        run.frame();
+    }
+    EXPECT_EQ(run.last.state, State::Holding);
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+}
+
+TEST(FocusController, ClickWithoutAControl) {
+    CameraRun run(false);
+    run.page = false;
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    run.frame();
+    EXPECT_EQ(run.last.note, "This camera's focus can't be set from the lab");
+    EXPECT_EQ(run.last.state, State::Camera);
+}
+
+TEST(FocusController, ClickIgnoresNaN) {
+    CameraRun run;
+    run.page = false;
+    run.picture = [](int lens) { return checkerboard(lens, 30, cv::Rect(560, 0, 80, 80)); };
+    run.frame();
+    const std::size_t calls = run.log->calls.size();
+    run.controller->requestAt(std::nan(""), 0.5);
+    run.controller->requestAt(0.5, INFINITY);
+    run.framesFor(1s);
+    EXPECT_EQ(run.log->calls.size(), calls);
+    EXPECT_EQ(run.last.state, State::Camera);
+    run.controller->requestAt(2.0, -1.0); // clamped: the top-right corner, where the checkerboard is
+    EXPECT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+}
+
+TEST(FocusController, ClickLastRequestWins) {
+    CameraRun run;
+    run.page = false;
+    run.picture = [](int lens) { return checkerboard(lens, 30, cv::Rect(320, 0, 320, 360)); };
+    run.frame();
+    run.controller->requestAt(0.1, 0.5); // flat grey
+    run.controller->requestAt(0.9, 0.5); // the checkerboard
+    EXPECT_EQ(run.searchToTheEnd(), State::Holding);
+}
+
+TEST(FocusController, ClickOnASixteenBitFrame) {
+    CameraRun run;
+    run.page = false;
+    run.tags.valueRange = {.min = 0.0, .max = 4095.0};
+    run.picture = [](int lens) {
+        cv::Mat grey;
+        cv::cvtColor(checkerboard(lens, 30), grey, cv::COLOR_BGR2GRAY);
+        cv::Mat twelveBits;
+        grey.convertTo(twelveBits, CV_16UC1, 4095.0 / 255.0);
+        return twelveBits;
+    };
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    EXPECT_EQ(run.searchToTheEnd(), State::Holding);
+}
+
+TEST(FocusController, ClickHoldOutlastsAPageLoss) {
+    CameraRun run;
+    run.curve.at = 200;
+    run.picture = [](int lens) { return checkerboard(lens, 30); };
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.page = false;
+    run.framesFor(2s);
+    EXPECT_EQ(run.last.state, State::Holding);
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+}
+
+TEST(FocusController, ClickSearchCoolsDownPageSearches) {
+    CameraRun run;
+    run.curve.at = 200; // the page blurred where the click focuses
+    run.picture = [](int lens) { return checkerboard(lens, 30); };
+    run.frame();
+    run.controller->requestAt(0.5, 0.5);
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.framesFor(2900ms);
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Click);
+    EXPECT_TRUE(run.until(State::Searching, 3s));
+    EXPECT_EQ(run.last.kind, FocusStatus::Kind::Page);
 }
 
 } // namespace
