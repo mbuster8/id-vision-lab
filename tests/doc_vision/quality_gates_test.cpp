@@ -101,11 +101,28 @@ TEST(QualityGates, ResetForgetsTheBands) {
     EXPECT_TRUE(judge.judge(m).passed[at(Gate::InView)]);
 }
 
+// Sharp fails under 50 and passes again from 55: the C920's pages read their MRZ exactly from 50 up, where
+// 200 let none of them through (measured 11 November).
+TEST(QualityGates, SharpFailsUnderFiftyAndPassesAgainFromFiftyFive) {
+    doc_vision::GateJudge judge;
+    Measures m = goodMeasures();
+    m.sharpness = 49;
+    EXPECT_FALSE(judge.judge(m).passed[at(Gate::Sharp)]);
+    m.sharpness = 52;
+    EXPECT_FALSE(judge.judge(m).passed[at(Gate::Sharp)]); // inside the band: still failing
+    m.sharpness = 56;
+    EXPECT_TRUE(judge.judge(m).passed[at(Gate::Sharp)]);
+
+    doc_vision::GateJudge fresh;
+    m.sharpness = 51;
+    EXPECT_TRUE(fresh.judge(m).passed[at(Gate::Sharp)]);
+}
+
 TEST(QualityGates, DarkPageSaysDarkNotBlurred) {
     doc_vision::GateJudge judge;
     Measures m = goodMeasures();
     m.medianLuma = 60;
-    m.sharpness = 50;
+    m.sharpness = 20;
     const doc_vision::Verdicts verdicts = judge.judge(m);
     EXPECT_FALSE(verdicts.passed[at(Gate::Light)]);
     EXPECT_TRUE(verdicts.tooDark);
@@ -164,7 +181,7 @@ TEST(QualityGates, TiltedAndBlurredFail) {
     doc_vision::GateJudge judge;
     Measures m = goodMeasures();
     m.tiltDegrees = 30;
-    m.sharpness = 100;
+    m.sharpness = 30;
     const doc_vision::Verdicts verdicts = judge.judge(m);
     EXPECT_FALSE(verdicts.passed[at(Gate::Flat)]);
     EXPECT_FALSE(verdicts.passed[at(Gate::Sharp)]);

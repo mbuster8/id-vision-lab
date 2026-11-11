@@ -43,7 +43,7 @@ struct Thresholds {
     Band longerSide{0.40, 0.43};   // fails under: too far
     Band extent{0.92, 0.89};       // fails over: too close
     Band tilt{25.0, 22.0};         // fails over
-    Band sharpness{200.0, 220.0};  // fails under
+    Band sharpness{50.0, 55.0};    // fails under: a C920 reads the MRZ exactly from 50 up
     Band glare{0.010, 0.008};      // fails over
     Band dark{70.0, 75.0};         // median luma; fails under
     Band bright{215.0, 210.0};     // median luma; fails over

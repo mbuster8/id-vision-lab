@@ -249,7 +249,7 @@ TEST(DocumentProcessor, FailingMeasuresAreBad) {
     const Finding* sharpness = findingNamed(result, "Sharpness");
     ASSERT_NE(sharpness, nullptr);
     EXPECT_EQ(sharpness->tone, Finding::Tone::Bad);
-    EXPECT_NE(sharpness->value.find(" (min 200)"), std::string::npos) << sharpness->value;
+    EXPECT_NE(sharpness->value.find(" (min 50)"), std::string::npos) << sharpness->value;
     EXPECT_EQ(*findingNamed(result, "Gates"), (Finding{"Gates", "5 of 6 pass", Finding::Tone::Bad}));
     EXPECT_EQ(result.guidance->frameHint, Hint::Blurred);
 }

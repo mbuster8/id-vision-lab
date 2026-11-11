@@ -667,7 +667,7 @@ every replay, so the checks can be tried on recorded clips.
   and hides with **Overlays**; the banner and the chips do not.
 - **The results** list `Document` (`TD3 page` or `not found`), `Fill`, `Tilt`, `Sharpness`, `Glare` and
   `Exposure` while a page is found, then `Gates` (`all pass` in green, `5 of 6 pass` in red) and `Detector`
-  (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 200)`.
+  (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 50)`.
 - **Show → page** shows the page flattened, as the checks see it.
 - **The status bar** adds the state: `State: searching`, `State: adjust (sharpness)` (the check to fix) or
   `State: good`.
