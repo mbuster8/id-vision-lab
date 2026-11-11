@@ -193,8 +193,8 @@ build/release/tests/doc_vision_eval --model <the model> --midv <MIDV-2020>/clips
 `--replay <path>...` takes anything the Document Lab replays, without labels: a video, an image, a folder of
 images or a recording. It is how to see what a camera gives: every run also prints the sharpness of the pages
 found wholly in view (percentiles, and the share at or above several thresholds). `--threads <n>` sets ONNX
-Runtime's threads (0, the default, lets it choose), `--margin <share>` tries another in-view margin, and
-`--size 1920x1080` resizes each frame first. `--help` prints the usage.
+Runtime's threads (0, the default, lets it choose), `--margin <share>` tries another in-view margin,
+`--sharpness <value>` another sharpness limit, and `--size 1920x1080` resizes each frame first. `--help` prints the usage.
 
 ## Running the tests
 

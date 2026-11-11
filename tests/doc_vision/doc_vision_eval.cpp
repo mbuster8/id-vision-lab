@@ -8,7 +8,8 @@
 //   doc_vision_eval --model <onnx> [options] --replay <video, image, folder or recording>...
 //
 // Options: --threads <n> (ONNX Runtime's intra-op threads; 0 for its default), --margin <share> (the in-view
-// gate fails under it and passes again 0.005 above), --size <width>x<height> (each frame resized first,
+// gate fails under it and passes again 0.005 above), --sharpness <value> (the Sharp gate fails under it and
+// passes again 10% above), --size <width>x<height> (each frame resized first,
 // INTER_LINEAR). labels.csv has rows "clip,frame,state[,x0,y0,...,x3,y3]": state "doc" (the page wholly in
 // view, with its corners), "part" (cut by the frame's edge) or "none". MIDV-2020's frames are cut when a
 // corner of their doc_quad lies outside the image.
@@ -160,6 +161,7 @@ struct Options {
     std::filesystem::path model;
     int threads = doc_vision::kDefaultIntraOpThreads;
     std::optional<double> margin;
+    std::optional<double> sharpness;
     std::optional<cv::Size> size;
     std::optional<std::filesystem::path> labels;
     std::optional<std::filesystem::path> midv;
@@ -172,6 +174,9 @@ doc_vision::Thresholds thresholdsOf(const Options& options) {
     doc_vision::Thresholds thresholds;
     if (options.margin) {
         thresholds.edgeMargin = {*options.margin, *options.margin + 0.005};
+    }
+    if (options.sharpness) {
+        thresholds.sharpness = {*options.sharpness, *options.sharpness * 1.1};
     }
     return thresholds;
 }
@@ -534,11 +539,14 @@ void report(const Run& run) {
 
 int usage() {
     std::fprintf(stderr,
-                 "usage: doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--size <w>x<h>]\n"
+                 "usage: doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
+                 "[--size <w>x<h>]\n"
                  "                       --labels <labels.csv> <clip>...\n"
-                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--size <w>x<h>]\n"
+                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
+                 "[--size <w>x<h>]\n"
                  "                       --midv <clips folder> [--frames <n>] <type>...\n"
-                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--size <w>x<h>]\n"
+                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
+                 "[--size <w>x<h>]\n"
                  "                       --replay <video, image, folder of images or recording>...\n");
     return 2;
 }
@@ -571,6 +579,8 @@ std::optional<Options> parse(int argc, char** argv) {
             options.threads = std::stoi(*v);
         } else if (arg == "--margin") {
             options.margin = std::stod(*v);
+        } else if (arg == "--sharpness") {
+            options.sharpness = std::stod(*v);
         } else if (arg == "--size") {
             const std::size_t x = v->find('x');
             if (x == std::string::npos) {
@@ -617,8 +627,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf(
-        "LC100 · threads %d · margin %.3f · size %s · session created in %.1f ms\n", options->threads,
-        thresholdsOf(*options).edgeMargin.failsAt,
+        "LC100 · threads %d · margin %.3f · sharpness %.0f · size %s · session created in %.1f ms\n",
+        options->threads, thresholdsOf(*options).edgeMargin.failsAt, thresholdsOf(*options).sharpness.failsAt,
         options->size
             ? (std::to_string(options->size->width) + "x" + std::to_string(options->size->height)).c_str()
             : "as recorded",
