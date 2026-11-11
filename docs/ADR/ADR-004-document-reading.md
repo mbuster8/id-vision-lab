@@ -91,7 +91,7 @@ The screens below were agreed with the owner and are built as drawn. They show t
 and the cards; the window's own rows of controls stay as ADR-003 built them.
 
 12. **The scan starts with the camera.** With the Document processor chosen and a camera running, guidance shows
-    from the first frame: "Show the passport's photo page". With no camera connected, the canvas says so and
+    from the first frame: "Show the document". With no camera connected, the canvas says so and
     offers a video file instead; with camera access refused, it says where to allow it. Each goes once a
     camera appears, or once access is allowed and the camera starts.
 13. **One big banner at a time**, top centre over the canvas, on a dark panel that keeps it readable over any
@@ -103,21 +103,23 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
 
     ![A blurred page: one red hint, the failing gate marked below](../images/scan-flow/02-adjust-blurred.png)
 
-14. **The hints, first that applies wins**, checked on every frame:
+14. **The hints, first that applies wins**, checked on every frame. On 11 November, after A3.3's hand check, the
+    owner had "page" become "document" in what the lab says, since an ID card has no page; words for a passport
+    alone wait until the MRZ says what the document is (A4). The screens above keep the earlier words.
 
     | # | When | Banner (big line · smaller line) | Step |
     |---|---|---|---|
-    | 1 | No page found | Show the passport's photo page · Hold it so the whole page is in view | A3 |
-    | 2 | Cut by the frame's edge | ✗ Move back · the whole page must be in view | A3 |
-    | 2b | Cut by the frame's edge, but small enough to fit | ✗ Move the page to the middle · the whole page must be in view | A3 |
+    | 1 | No page found | Show the document · the side with the photo, all of it in view | A3 |
+    | 2 | Cut by the frame's edge | ✗ Move back · the whole document must be in view | A3 |
+    | 2b | Cut by the frame's edge, but small enough to fit | ✗ Move the document to the middle · the whole document must be in view | A3 |
     | 3 | Too far | ✗ Move closer | A3 |
     | 4 | Too close | ✗ Move a little further away | A3 |
-    | 5 | Tilted | ✗ Hold the page flat to the camera | A3 |
+    | 5 | Tilted | ✗ Hold the document flat to the camera | A3 |
     | 6 | Blurred | ✗ Blurred: hold still · or move a little closer or further away | A3 |
     | 6a | The lab's focus searches (it shows over every hint but 1, with Sharp ✗ and the outline red) | Hold still: focusing | A3.3 |
-    | 6b | Blurred, and a search found nothing sharp | ✗ This camera can't focus this close · Move the page a little further away | A3.3 |
-    | 6c | Blurred, steady for 3 s, on a camera whose focus the lab cannot set | ✗ This camera can't make the page sharp · Try more light, or another camera | A3.3 |
-    | 7 | Glare | ✗ Glare on the page · tilt it slightly away from the light | A3 |
+    | 6b | Blurred, and a search found nothing sharp | ✗ This camera can't focus this close · Move the document a little further away | A3.3 |
+    | 6c | Blurred, steady for 3 s, on a camera whose focus the lab cannot set | ✗ This camera can't make the document sharp · Try more light, or another camera | A3.3 |
+    | 7 | Glare | ✗ Glare on the document · tilt it slightly away from the light | A3 |
     | 8 | Too dark | ✗ Too dark · add more light | A3 |
     | 9 | Too bright | ✗ Too bright · move out of direct light | A3 |
     | 10 | Every gate passes | ✓ Good: hold still (A4 adds "Reading the lines at the bottom · 2 of 3") | A3, A4 |

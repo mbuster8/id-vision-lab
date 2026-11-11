@@ -55,16 +55,16 @@ TEST(ScanWords, WordsAreTheSpecs) {
         const char* small;
     };
     const Row rows[] = {
-        {Hint::NoPage, Tone::Neutral, true, "Show the passport's photo page",
-         "Hold it so the whole page is in view"},
-        {Hint::CutByEdge, Tone::Bad, false, "Move back", "the whole page must be in view"},
-        {Hint::MoveToMiddle, Tone::Bad, false, "Move the page to the middle",
-         "the whole page must be in view"},
+        {Hint::NoPage, Tone::Neutral, true, "Show the document",
+         "the side with the photo, all of it in view"},
+        {Hint::CutByEdge, Tone::Bad, false, "Move back", "the whole document must be in view"},
+        {Hint::MoveToMiddle, Tone::Bad, false, "Move the document to the middle",
+         "the whole document must be in view"},
         {Hint::TooFar, Tone::Bad, false, "Move closer", ""},
         {Hint::TooClose, Tone::Bad, false, "Move a little further away", ""},
-        {Hint::Tilted, Tone::Bad, false, "Hold the page flat to the camera", ""},
+        {Hint::Tilted, Tone::Bad, false, "Hold the document flat to the camera", ""},
         {Hint::Blurred, Tone::Bad, false, "Blurred: hold still", "or move a little closer or further away"},
-        {Hint::Glare, Tone::Bad, false, "Glare on the page", "tilt it slightly away from the light"},
+        {Hint::Glare, Tone::Bad, false, "Glare on the document", "tilt it slightly away from the light"},
         {Hint::TooDark, Tone::Bad, false, "Too dark", "add more light"},
         {Hint::TooBright, Tone::Bad, false, "Too bright", "move out of direct light"},
         {Hint::Good, Tone::Good, false, "Good: hold still", ""},
@@ -85,9 +85,9 @@ TEST(ScanWords, FocusWords) {
               (BannerContent{Tone::Neutral, false, QStringLiteral("Hold still: focusing"), QString()}));
     EXPECT_EQ(document_lab::bannerFor(FocusBanner::CannotFocusThisClose),
               (BannerContent{Tone::Bad, false, QStringLiteral("This camera can't focus this close"),
-                             QStringLiteral("Move the page a little further away")}));
+                             QStringLiteral("Move the document a little further away")}));
     EXPECT_EQ(document_lab::bannerFor(FocusBanner::CannotMakeSharp),
-              (BannerContent{Tone::Bad, false, QStringLiteral("This camera can't make the page sharp"),
+              (BannerContent{Tone::Bad, false, QStringLiteral("This camera can't make the document sharp"),
                              QStringLiteral("Try more light, or another camera")}));
 }
 
@@ -146,7 +146,7 @@ TEST(ScanWords, ChipLabels) {
 TEST(ScanBanner, FitShrinksThenElides) {
     const QFont font = document_lab::bigLineFont(QWidget().font());
     ASSERT_EQ(font.pixelSize(), 32);
-    const QString text = "Move the page to the middle";
+    const QString text = "Move the document to the middle";
     QFont at26 = font;
     at26.setPixelSize(26);
     const int width26 = QFontMetrics(at26).horizontalAdvance(text);

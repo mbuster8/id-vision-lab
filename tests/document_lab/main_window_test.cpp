@@ -1851,7 +1851,7 @@ struct Guided {
 };
 
 // A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
-// its only overlay, a "page" picture when asked, and a Bad Sharpness row.
+// its only overlay, a "document" picture when asked, and a Bad Sharpness row.
 lab_core::ProcessorResult guided(const Guided& wanted) {
     lab_core::ProcessorResult result;
     lab_core::Guidance guidance;
@@ -1877,7 +1877,7 @@ lab_core::ProcessorResult guided(const Guided& wanted) {
     }
     if (wanted.page) {
         result.images.push_back(
-            {.name = "page", .image = cv::Mat(44, 62, CV_8UC3, cv::Scalar::all(180)), .description = {}});
+            {.name = "document", .image = cv::Mat(44, 62, CV_8UC3, cv::Scalar::all(180)), .description = {}});
     }
     if (wanted.facts) {
         lab_core::PageFacts facts;
@@ -1917,7 +1917,7 @@ QString bannerLine(const Lab& lab) {
     return shown->isHidden() || !shown->content() ? QString() : shown->content()->bigLine;
 }
 
-const QString kShowThePage = QStringLiteral("Show the passport's photo page");
+const QString kShowThePage = QStringLiteral("Show the document");
 
 TEST(LabWindow, DocumentIsAProcessor) {
     Lab lab;
@@ -2078,7 +2078,7 @@ TEST(LabWindow, BannerAbovePlaceholder) {
     lab.choose("processorCombo", QStringLiteral("Document"));
     lab.replay(framesOf(test_support::cardFrame(), 3));
     lab.pump();
-    lab.choose("showCombo", QStringLiteral("page"));
+    lab.choose("showCombo", QStringLiteral("document"));
 
     lab.pump();
 
@@ -2171,7 +2171,7 @@ TEST(LabWindow, GuideOnlyOnTheFrameEntry) {
     lab.pump();
     ASSERT_NE(guideOn(lab), nullptr);
 
-    lab.choose("showCombo", QStringLiteral("page"));
+    lab.choose("showCombo", QStringLiteral("document"));
     lab.pump();
 
     EXPECT_EQ(guideOn(lab), nullptr);
@@ -2305,7 +2305,7 @@ TEST(LabWindow, CannotFocusWithoutControlWords) {
 
     cameraFrames(lab, 95); // steady and blurred for more than 3 s
 
-    EXPECT_EQ(bannerLine(lab), QStringLiteral("This camera can't make the page sharp"));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("This camera can't make the document sharp"));
     EXPECT_EQ(banner(lab)->content()->smallLine, QStringLiteral("Try more light, or another camera"));
 }
 
@@ -2319,7 +2319,7 @@ TEST(LabWindow, CannotFocusAfterSearchWords) {
     }
 
     EXPECT_EQ(bannerLine(lab), QStringLiteral("This camera can't focus this close"));
-    EXPECT_EQ(banner(lab)->content()->smallLine, QStringLiteral("Move the page a little further away"));
+    EXPECT_EQ(banner(lab)->content()->smallLine, QStringLiteral("Move the document a little further away"));
     EXPECT_TRUE(lab.focusLog->autoFocus); // put back
 }
 
@@ -2334,7 +2334,7 @@ TEST(LabWindow, TooFarKeepsItsBanner) {
     lab.choose("processorCombo", QStringLiteral("Document"));
     startStop(lab)->click();
     cameraFrames(lab, 95);
-    ASSERT_EQ(bannerLine(lab), QStringLiteral("This camera can't make the page sharp"));
+    ASSERT_EQ(bannerLine(lab), QStringLiteral("This camera can't make the document sharp"));
 
     cameraFrames(lab, 3);
 
@@ -2355,7 +2355,7 @@ TEST(LabWindow, ClickFocusesOnlyInACameraRunOnTheFrame) {
     startStop(lab)->click();
     cameraFrames(lab, 1);
 
-    lab.choose("showCombo", QStringLiteral("page"));
+    lab.choose("showCombo", QStringLiteral("document"));
     cameraFrames(lab, 1);
     clickCanvas(lab);
     cameraFrames(lab, 1);

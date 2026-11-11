@@ -500,7 +500,7 @@ void FocusController::finishSearch(const frame_io::Frame& frame) {
             m_memory->failed = true;
             m_memory->side = m_lastSide;
         }
-        setNote("Could not focus on the page");
+        setNote("Could not focus on the document");
     } else {
         m_status.state = FocusStatus::State::Camera;
         setNote("Could not focus there");

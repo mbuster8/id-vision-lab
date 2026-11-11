@@ -420,6 +420,7 @@ TEST(FocusController, NeverSharpGivesCannotFocusAndRestores) {
     EXPECT_TRUE(run.log->autoFocus);
     EXPECT_EQ(lab_core::focusFinding(run.last),
               (lab_core::Finding{"Focus", "can't focus", lab_core::Finding::Tone::Bad}));
+    EXPECT_EQ(run.last.note, "Could not focus on the document"); // a card has no page
 }
 
 // Review Focus 4: after a failed search, tremor and a noisy sharp frame start no second sweep.

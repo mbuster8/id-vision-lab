@@ -23,22 +23,24 @@ BannerContent bannerFor(doc_vision::Hint hint) {
     using doc_vision::Hint;
     switch (hint) {
     case Hint::NoPage:
-        return {doc_vision::Tone::Neutral, true, tr("Show the passport's photo page"),
-                tr("Hold it so the whole page is in view")};
+        // "Document", not "page": an ID card has no page (the owner, A3.3); the passport's own words wait
+        // for the MRZ to say what the document is (A4).
+        return {doc_vision::Tone::Neutral, true, tr("Show the document"),
+                tr("the side with the photo, all of it in view")};
     case Hint::CutByEdge:
-        return bad("Move back", "the whole page must be in view");
+        return bad("Move back", "the whole document must be in view");
     case Hint::MoveToMiddle:
-        return bad("Move the page to the middle", "the whole page must be in view");
+        return bad("Move the document to the middle", "the whole document must be in view");
     case Hint::TooFar:
         return bad("Move closer");
     case Hint::TooClose:
         return bad("Move a little further away");
     case Hint::Tilted:
-        return bad("Hold the page flat to the camera");
+        return bad("Hold the document flat to the camera");
     case Hint::Blurred:
         return bad("Blurred: hold still", "or move a little closer or further away");
     case Hint::Glare:
-        return bad("Glare on the page", "tilt it slightly away from the light");
+        return bad("Glare on the document", "tilt it slightly away from the light");
     case Hint::TooDark:
         return bad("Too dark", "add more light");
     case Hint::TooBright:
@@ -54,9 +56,9 @@ BannerContent bannerFor(FocusBanner banner) {
     case FocusBanner::Focusing:
         break;
     case FocusBanner::CannotFocusThisClose:
-        return bad("This camera can't focus this close", "Move the page a little further away");
+        return bad("This camera can't focus this close", "Move the document a little further away");
     case FocusBanner::CannotMakeSharp:
-        return bad("This camera can't make the page sharp", "Try more light, or another camera");
+        return bad("This camera can't make the document sharp", "Try more light, or another camera");
     }
     return {doc_vision::Tone::Neutral, false, tr("Hold still: focusing"), {}};
 }

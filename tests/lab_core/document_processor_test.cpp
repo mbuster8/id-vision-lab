@@ -154,7 +154,7 @@ TEST(DocumentProcessor, NoPageShowsHintOneAtOnce) {
     EXPECT_TRUE(result.images.empty());
     EXPECT_EQ(namesOf(result), (std::vector<std::string>{"Document", "Gates", "Detector"}));
     EXPECT_EQ(*findingNamed(result, "Document"), (Finding{"Document", "not found", Finding::Tone::Plain}));
-    EXPECT_EQ(*findingNamed(result, "Gates"), (Finding{"Gates", "no page yet", Finding::Tone::Plain}));
+    EXPECT_EQ(*findingNamed(result, "Gates"), (Finding{"Gates", "no document yet", Finding::Tone::Plain}));
 }
 
 // P1: red at once, green only once Good has held half a second and NoPage its 800 ms.
@@ -257,7 +257,7 @@ TEST(DocumentProcessor, FindingsInOrderWithTheirTones) {
     EXPECT_EQ(tonesOf(result), (std::vector<Tone>{Tone::Plain, Tone::Plain, Tone::Plain, Tone::Plain,
                                                   Tone::Plain, Tone::Plain, Tone::Good, Tone::Plain}));
     const doc_vision::Measures measures = doc_vision::measure(frame, test_support::kPageQuad);
-    EXPECT_EQ(findingNamed(result, "Document")->value, "TD3 page");
+    EXPECT_EQ(findingNamed(result, "Document")->value, "found");
     EXPECT_EQ(findingNamed(result, "Fill")->value, std::to_string(std::lround(100 * measures.fill)) + " %");
     EXPECT_EQ(findingNamed(result, "Tilt")->value,
               std::to_string(std::lround(measures.tiltDegrees)) + "\xC2\xB0");
@@ -491,7 +491,7 @@ TEST(DocumentProcessor, PageImageIsTheGatePage) {
     const ProcessorResult result = processor.process(frameAt(goodFrame(), 0));
 
     ASSERT_EQ(result.images.size(), 1U);
-    EXPECT_EQ(result.images[0].name, "page");
+    EXPECT_EQ(result.images[0].name, "document");
     EXPECT_EQ(result.images[0].image.size(), doc_vision::kGatePageSize);
     EXPECT_EQ(result.images[0].image.type(), CV_8UC3);
 }
