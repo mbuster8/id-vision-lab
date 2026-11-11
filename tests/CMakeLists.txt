@@ -14,6 +14,15 @@ function(id_vision_lab_add_test_executable target)
     set_tests_properties("${target} (whole program)" PROPERTIES LABELS whole TIMEOUT 120)
 endfunction()
 
+# The configure-time model lookup (cmake/models.cmake), against a fake model served from a file:// URL.
+add_test(NAME model_lookup
+    COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/model_lookup
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/model_lookup_test.cmake")
+# Windows and Linux build ONNX Runtime from the same vcpkg baseline.
+add_test(NAME vcpkg_baseline
+    COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vcpkg_baseline_test.cmake")
+
 id_vision_lab_add_test_executable(visual_debug_tests
     SOURCES
         visual_debug/wire_format_test.cpp
@@ -91,10 +100,39 @@ target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
                                                   ${PROJECT_SOURCE_DIR}/libs/frame_io/src)
 
+id_vision_lab_add_test_executable(doc_vision_tests
+    SOURCES
+        doc_vision/guidance_test.cpp
+        doc_vision/onnx_model_test.cpp
+        doc_vision/page_detector_test.cpp
+        doc_vision/page_geometry_test.cpp
+        doc_vision/procedural_page.h
+        doc_vision/quality_gates_test.cpp
+    LIBRARIES
+        doc_vision::doc_vision
+        opencv_imgproc
+        GTest::gtest_main)
+# The model resolved at configure time, and the ONNX Runtime version built against; scratch_folder.h. With the
+# UTF-8 code page on Windows, so a model under a non-ASCII user folder opens.
+target_compile_definitions(doc_vision_tests PRIVATE
+    ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}"
+    ID_VISION_LAB_ONNXRUNTIME_VERSION="${onnxruntime_VERSION}")
+target_include_directories(doc_vision_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
+id_vision_lab_use_utf8_code_page(doc_vision_tests)
+id_vision_lab_copy_runtime_dlls(doc_vision_tests)
+# A3.1's evaluation on labelled clips and MIDV-2020 (aggregates only): a program to run by hand, not a test.
+add_executable(doc_vision_eval doc_vision/doc_vision_eval.cpp)
+target_link_libraries(doc_vision_eval PRIVATE lab_core::lab_core doc_vision::doc_vision opencv_videoio
+                                              opencv_imgcodecs opencv_imgproc nlohmann_json::nlohmann_json)
+id_vision_lab_set_warnings(doc_vision_eval)
+id_vision_lab_use_utf8_code_page(doc_vision_eval)
+id_vision_lab_copy_runtime_dlls(doc_vision_eval)
+
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
         lab_core/document_outline_test.cpp
+        lab_core/document_processor_test.cpp
         lab_core/engine_test.cpp
         lab_core/fake_sender.h
         lab_core/list_source.h
@@ -106,9 +144,15 @@ id_vision_lab_add_test_executable(lab_core_tests
         opencv_imgproc
         nlohmann_json::nlohmann_json
         GTest::gtest_main)
-# latch.h: holding a sending thread without timing; scratch_folder.h: a recording's folder.
+# latch.h: holding a sending thread without timing; scratch_folder.h: a recording's folder; procedural_page.h:
+# the Document processor's synthetic page.
 target_include_directories(lab_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
-                                                  ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/doc_vision)
+# The model the Document processor's end-to-end test opens, under the UTF-8 code page on Windows as in the lab.
+target_compile_definitions(lab_core_tests PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}")
+id_vision_lab_use_utf8_code_page(lab_core_tests)
+id_vision_lab_copy_runtime_dlls(lab_core_tests)
 
 if(ID_VISION_LAB_BUILD_EXAMPLES)
     id_vision_lab_add_test_executable(pipeline_tests
@@ -139,6 +183,7 @@ if(ID_VISION_LAB_BUILD_EXAMPLES)
     target_include_directories(live_sender_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/visual_debug
                                                          ${CMAKE_CURRENT_SOURCE_DIR}/lab_core)
     id_vision_lab_use_utf8_code_page(live_sender_tests)
+    id_vision_lab_copy_runtime_dlls(live_sender_tests)
 endif()
 
 # The Qt code, with an offscreen QApplication. Every Qt test program uses qt_common/test_main.cpp, which keeps
@@ -226,6 +271,8 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
                 document_lab/fake_camera_backend.h
                 document_lab/main_window_test.cpp
                 document_lab/measurement_test.cpp
+                document_lab/scan_banner_test.cpp
+                document_lab/scan_style_test.cpp
             LIBRARIES
                 document_lab_ui
                 opencv_imgproc
@@ -235,6 +282,7 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
                 GTest::gtest)
         id_vision_lab_use_utf8_code_page(document_lab_ui_tests)
         id_vision_lab_copy_ffmpeg_dlls(document_lab_ui_tests)
+        id_vision_lab_copy_runtime_dlls(document_lab_ui_tests)
         # They also share the engine's fakes (fake_sender.h, list_source.h, card_frame.h) and scratch_folder.h.
         target_include_directories(document_lab_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt_common
                                                                  ${CMAKE_CURRENT_SOURCE_DIR}/lab_core
@@ -244,5 +292,14 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
         # its own so that it also runs from the installed Windows package.
         add_test(NAME media_smoke COMMAND media_smoke)
         set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
+        # The page model inside the Document Lab, where it looks for it: the bundle's Resources on macOS, a models
+        # folder beside the program elsewhere.
+        if(APPLE)
+            set(lab_models "$<TARGET_BUNDLE_CONTENT_DIR:document_lab>/Resources/models")
+        else()
+            set(lab_models "$<TARGET_FILE_DIR:document_lab>/models")
+        endif()
+        add_test(NAME document_lab_ships_its_model
+            COMMAND "${CMAKE_COMMAND}" -E sha256sum "${lab_models}/lcnet100_h_e_bifpn_256_fp32.onnx")
     endif()
 endif()

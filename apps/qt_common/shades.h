@@ -16,6 +16,10 @@ QColor hoverGrey(const QPalette& palette); // a cell under the pointer
 QColor selectionGrey(const QPalette& palette, bool focused);
 QColor dividerGrey(const QPalette& palette); // lines between panels and between cells
 
+// Whether the palette is a dark appearance's: its window colour darker than its window text. Qt 6.4 has no
+// colorScheme(), and this follows a live switch as the palette does.
+bool isDarkAppearance(const QPalette& palette);
+
 // The system's accent colour: QPalette::Accent from Qt 6.6, the Highlight before it (which macOS derives from
 // the accent).
 QColor accentColour(const QPalette& palette);

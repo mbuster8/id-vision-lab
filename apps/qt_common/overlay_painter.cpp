@@ -108,6 +108,24 @@ void paintShape(QPainter& painter, const Outline& outline, const QRectF& bounds,
     paintTab(painter, label, {extent.left() - half, extent.top() - half}, visible, colour);
 }
 
+// A Guide polygon: the halo, then the line over it, both with round joins and no fill or tab.
+void paintGuide(QPainter& painter, const QPolygonF& points, const QRectF& bounds,
+                viewer_core::Colour colour) {
+    if (!points.boundingRect().adjusted(-1, -1, 1, 1).intersects(bounds)) {
+        return;
+    }
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setBrush(Qt::NoBrush);
+    for (const auto& [shade, width] : {std::pair{QColor(0, 0, 0, kGuideHaloAlpha), kGuideHaloWidth},
+                                       std::pair{colourOf(colour), kGuideWidth}}) {
+        QPen pen(shade, width);
+        pen.setCosmetic(true);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.drawPolygon(points);
+    }
+}
+
 void paintPoint(QPainter& painter, QPointF at, const QRectF& bounds, const QRectF& visible,
                 const OverlayPainter::Label* label, viewer_core::Colour colour) {
     if (!bounds.contains(at)) {
@@ -173,6 +191,10 @@ void OverlayPainter::paint(QPainter& painter, const std::vector<viewer_core::Ove
                            points.reserve(static_cast<qsizetype>(polygon.points.size()));
                            for (const cv::Point2d& point : polygon.points) {
                                points.append(imageToWidget.map(QPointF(point.x, point.y)));
+                           }
+                           if (polygon.style == viewer_core::Polygon::Style::Guide) {
+                               paintGuide(painter, points, bounds, polygon.colour);
+                               return;
                            }
                            paintShape(painter, {.kind = Outline::Kind::Polygon, .points = std::move(points)},
                                       bounds, visible, labelOf(polygon.label), polygon.colour);

@@ -13,4 +13,5 @@ apt-get install --yes --no-install-recommends \
     libopencv-dev libzmq3-dev cppzmq-dev nlohmann-json3-dev libgtest-dev \
     libavcodec-dev libavformat-dev libswscale-dev libavutil-dev \
     python3-numpy python3-zmq python3-pytest black \
+    ca-certificates curl git tar unzip zip `# vcpkg, for ONNX Runtime (scripts/install-onnxruntime.sh)` \
     clang llvm libclang-rt-dev # the coverage report: Clang, its profile runtime, llvm-profdata and llvm-cov

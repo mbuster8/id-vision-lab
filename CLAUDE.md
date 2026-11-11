@@ -47,7 +47,9 @@ python/.venv/bin/black --check python            # black 24.2.0, Ubuntu 24.04's,
 ```
 
 On Windows the presets are `windows-debug`, `windows-release` and `windows-asan` (MSVC, vcpkg from
-`vcpkg.json`, Qt from `$env:QT_ROOT_DIR`), run inside the VS x64 developer environment; `scripts/check.sh
+`vcpkg.json`, Qt from `$env:QT_ROOT_DIR`), run inside the VS x64 developer environment (it also provides `cmake`
+and `ninja`, and it overwrites `VCPKG_ROOT` with Visual Studio's bundled vcpkg, which is why the presets read
+`VCPKG_INSTALLATION_ROOT`); `scripts/check.sh
 --linux` from Git Bash covers the Ubuntu job, and clang-format is Qt Creator's copy. `cpack --config
 build\windows-release\CPackConfig.cmake -B build\windows-release\packages` makes the `.zip` and the `.msi`
 (WiX 3) from `cmake/windows_packaging.cmake`; licences shipped with them are in `packaging/licenses/`. Setup and commands:
@@ -68,12 +70,14 @@ macOS, so the camera prompt names the Document Lab rather than the terminal.
 ## Layout
 
 `libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `libs/frame_io` (videos,
-image folders, recordings and captures; YUV conversion; no Qt) · `libs/lab_core` (the Document Lab's engine,
-processors and sender; no Qt) · `apps/viewer` · `apps/example_sender` · `apps/document_lab` · `apps/qt_common`
+image folders, recordings and captures; YUV conversion; no Qt) · `libs/doc_vision` (ONNX Runtime, the page model,
+page geometry, quality gates, hint timers; no Qt) · `libs/lab_core` (the Document Lab's engine, processors,
+the Document processor, and sender; no Qt) · `apps/viewer` · `apps/example_sender` · `apps/document_lab` · `apps/qt_common`
 (what the apps share, the canvas among it: `ImageView`, `LiveConverter`, `live_drawing`, `overlay_painter`) ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
-`tests/{visual_debug,viewer_core,frame_io,lab_core,qt_common,viewer,example_sender,document_lab,examples}`
+`tests/{visual_debug,viewer_core,frame_io,doc_vision,lab_core,qt_common,viewer,example_sender,document_lab,examples}`
+(`tests/doc_vision` also holds `doc_vision_eval`, the evaluation run by hand, and `procedural_page.h`)
 (`tests/qt_common` also holds the shared Qt test `main()` and helpers) · `tests/wire/header_cases.json` (golden
 headers both senders must write) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
 manifest and packaging) · `packaging/licenses/` (third-party notices for the Windows packages) · `scripts/`
@@ -85,6 +89,15 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
 
 - **The libraries stay Qt-free.** No Qt include or link in `libs/`. Automatic moc/uic/rcc is enabled in
   `apps/CMakeLists.txt` only. The no-Qt configure above must keep building.
+- **ONNX Runtime and the models:** only `doc_vision` uses ORT, and only in its `.cpp` files, with
+  `ORT_API_MANUAL_INIT` (`Ort::InitApi` after checking the loaded runtime), so an older `onnxruntime` is an
+  error value, never a crash (a missing one stops the program from starting: it is linked); no exception leaves
+  `doc_vision`. ORT comes from Homebrew or vcpkg (`scripts/install-onnxruntime.sh` on Linux), never Microsoft's
+  binaries. On Windows every program linking `doc_vision` gets vcpkg's release `onnxruntime.dll` and the release
+  DLLs only it uses beside it, debug builds too (`id_vision_lab_copy_runtime_dlls`): System32's older one would
+  load otherwise, and vcpkg's debug one fails ONNX's schema check on loading a model. Models are never committed: `cmake/models.cmake` fetches each at configure time from its pinned
+  release, checks its SHA-256 and caches it per user (`ID_VISION_LAB_MODEL_DIR` first); the programs never
+  download.
 - **Threading:** `ImageSink::onImageReceived` runs on the server's worker thread. `QtImageSink` hands images
   to the UI thread by queued signal; the UI must call `markHandled()` for every image it takes, or the sink
   fills its eight slots and the viewer reports busy. Live frames (`sendLive`) never wait and skip those
@@ -113,7 +126,10 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   on the retiring sender's thread, and ▶ waits for `endingChannels` to clear. The canvas takes the viewer's glue
   (view counter, `LiveConverter` jobs numbered by result). Engine, link and window tests use the immediate modes,
   `pump()` and an injected clock unless they test the threads; window tests give the link and the stream fake
-  senders, so no test reaches a real viewer.
+  senders, so no test reaches a real viewer. The Document processor opens its model lazily on the processing
+  thread, once per run (`reset()` keeps a model that opened); ORT's intra-op pool works only inside
+  `OnnxModel::run` and does not spin. Its hints are timed by the frames' own `at`, never a clock; the banner,
+  chips and the canvas's guide outline follow the result whose picture is on screen.
 - **Wire-format changes:** a new optional header field keeps `version` 2, and so does a new message `type` (an
   older viewer refuses it with `unsupported message type`, which still answers); changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender

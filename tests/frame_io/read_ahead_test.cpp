@@ -87,19 +87,25 @@ TEST(ReadAhead, WakesWhenAnItemIsReadyAndAtTheEnd) {
     std::promise<void> go;
     const std::shared_future<void> released = go.get_future().share();
     int next = 0; // only the reading thread touches it
-    ReadAhead<int> ahead(
-        [&released, &next]() -> std::optional<int> {
-            released.wait();
-            return next < 2 ? std::optional(next++) : std::nullopt;
-        },
-        4);
     std::atomic<int> wakes{0};
-    ahead.setWake([&wakes] { ++wakes; });
+    {
+        ReadAhead<int> ahead(
+            [&released, &next]() -> std::optional<int> {
+                released.wait();
+                return next < 2 ? std::optional(next++) : std::nullopt;
+            },
+            4);
+        // Slow, as on a loaded machine: a wake runs after its item or the end is already there for take().
+        ahead.setWake([&wakes] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            ++wakes;
+        });
 
-    go.set_value();
-    EXPECT_EQ(ahead.take(), std::optional(0));
-    EXPECT_EQ(ahead.take(), std::optional(1));
-    EXPECT_EQ(ahead.take(), std::nullopt);
+        go.set_value();
+        EXPECT_EQ(ahead.take(), std::optional(0));
+        EXPECT_EQ(ahead.take(), std::optional(1));
+        EXPECT_EQ(ahead.take(), std::nullopt);
+    } // joins the reading thread, so its last wake has run
 
     EXPECT_EQ(wakes.load(), 3); // two items, then the end
 }

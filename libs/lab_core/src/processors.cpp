@@ -1,25 +1,20 @@
 #include "lab_core/processors.h"
 
 #include "lab_core/document_outline.h"
+#include "lab_core/document_processor.h"
+
+#include "number_text.h"
+
+#include <doc_vision/page_detector.h>
 
 #include <opencv2/core.hpp>
 
-#include <array>
-#include <charconv>
 #include <string>
 #include <utility>
 
 namespace lab_core {
 
 namespace {
-
-// std::to_chars never consults the locale, so the finding reads "4.2 %" whatever the user's locale.
-std::string oneDecimal(double value) {
-    std::array<char, 32> buffer{};
-    const auto result =
-        std::to_chars(buffer.data(), buffer.data() + buffer.size(), value, std::chars_format::fixed, 1);
-    return {buffer.data(), result.ptr};
-}
 
 class NoProcessor final : public FrameProcessor {
 public:
@@ -33,7 +28,7 @@ public:
         const double share =
             edges.empty() ? 0.0 : 100.0 * cv::countNonZero(edges) / static_cast<double>(edges.total());
         ProcessorResult result;
-        result.findings.push_back("edges: " + oneDecimal(share) + " %");
+        result.findings.push_back({"Edges", oneDecimal(share) + " %"});
         result.images.push_back({.name = "edges", .image = std::move(edges), .description = {}});
         return result;
     }
@@ -45,9 +40,9 @@ public:
         ProcessorResult result;
         if (std::optional<std::vector<cv::Point2d>> corners = m_hold.next(documentOutline(frame.image))) {
             result.overlays.push_back(visual_debug::Polygon{std::move(*corners), "Document"});
-            result.findings.push_back("document: found");
+            result.findings.push_back({"Document", "found"});
         } else {
-            result.findings.push_back("document: not found");
+            result.findings.push_back({"Document", "not found"});
         }
         return result;
     }
@@ -60,6 +55,10 @@ private:
 
 } // namespace
 
+std::string toText(const Finding& finding) {
+    return finding.value.empty() ? finding.name : finding.name + ": " + finding.value;
+}
+
 std::string_view nameOf(ProcessorKind kind) {
     switch (kind) {
     case ProcessorKind::None:
@@ -68,16 +67,25 @@ std::string_view nameOf(ProcessorKind kind) {
         return "Edges";
     case ProcessorKind::Outline:
         return "Outline";
+    case ProcessorKind::Document:
+        return "Document";
     }
     return "None";
 }
 
-std::unique_ptr<FrameProcessor> makeProcessor(ProcessorKind kind) {
+std::unique_ptr<FrameProcessor> makeProcessor(ProcessorKind kind, const ProcessorSettings& settings) {
     switch (kind) {
     case ProcessorKind::Edges:
         return std::make_unique<EdgesProcessor>();
     case ProcessorKind::Outline:
         return std::make_unique<OutlineProcessor>();
+    case ProcessorKind::Document:
+        return std::make_unique<DocumentProcessor>(
+            [model = settings.modelFolder / kLc100ModelFile](
+                std::string& error,
+                doc_vision::OpenFailure& failure) -> std::unique_ptr<doc_vision::PageFinder> {
+                return doc_vision::PageDetector::open(model, error, &failure);
+            });
     case ProcessorKind::None:
         break;
     }

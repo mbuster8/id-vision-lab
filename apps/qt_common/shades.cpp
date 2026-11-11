@@ -63,6 +63,10 @@ QColor selectionGrey(const QPalette& palette, bool focused) {
 
 QColor dividerGrey(const QPalette& palette) { return towardsText(palette, kDivider); }
 
+bool isDarkAppearance(const QPalette& palette) {
+    return palette.color(QPalette::Window).lightness() < palette.color(QPalette::WindowText).lightness();
+}
+
 QColor accentColour(const QPalette& palette) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
     return palette.color(QPalette::Accent);

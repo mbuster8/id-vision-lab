@@ -22,6 +22,11 @@ namespace qt_common {
 inline constexpr double kOverlayFillOpacity = 0.25;
 inline constexpr double kOverlayEdgeWidth = 2.0; // device-independent pixels, at any zoom
 inline constexpr double kOverlayPointDiameter = 6.0;
+// A Guide polygon: a line this wide on a black halo this wide and this opaque (0.55), so one device pixel of
+// halo shows each side of the line over a light picture as over a dark one.
+inline constexpr double kGuideWidth = 4.0;
+inline constexpr double kGuideHaloWidth = 6.0;
+inline constexpr int kGuideHaloAlpha = 140;
 
 // Draws overlays given in image pixels; imageToWidget (a scale and a translation) maps them to the painter's
 // coordinates. Shapes scale with it; edges, dots and label tabs keep their size on screen. Shapes entirely

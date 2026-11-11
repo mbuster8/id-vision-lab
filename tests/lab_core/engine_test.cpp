@@ -65,7 +65,7 @@ public:
             cv::Mat alias = frame.image; // a copy of the header shares the pixels
             alias.setTo(cv::Scalar::all(1));
         }
-        return {.overlays = {}, .images = {}, .findings = {m_name}};
+        return {.overlays = {}, .images = {}, .findings = {lab_core::Finding{m_name, ""}}};
     }
     void reset() override { ++m_calls.resets; }
 
@@ -703,7 +703,7 @@ TEST(Engine, ProcessorChangeRedoesTheFrameOnScreen) {
 
     ASSERT_TRUE(result);
     EXPECT_EQ(result->frame.number, 0U);
-    EXPECT_EQ(result->processed.findings, std::vector<std::string>{"second"});
+    EXPECT_EQ(result->processed.findings, (std::vector<lab_core::Finding>{{"second", ""}}));
     EXPECT_EQ(second.resets, 1);
     EXPECT_EQ(second.processed, std::vector<std::uint64_t>{0});
 }

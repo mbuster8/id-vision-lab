@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -208,6 +209,51 @@ TEST(OverlayPainter, HugeShapesAreClippedToTheWindow) {
     for (const auto& [x, y] : {std::pair{0, 0}, std::pair{199, 0}, std::pair{100, 100}, std::pair{0, 199}}) {
         EXPECT_TRUE(near(image.pixelColor(x, y), 30, 58, 30)) << x << "," << y;
     }
+}
+
+// The canvas's guide: a white image so the halo shows, at the identity transform.
+QImage paintGuideOnWhite(const Polygon& guide) {
+    QImage image(400, 300, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    qt_common::paintOverlays(painter, {guide}, QTransform());
+    painter.end();
+    return image;
+}
+
+Polygon guideAt100(Colour colour) {
+    return Polygon{.points = {{100, 100}, {300, 100}, {300, 250}, {100, 250}},
+                   .label = "Document",
+                   .colour = colour,
+                   .style = Polygon::Style::Guide};
+}
+
+// P2: a 4 px line in its colour on a 6 px halo, which shows one device pixel each side; no fill and no tab.
+TEST(OverlayPainter, GuideIsALineWithAHaloAndNoFill) {
+    const Colour green{0x3D, 0xDC, 0x84};
+    const QImage image = paintGuideOnWhite(guideAt100(green));
+
+    EXPECT_TRUE(near(image.pixelColor(200, 100), green.r, green.g, green.b, 2))
+        << image.pixelColor(200, 100).name().toStdString();
+    EXPECT_LT(relativeLuminance(image.pixelColor(200, 97)), 0.35)
+        << image.pixelColor(200, 97).name().toStdString(); // black at alpha 140 over white: 115
+    EXPECT_EQ(image.pixelColor(200, 180), QColor(Qt::white));
+    for (int y = 82; y <= 95; ++y) {
+        for (int x = 76; x <= 95; ++x) {
+            ASSERT_EQ(image.pixelColor(x, y), QColor(Qt::white)) << x << ", " << y;
+        }
+    }
+    // Where a Standard polygon's "Document" tab is, over the outline's top-left corner.
+    Polygon standard = guideAt100(green);
+    standard.style = Polygon::Style::Standard;
+    EXPECT_NE(paintGuideOnWhite(standard).pixelColor(104, 92), QColor(Qt::white));
+    EXPECT_EQ(image.pixelColor(104, 92), QColor(Qt::white));
+}
+
+TEST(OverlayPainter, GuideHaloContrastOverWhite) {
+    const QImage image = paintGuideOnWhite(guideAt100({0x3D, 0xDC, 0x84}));
+
+    EXPECT_GE(contrast(image.pixelColor(200, 97), Qt::white), 3.0);
 }
 
 } // namespace

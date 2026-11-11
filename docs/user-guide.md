@@ -607,17 +607,18 @@ does.
 
 The canvas is the viewer's: the wheel zooms at the cursor, a drag pans, a double-click fits. **Processor**
 chooses what runs on each frame: **None**, **Edges** (the frame's edges as a picture, and their share of the
-frame) or **Outline (simple)**, which outlines the largest four-sided shape lighter than the frame around it,
+frame), **Document** ([below](#the-document-processor)) or **Outline (simple)**, which outlines the largest four-sided shape lighter than the frame around it,
 covering a tenth of the frame or more, and draws it over the frame. It is simple on purpose: a lit wall, a
-window or a sheet of paper is such a shape too, so it says `document: found` for them as well; telling a
-document from them is the work of the document-reading code to come. **Show** chooses what the canvas shows:
+window or a sheet of paper is such a shape too, so it says `Document: found` for them as well; the Document
+processor tells a passport's page from them. **Show** chooses what the canvas shows:
 the **Frame**, or a picture the processor made, such as `edges`; a picture the frame on screen does not have
 says so instead of showing an older one. Choosing another processor leaves only its own pictures in the list,
 and the frame shows until a picture of the name chosen comes back. **Overlays**, on from the start, draws what
 the processor found over the frame; turned off, only the drawing goes.
 
 The results panel beside the canvas lists the processor's findings for the frame on screen as rows of a name
-and a value, such as `document` and `found`; a processor's error is a row of its own. It keeps its width as the
+and a value, such as `Document` and `found`, the value in green for good news and red for bad (in the
+appearance's own shades); a processor's error is a red row of its own. It keeps its width as the
 window grows; drag its edge to change it, or all the way to the window's side to shut it, and back to open it.
 **View → Results** shuts and opens it too, and the lab remembers its width and whether it shows.
 
@@ -625,7 +626,64 @@ The status bar shows the run (Live, Playing, Paused, Ended, Stopped), the source
 the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a camera's
 frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas drew
 them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
-how long; a seek on its way says `seeking…`.
+how long; a seek on its way says `seeking…`. With no camera connected, the empty canvas says so: "No camera
+found. Connect one, or open a video, an image or a folder of images."
+
+### The Document processor
+
+**Document** guides you to hold a passport's data page so that the next steps can read it. DocAligner LC100, a
+small page model run on ONNX Runtime, finds the page's four corners in each frame; six checks judge the page;
+and one hint at a time, in a banner at the top of the canvas, says what to change. It works on a camera and on
+every replay, so the checks can be tried on recorded clips.
+
+![Searching for the page](images/scan-flow/01-searching.png)
+
+![A blurred page: hold still](images/scan-flow/02-adjust-blurred.png)
+
+- **The banner** shows the first hint that applies, checked from the top:
+
+  | # | When | Banner |
+  |---|---|---|
+  | 1 | No page found | Show the passport's photo page · Hold it so the whole page is in view |
+  | 2 | The page is cut by the frame's edge | ✗ Move back · the whole page must be in view |
+  | 2b | Cut by the edge, but small enough to fit | ✗ Move the page to the middle · the whole page must be in view |
+  | 3 | Too far: its longer side under 40% of the frame's | ✗ Move closer |
+  | 4 | Too close: it fills more than 92% of the frame's width or height | ✗ Move a little further away |
+  | 5 | Tilted more than 25° from facing the camera | ✗ Hold the page flat to the camera |
+  | 6 | Blurred | ✗ Blurred: hold still · or move a little closer or further away |
+  | 7 | Glare on the page | ✗ Glare on the page · tilt it slightly away from the light |
+  | 8 | Too dark | ✗ Too dark · add more light |
+  | 9 | Too bright | ✗ Too bright · move out of direct light |
+  | 10 | Every check passes | ✓ Good: hold still |
+
+- **No flicker, bad news fast:** "Good: hold still" shows once every check has passed for half a second, and
+  gives way to a problem that has held for a tenth of a second; any other hint shows once it has held for 0.3 s
+  and stays at least 0.8 s. Each check fails at one value and passes again only a little beyond it, and a page
+  lost for a third of a second keeps its outline, its checks and the banner. The times are the frames' own, so a
+  replay behaves the same at any speed; a seek, a restart or a loop starts the hints over.
+- **The chips** under the canvas show the six checks at once, ✓ or ✗: **In view**, **Size**, **Flat**,
+  **Sharp**, **No glare** and **Light**, while a page is found.
+- **The outline** of the page is red, and turns green with "Good: hold still". It shows only over the Frame,
+  and hides with **Overlays**; the banner and the chips do not.
+- **The results** list `Document` (`TD3 page` or `not found`), `Fill`, `Tilt`, `Sharpness`, `Glare` and
+  `Exposure` while a page is found, then `Gates` (`all pass` in green, `5 of 6 pass` in red) and `Detector`
+  (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 50)`.
+- **Show → page** shows the page flattened, as the checks see it.
+- **The status bar** adds the state: `State: searching`, `State: adjust (sharpness)` (the check to fix) or
+  `State: good`.
+- **The viewer and captures** get the outline as an ordinary polygon labelled `Document`, green or red.
+
+While Document is chosen and nothing runs, the banner says why instead: **No camera found**, **Camera access is
+off** (with where to allow it), **The camera stopped** (with the reason), or **Start the camera** when one is
+connected. From the moment a camera or a replay starts, it asks for the page.
+
+**The model and privacy.** Everything runs on this computer: no frame, page or result leaves it, unless you
+stream or send to a viewer yourself. The model comes with the lab: the build fetches it once, checks it and
+copies it beside the program ([build guide](build-guide.md#the-models)); the lab never downloads anything. If
+the model is missing, or the ONNX Runtime the lab loads is older than the one it was built with (on Windows,
+the one in `System32` when the lab's own copy is gone), the banner says "The document model is missing" or
+"ONNX Runtime could not be loaded" for the whole run, the status bar gives the reason, and the other processors
+work as before.
 
 ### Replay
 

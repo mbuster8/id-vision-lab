@@ -18,8 +18,11 @@ and setup: see [Windows](#windows).
 2. [Homebrew](https://brew.sh), then the libraries and build tools:
 
    ```sh
-   brew install cmake ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest
+   brew install cmake ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest onnxruntime
    ```
+
+   Homebrew's `onnxruntime` is ONNX Runtime, the inference library that runs the Document processor's page
+   model (`libs/doc_vision`), on the CPU. It is required: CMake stops without it.
 
    Homebrew's `opencv` brings `ffmpeg` with it, whose libraries `frame_io` reads 10-bit and HDR videos with
    (for the Document Lab and `live_sender --hdr`). They are optional: CMake finds them through `pkgconf`, and
@@ -46,6 +49,7 @@ Versions this was verified with:
 | `nlohmann-json` | 3.12.0 (3.11 or newer is required) |
 | `ffmpeg` | 9.0.2 (optional; 6.1 or newer, which Ubuntu 24.04's CI job tests) |
 | `googletest` | 1.18.0 |
+| `onnxruntime` | 1.31.1 (1.31 or newer is required) |
 | Qt Creator | 20.0.2 |
 
 ## Building
@@ -96,7 +100,8 @@ or library cannot break the build, but a new warning from project code should be
 | `visual_debug` | The sender library: wire format, `Client`, `Server`, `sendImage`, `sendLive` | `libs/visual_debug/libvisual_debug.a` |
 | `viewer_core` | The viewer's UI-free logic: display conversion and settings, history, live channels, pixel readout, zoom | `libs/viewer_core/libviewer_core.a` |
 | `frame_io` | Frames from video files, images, folders and recordings; the recorder and captures; YUV conversion. No Qt | `libs/frame_io/libframe_io.a` |
-| `lab_core` | The Document Lab's processors, engine and result sender. No Qt | `libs/lab_core/liblab_core.a` |
+| `doc_vision` | Document vision on ONNX Runtime: the page model (DocAligner LC100), page geometry and flattening, the six quality gates, and the hints' timing. No Qt | `libs/doc_vision/libdoc_vision.a` |
+| `lab_core` | The Document Lab's processors (the Document processor on `doc_vision`), engine and result sender. No Qt | `libs/lab_core/liblab_core.a` |
 | `qt_common` | Qt helpers shared by the apps, the canvas among them (`ImageView`, `LiveConverter`) | `apps/qt_common/libqt_common.a` |
 | `viewer_ui` | The viewer's windows, as a library its tests link | `apps/viewer/libviewer_ui.a` |
 | `visual_debug_viewer` | **The Visual Debug Viewer** | `apps/viewer/visual_debug_viewer.app` |
@@ -111,7 +116,8 @@ or library cannot break the build, but a new warning from project code should be
 | `overlay_sender` | An image sent with overlays | `examples/overlay_sender/overlay_sender` |
 | `live_sender_lib` | `live_sender`'s argument parsing, test pattern, edge channel, real-time playback and sending, without the reading of cameras and files | `examples/live_sender/liblive_sender_lib.a` |
 | `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels; reads files through `frame_io` | `examples/live_sender/live_sender` |
-| `visual_debug_tests`, `viewer_core_tests`, `frame_io_tests`, `lab_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `document_lab_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
+| `visual_debug_tests`, `viewer_core_tests`, `frame_io_tests`, `doc_vision_tests`, `lab_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `document_lab_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
+| `doc_vision_eval` | The Document processor's evaluation on labelled clips and MIDV-2020, run by hand ([below](#evaluating-the-document-processor)) | `tests/doc_vision_eval` |
 
 FFmpeg's reader in `frame_io` (`FfmpegVideo`) is built only when CMake finds FFmpeg's development files
 (`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not.
@@ -134,10 +140,11 @@ build tool, `id_vision_lab_make_ico` (from `cmake/make_ico.cpp`, with OpenCV), w
 | `ID_VISION_LAB_BUILD_TESTS` | `ON` | All GoogleTest executables |
 | `ID_VISION_LAB_SANITIZERS` | `OFF` | AddressSanitizer and UndefinedBehaviorSanitizer (the `asan` preset turns it on) |
 | `ID_VISION_LAB_COVERAGE` | `OFF` | Clang's source-based code coverage (the `coverage` preset turns it on; Clang only) |
+| `ID_VISION_LAB_MODEL_DIR` | empty | A folder holding the model files, looked in before the cache and the network ([the models](#the-models)) |
 
 ### Building without Qt
 
-The four libraries never use Qt. To prove it, or to build on a machine without Qt, turn the Qt apps off
+The five libraries never use Qt. To prove it, or to build on a machine without Qt, turn the Qt apps off
 and build into a separate folder:
 
 ```sh
@@ -146,7 +153,48 @@ cmake --build build/no-qt
 ctest --test-dir build/no-qt               # the tests that need no Qt
 ```
 
-CMake then does not look for Qt at all; the four libraries, the examples and their tests still build.
+CMake then does not look for Qt at all; the five libraries, the examples and their tests still build.
+
+### The models
+
+The Document processor's page model, DocAligner LC100 (`lcnet100_h_e_bifpn_256_fp32.onnx`, 4,767,987 bytes,
+Apache-2.0, DocsaidLab's release 1.1.1), is not in the repository. Configuring finds it, in this order
+(`cmake/models.cmake`):
+
+1. in the folder `ID_VISION_LAB_MODEL_DIR` names, when set;
+2. in a cache of your own that every build folder shares: `~/.cache/id-vision-lab/models` on macOS and Linux
+   (`$XDG_CACHE_HOME/id-vision-lab/models` when that is set), `%LOCALAPPDATA%\id-vision-lab\models` on Windows;
+3. else it downloads it from the model's GitHub release into that cache.
+
+Every copy is checked against the SHA-256 pinned in `CMakeLists.txt`. A wrong copy in the cache is downloaded
+again; a wrong copy in your own folder stops the configure, naming the file. Without a network, copy the file
+into a folder and configure with `-DID_VISION_LAB_MODEL_DIR=<folder>`.
+
+The build copies the model into `build/<preset>/models`, into the Document Lab's bundle
+(`document_lab.app/Contents/Resources/models`) on macOS, and into a `models` folder beside `document_lab` on
+Linux and Windows, where the lab looks for it. A lab that cannot open it says so in its banner, "The document
+model is missing", and the other processors work as before. The programs never download anything.
+
+### Evaluating the Document processor
+
+`doc_vision_eval` runs the Document processor, as the lab runs it, over labelled clips or MIDV-2020's annotated
+passport clips, and prints aggregates only: how often the page was found and outlined within IoU 0.9, each
+gate's pass rate, how often "Good" showed on cut pages, the banner's switches a minute, and the milliseconds per
+frame of each stage. Build it in release:
+
+```sh
+cmake --build --preset release --target doc_vision_eval
+build/release/tests/doc_vision_eval --model ~/.cache/id-vision-lab/models/lcnet100_h_e_bifpn_256_fp32.onnx \
+    --labels labels.csv clip1.mov clip2.mov
+build/release/tests/doc_vision_eval --model <the model> --midv <MIDV-2020>/clips --frames 30 \
+    aze_passport grc_passport lva_passport srb_passport
+```
+
+`--replay <path>...` takes anything the Document Lab replays, without labels: a video, an image, a folder of
+images or a recording. It is how to see what a camera gives: every run also prints the sharpness of the pages
+found wholly in view (percentiles, and the share at or above several thresholds). `--threads <n>` sets ONNX
+Runtime's threads (0, the default, lets it choose), `--margin <share>` tries another in-view margin,
+`--sharpness <value>` another sharpness limit, and `--size 1920x1080` resizes each frame first. `--help` prints the usage.
 
 ## Running the tests
 
@@ -331,6 +379,14 @@ or this project's `build` folder; otherwise, find out what the tool is first.
 development files when it configured. Install them (`brew install ffmpeg`, or Ubuntu's four `-dev` packages
 above), check that `pkg-config --modversion libavformat` answers, and configure again.
 
+**`Could not find or download the file lcnet100_h_e_bifpn_256_fp32.onnx` during configure.** The page model is
+not in `ID_VISION_LAB_MODEL_DIR` or the cache, and could not be downloaded. The message names the folders it
+looked in; see [the models](#the-models) for an offline build.
+
+**`Could not find a package configuration file provided by "onnxruntime"`.** ONNX Runtime is not installed:
+`brew install onnxruntime` on macOS, `scripts/install-onnxruntime.sh` on Linux ([below](#linux)); vcpkg builds
+it on Windows.
+
 **`ld: symbol(s) not found` after adding a source file.** Add the file to the target's `add_library` or
 `add_executable` list in its `CMakeLists.txt`; CMake does not pick up new files by itself.
 
@@ -351,6 +407,20 @@ on an Ubuntu 24.04 machine:
 ```sh
 sudo scripts/install-ubuntu-deps.sh
 ```
+
+Ubuntu has no ONNX Runtime package, so it is built with vcpkg, at the same baseline as Windows, as shared
+release libraries, into a folder of your choosing; it takes a while and a few GB of memory the first time. The
+script needs `git`, `curl`, `zip`, `unzip` and `tar` besides the compiler (`install-ubuntu-deps.sh` installs
+them) and prints the variable that points CMake at the result:
+
+```sh
+scripts/install-onnxruntime.sh "$HOME/onnxruntime"     # its last line: onnxruntime_ROOT=<folder>
+export onnxruntime_ROOT=<the folder it printed>
+```
+
+CI caches that folder between runs, and the Docker image of `scripts/check.sh --linux` builds it into
+`/opt/onnxruntime` once, when the image is made. Microsoft's prebuilt ONNX Runtime packages are not used
+anywhere ([ADR-004](ADR/ADR-004-document-reading.md)).
 
 Then build with the presets as above. With Qt older than 6.8 the **View → Appearance** menu is absent. The
 presets add `/opt/homebrew/bin` to `PATH`, which is harmless on Linux because a missing folder on `PATH` is
@@ -435,6 +505,7 @@ Versions this was verified with (vcpkg's, from the baseline in `vcpkg.json`):
 | `zeromq` / `cppzmq` | 4.3.5 / 4.11.0 |
 | `nlohmann-json` | 3.12.0 |
 | `gtest` | 1.18.0 |
+| `onnxruntime` | vcpkg's at the baseline, built for debug and release (CMake requires 1.31 or newer) |
 | `pkgconf` | 3.0.3 (how CMake finds FFmpeg) |
 
 **One FFmpeg per process.** Qt Multimedia's Windows backend is an FFmpeg plug-in, and Qt ships its own
@@ -443,6 +514,16 @@ clash, so every build copies all five of vcpkg's FFmpeg DLLs (`avcodec`, `avform
 `swscale`) next to the Document Lab, `media_smoke` and the tests (`cmake/ffmpeg_dlls.cmake`), which Windows
 searches before `PATH`, and the packages hold vcpkg's and none of Qt's. `media_smoke`, which ctest runs,
 checks that the plug-in loads with them.
+
+**ONNX Runtime beside every program.** Windows 11 ships an older `onnxruntime.dll` in `System32`, for Windows
+ML. A program without vcpkg's copy beside it would load that one, which lacks the API the project is built
+against: the Document processor would then say "ONNX Runtime could not be loaded". So every program that links
+`doc_vision` (the Document Lab, `live_sender`, `doc_vision_eval` and their tests) has vcpkg's release
+`onnxruntime.dll`, and the release DLLs only it uses (Protocol Buffers, Abseil, RE2), copied beside it after each
+build, and the build stops if `onnxruntime.dll` is not there (`cmake/runtime_dlls.cmake`). Release in debug
+builds too: vcpkg's debug `onnxruntime.dll` fails ONNX's debug-only check of its operator schemas as soon as it
+loads a model, and the programs reach ONNX Runtime through its C API only, so the two C runtimes never share an
+object. The packages ship it beside `document_lab.exe`, with the model in `bin\models`.
 
 ### The developer environment
 

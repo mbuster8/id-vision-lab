@@ -26,7 +26,15 @@ add_library(document_lab_ui STATIC
     lab_settings.cpp
     lab_settings.h
     main_window.cpp
-    main_window.h)
+    main_window.h
+    model_folder.cpp
+    model_folder.h
+    scan_banner.cpp
+    scan_banner.h
+    scan_style.cpp
+    scan_style.h
+    scan_words.cpp
+    scan_words.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(document_lab_ui
     PUBLIC
@@ -61,5 +69,7 @@ endif()
 id_vision_lab_add_bundle_icon(document_lab "${PROJECT_SOURCE_DIR}/resources/icons/document_lab_icon.png")
 id_vision_lab_use_utf8_code_page(document_lab)
 id_vision_lab_copy_ffmpeg_dlls(document_lab)
+id_vision_lab_copy_runtime_dlls(document_lab)
+id_vision_lab_copy_models(document_lab)
 id_vision_lab_set_warnings(document_lab)
 id_vision_lab_add_sanitizer_defaults(document_lab)

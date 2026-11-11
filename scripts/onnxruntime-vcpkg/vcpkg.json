@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "id-vision-lab-onnxruntime",
+  "version": "2.0.0",
+  "description": "ONNX Runtime alone, for Linux (the Ubuntu CI job and docker/): everything else comes from Ubuntu's packages. The baseline must match the repository's vcpkg.json (tests/cmake/vcpkg_baseline_test.cmake).",
+  "builtin-baseline": "6fdd23fa0a9479a9f9a1c48178696f60cf39255d",
+  "dependencies": [
+    "onnxruntime"
+  ]
+}

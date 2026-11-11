@@ -1,4 +1,6 @@
 #include "main_window.h"
+#include "model_folder.h"
+#include "scan_banner.h"
 
 #include "card_frame.h"
 #include "fake_camera_backend.h"
@@ -6,6 +8,7 @@
 #include "latch.h"
 #include "list_source.h"
 #include "owner_only.h"
+#include "palette_support.h"
 #include "scratch_folder.h"
 
 #include <QAbstractButton>
@@ -25,6 +28,8 @@
 #include <QTreeWidget>
 #include <QWheelEvent>
 
+#include <doc_vision/guidance.h>
+#include <doc_vision/quality_gates.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
@@ -40,9 +45,11 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -313,14 +320,14 @@ TEST(LabWindow, FindingsInTheResultsPanel) {
     lab.pump();
 
     ASSERT_EQ(lab.results().size(), 1);
-    EXPECT_TRUE(lab.results().front().startsWith(QStringLiteral("edges: ")))
+    EXPECT_TRUE(lab.results().front().startsWith(QStringLiteral("Edges: ")))
         << lab.results().front().toStdString();
 }
 
 // Findings a test chooses, and an error when asked; it stands in for Edges.
 class ScriptedProcessor : public lab_core::FrameProcessor {
 public:
-    ScriptedProcessor(std::vector<std::string> findings, std::string error,
+    ScriptedProcessor(std::vector<lab_core::Finding> findings, std::string error,
                       std::vector<std::chrono::nanoseconds>* times)
         : m_findings(std::move(findings)), m_error(std::move(error)), m_times(times) {}
 
@@ -336,7 +343,7 @@ public:
     void reset() override {}
 
 private:
-    std::vector<std::string> m_findings;
+    std::vector<lab_core::Finding> m_findings;
     std::string m_error;
     std::vector<std::chrono::nanoseconds>* m_times;
 };
@@ -349,14 +356,15 @@ void edgesAre(LabDependencies& dependencies,
     };
 }
 
-// A finding "name: value" is a row of two; one without ": " fills the first column; an error is a row of its
-// own.
+// A finding is a row of its name and its value; one without a value fills the first column; an error is a row
+// of its own.
 TEST(LabWindow, ResultsAreNameAndValueRows) {
     Lab lab([](LabDependencies& dependencies) {
         edgesAre(dependencies, [] {
             return std::make_unique<ScriptedProcessor>(
-                std::vector<std::string>{"document: not found", "corners: 4: estimated", "plain note"}, "",
-                nullptr);
+                std::vector<lab_core::Finding>{
+                    {"Document", "not found"}, {"Corners", "4: estimated"}, {"Plain note", ""}},
+                "", nullptr);
         });
     });
     lab.choose("processorCombo", QStringLiteral("Edges"));
@@ -368,18 +376,40 @@ TEST(LabWindow, ResultsAreNameAndValueRows) {
     ASSERT_EQ(tree->columnCount(), 2);
     EXPECT_TRUE(tree->isHeaderHidden());
     ASSERT_EQ(tree->topLevelItemCount(), 3);
-    EXPECT_EQ(tree->topLevelItem(0)->text(0), QStringLiteral("document"));
+    EXPECT_EQ(tree->topLevelItem(0)->text(0), QStringLiteral("Document"));
     EXPECT_EQ(tree->topLevelItem(0)->text(1), QStringLiteral("not found"));
-    EXPECT_EQ(tree->topLevelItem(1)->text(0), QStringLiteral("corners"));
+    EXPECT_EQ(tree->topLevelItem(1)->text(0), QStringLiteral("Corners"));
     EXPECT_EQ(tree->topLevelItem(1)->text(1), QStringLiteral("4: estimated"));
-    EXPECT_EQ(tree->topLevelItem(2)->text(0), QStringLiteral("plain note"));
+    EXPECT_EQ(tree->topLevelItem(2)->text(0), QStringLiteral("Plain note"));
     EXPECT_TRUE(tree->topLevelItem(2)->text(1).isEmpty());
+}
+
+// A finding's tone colours its value: red for a problem, green for good, the palette's text otherwise.
+TEST(LabWindow, ToneColoursTheValue) {
+    Lab lab([](LabDependencies& dependencies) {
+        edgesAre(dependencies, [] {
+            return std::make_unique<ScriptedProcessor>(
+                std::vector<lab_core::Finding>{{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad},
+                                               {"Gates", "all pass", lab_core::Finding::Tone::Good},
+                                               {"Fill", "34 %"}},
+                "", nullptr);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    const QTreeWidget* tree = lab.resultsTree();
+    ASSERT_EQ(tree->topLevelItemCount(), 3);
+    EXPECT_EQ(tree->topLevelItem(0)->foreground(1).color(), QColor(0xC2, 0x39, 0x2E));
+    EXPECT_EQ(tree->topLevelItem(1)->foreground(1).color(), QColor(0x1E, 0x7D, 0x45));
+    EXPECT_EQ(tree->topLevelItem(2)->foreground(1).style(), Qt::NoBrush);
 }
 
 TEST(LabWindow, ProcessorErrorIsARow) {
     Lab lab([](LabDependencies& dependencies) {
         edgesAre(dependencies, [] {
-            return std::make_unique<ScriptedProcessor>(std::vector<std::string>{}, "it broke", nullptr);
+            return std::make_unique<ScriptedProcessor>(std::vector<lab_core::Finding>{}, "it broke", nullptr);
         });
     });
     lab.choose("processorCombo", QStringLiteral("Edges"));
@@ -458,8 +488,9 @@ TEST(LabWindow, ViewMenuAlwaysShows) {
 TEST(LabWindow, ProcessorLabelsAndRememberedKind) {
     {
         Lab lab;
-        EXPECT_EQ(lab.entries("processorCombo"), (QStringList{QStringLiteral("None"), QStringLiteral("Edges"),
-                                                              QStringLiteral("Outline (simple)")}));
+        EXPECT_EQ(lab.entries("processorCombo"),
+                  (QStringList{QStringLiteral("None"), QStringLiteral("Edges"),
+                               QStringLiteral("Outline (simple)"), QStringLiteral("Document")}));
         lab.choose("processorCombo", QStringLiteral("Outline (simple)"));
         EXPECT_EQ(QSettings().value(QStringLiteral("lab/processor")).toString(), QStringLiteral("Outline"));
     }
@@ -854,7 +885,7 @@ TEST(LabWindow, CameraFrameTimeFromTheFirstFrame) {
     Lab lab([&times](LabDependencies& dependencies) {
         twoCameras(dependencies);
         edgesAre(dependencies, [&times] {
-            return std::make_unique<ScriptedProcessor>(std::vector<std::string>{}, "", &times);
+            return std::make_unique<ScriptedProcessor>(std::vector<lab_core::Finding>{}, "", &times);
         });
     });
     lab.choose("processorCombo", QStringLiteral("Edges"));
@@ -1282,6 +1313,33 @@ TEST(LabWindow, CaptureKeepsTheOverlays) {
     ASSERT_TRUE(json.contains("overlays")) << json.dump();
     ASSERT_FALSE(json["overlays"].empty());
     EXPECT_EQ(json["overlays"][0]["label"], "Document");
+}
+
+// capture.json keeps its findings as "Name: value" text, whatever their tone.
+TEST(LabWindow, CaptureWritesFindingsAsText) {
+    Lab lab([](LabDependencies& dependencies) {
+        edgesAre(dependencies, [] {
+            return std::make_unique<ScriptedProcessor>(
+                std::vector<lab_core::Finding>{{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}},
+                "", nullptr);
+        });
+    });
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    button(lab, "captureButton")->click();
+
+    std::vector<std::filesystem::path> jsons;
+    for (const auto& entry : std::filesystem::directory_iterator(lab.folder.path() / "Captures")) {
+        if (entry.path().extension() == ".json") {
+            jsons.push_back(entry.path());
+        }
+    }
+    ASSERT_EQ(jsons.size(), 1U);
+    std::ifstream stream(jsons[0]);
+    const nlohmann::json json = nlohmann::json::parse(stream);
+    EXPECT_EQ(json["findings"], nlohmann::json::array({"Sharpness: 41 (min 200)"})) << json.dump();
 }
 
 TEST(LabWindow, CapturesFolderIsPrivate) {
@@ -1731,6 +1789,441 @@ TEST(LabWindow, CloseEndsTheChannelsAndWaitsForTheLink) {
 
     EXPECT_TRUE(QTest::qWaitFor([&lab] { return !lab.window->isVisible(); }, 10000));
     EXPECT_TRUE(logHas(lab.streamLog, "end lab"));
+}
+
+// --- The scan's guidance
+// ----------------------------------------------------------------------------------
+
+using doc_vision::Hint;
+
+// The Document processor's results, as a test queues them: each frame takes the next, the last one repeats.
+struct GuidanceScript {
+    std::vector<lab_core::ProcessorResult> results;
+    std::size_t next = 0;
+    int made = 0;
+};
+
+class ScriptedDocumentProcessor : public lab_core::FrameProcessor {
+public:
+    explicit ScriptedDocumentProcessor(std::shared_ptr<GuidanceScript> script)
+        : m_script(std::move(script)) {}
+    lab_core::ProcessorResult process(const frame_io::Frame&) override {
+        GuidanceScript& script = *m_script;
+        if (script.results.empty()) {
+            return {};
+        }
+        return script.results[std::min(script.next++, script.results.size() - 1)];
+    }
+    void reset() override {}
+
+private:
+    std::shared_ptr<GuidanceScript> m_script;
+};
+
+// Document made from `script`; the others as lab_core makes them.
+std::function<void(LabDependencies&)> documentIs(const std::shared_ptr<GuidanceScript>& script) {
+    return [script](LabDependencies& dependencies) {
+        dependencies.makeProcessor =
+            [script](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+            if (kind != lab_core::ProcessorKind::Document) {
+                return lab_core::makeProcessor(kind);
+            }
+            ++script->made;
+            return std::make_unique<ScriptedDocumentProcessor>(script);
+        };
+    };
+}
+
+struct Guided {
+    Hint shown = Hint::NoPage;
+    bool outline = true;
+    bool page = false;
+    lab_core::Guidance::Unavailable unavailable = lab_core::Guidance::Unavailable::None;
+};
+
+// A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
+// its only overlay, a "page" picture when asked, and a Bad Sharpness row.
+lab_core::ProcessorResult guided(const Guided& wanted) {
+    lab_core::ProcessorResult result;
+    lab_core::Guidance guidance;
+    guidance.frameHint = wanted.shown;
+    guidance.shownHint = wanted.shown;
+    guidance.unavailable = wanted.unavailable;
+    if (wanted.unavailable != lab_core::Guidance::Unavailable::None) {
+        guidance.reason = "missing";
+    }
+    if (wanted.shown != Hint::NoPage) {
+        guidance.chips.visible = true;
+        guidance.chips.passed.fill(true);
+        if (const std::optional<doc_vision::Gate> gate = doc_vision::gateOf(wanted.shown)) {
+            guidance.chips.passed[static_cast<std::size_t>(*gate)] = false;
+        }
+    }
+    if (wanted.outline) {
+        guidance.outlineOverlay = result.overlays.size();
+        result.overlays.push_back(visual_debug::Polygon{
+            .points = {{100, 100}, {500, 110}, {490, 380}, {110, 370}},
+            .label = "Document",
+            .colour = wanted.shown == Hint::Good ? visual_debug::kOverlayGreen : visual_debug::kOverlayRed});
+    }
+    if (wanted.page) {
+        result.images.push_back(
+            {.name = "page", .image = cv::Mat(44, 62, CV_8UC3, cv::Scalar::all(180)), .description = {}});
+    }
+    result.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
+    result.guidance = guidance;
+    return result;
+}
+
+std::shared_ptr<GuidanceScript> scriptOf(std::vector<lab_core::ProcessorResult> results) {
+    auto script = std::make_shared<GuidanceScript>();
+    script->results = std::move(results);
+    return script;
+}
+
+document_lab::ScanBanner* banner(const Lab& lab) {
+    return lab.window->findChild<document_lab::ScanBanner*>("scanBanner");
+}
+document_lab::GateChips* chips(const Lab& lab) {
+    return lab.window->findChild<document_lab::GateChips*>("gateChips");
+}
+// The banner's big line, or nothing while it is hidden.
+QString bannerLine(const Lab& lab) {
+    const document_lab::ScanBanner* shown = banner(lab);
+    if (shown == nullptr) {
+        return QStringLiteral("(no banner)");
+    }
+    return shown->isHidden() || !shown->content() ? QString() : shown->content()->bigLine;
+}
+
+const QString kShowThePage = QStringLiteral("Show the passport's photo page");
+
+TEST(LabWindow, DocumentIsAProcessor) {
+    Lab lab;
+
+    EXPECT_TRUE(lab.entries("processorCombo").contains(QStringLiteral("Document")));
+}
+
+TEST(LabWindow, BannerShowsTheDrawnResultsHint) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame()));
+
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Blurred: hold still"));
+    ASSERT_NE(chips(lab), nullptr);
+    EXPECT_FALSE(chips(lab)->isHidden());
+    EXPECT_FALSE(chips(lab)->states().passed[static_cast<std::size_t>(doc_vision::Gate::Sharp)]);
+    EXPECT_TRUE(chips(lab)->states().passed[static_cast<std::size_t>(doc_vision::Gate::InView)]);
+}
+
+TEST(LabWindow, BannerHiddenForOtherProcessors) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_FALSE(bannerLine(lab).isEmpty());
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+
+    EXPECT_TRUE(banner(lab)->isHidden());
+    EXPECT_TRUE(chips(lab)->isHidden());
+}
+
+// Review Focus 2: away and back, the banner hides at once and starts again from the first hint.
+TEST(LabWindow, ProcessorSwitchHidesAndResetsTheBanner) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    ASSERT_EQ(bannerLine(lab), QStringLiteral("Blurred: hold still"));
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    EXPECT_TRUE(banner(lab)->isHidden());
+    lab.choose("processorCombo", QStringLiteral("Document"));
+
+    EXPECT_EQ(bannerLine(lab), kShowThePage);
+    EXPECT_TRUE(chips(lab)->isHidden());
+}
+
+TEST(LabWindow, StartShowsHintOneBeforeAnyResult) {
+    Lab lab(twoCameras);
+    lab.choose("processorCombo", QStringLiteral("Document"));
+
+    startStop(lab)->click();
+
+    EXPECT_EQ(bannerLine(lab), kShowThePage);
+    EXPECT_EQ(lab.canvas()->emptyText(), QString());
+}
+
+TEST(LabWindow, NoCameraBanner) {
+    Lab lab;
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("No camera found"));
+    EXPECT_EQ(lab.canvas()->emptyText(), QString());
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+
+    EXPECT_TRUE(banner(lab)->isHidden());
+    EXPECT_EQ(
+        lab.canvas()->emptyText(),
+        QStringLiteral("No camera found. Connect one, or open a video, an image or a folder of images."));
+}
+
+TEST(LabWindow, AccessOffBanner) {
+    Lab lab([](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        fakeOf(dependencies).permission = false;
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+
+    startStop(lab)->click();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Camera access is off"));
+    EXPECT_EQ(lab.canvas()->emptyText(), QString());
+}
+
+TEST(LabWindow, CameraStoppedBanner) {
+    Lab lab(twoCameras);
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    lab.backend->fail(QStringLiteral("unplugged"));
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("The camera stopped"));
+    EXPECT_EQ(banner(lab)->content()->smallLine, QStringLiteral("unplugged"));
+    EXPECT_EQ(lab.canvas()->emptyText(), QString());
+}
+
+TEST(LabWindow, IdleBanner) {
+    Lab lab(twoCameras);
+
+    lab.choose("processorCombo", QStringLiteral("Document"));
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Start the camera"));
+    EXPECT_EQ(lab.canvas()->emptyText(), QString());
+}
+
+TEST(LabWindow, NoCameraGoesWhenACameraArrives) {
+    Lab lab;
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    ASSERT_EQ(bannerLine(lab), QStringLiteral("No camera found"));
+
+    lab.backend->changeCameras({camera("b", QStringLiteral("C920"))});
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Start the camera"));
+}
+
+// Review Focus 4: a model that will not open keeps its banner on every result of the run.
+TEST(LabWindow, UnavailableModelBannerStaysForTheRun) {
+    Lab lab(documentIs(scriptOf({guided(
+        {.shown = Hint::NoPage, .outline = false, .unavailable = lab_core::Guidance::Unavailable::Model})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    for (int i = 0; i < 3; ++i) {
+        lab.pump();
+        EXPECT_EQ(bannerLine(lab), QStringLiteral("The document model is missing")) << i;
+        EXPECT_TRUE(chips(lab)->isHidden()) << i;
+    }
+}
+
+// The real processor, from a model folder with no model in it, says so.
+TEST(LabWindow, MissingModelFolderSaysTheModelIsMissing) {
+    test_support::ScratchFolder empty;
+    Lab lab([&empty](LabDependencies& dependencies) {
+        dependencies.modelFolder = QString::fromStdU16String(empty.path().u16string());
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame()));
+
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("The document model is missing"));
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("Detector: unavailable")))
+        << lab.results().join('|').toStdString();
+}
+
+TEST(LabWindow, DefaultModelFolderIsBesideTheProgram) {
+    EXPECT_TRUE(document_lab::defaultModelFolder().endsWith(QStringLiteral("/models")))
+        << document_lab::defaultModelFolder().toStdString();
+}
+
+// P8: with Show on a picture the frame lacks, the placeholder shows and the banner stays above it, fed by the
+// newest result.
+TEST(LabWindow, BannerAbovePlaceholder) {
+    Lab lab(documentIs(scriptOf(
+        {guided({.shown = Hint::Good, .page = true}), guided({.shown = Hint::NoPage, .outline = false})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    lab.choose("showCombo", QStringLiteral("page"));
+
+    lab.pump();
+
+    ASSERT_TRUE(lab.placeholder()->isVisible());
+    const QObjectList siblings = lab.placeholder()->parent()->children();
+    EXPECT_GT(siblings.indexOf(banner(lab)), siblings.indexOf(lab.placeholder()));
+    EXPECT_GT(siblings.indexOf(chips(lab)), siblings.indexOf(lab.placeholder()));
+    EXPECT_EQ(bannerLine(lab), kShowThePage);
+}
+
+// P15: on a narrow canvas the big line shrinks or elides and the chips wrap onto two rows.
+TEST(LabWindow, NarrowCanvasElides) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::MoveToMiddle})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    const QList<int> sizes = splitter->sizes();
+    splitter->setSizes({360, sizes.value(0) + sizes.value(1) - 360});
+    QApplication::processEvents();
+    ASSERT_EQ(lab.canvas()->width(), 360);
+
+    banner(lab)->repaint();
+
+    EXPECT_LE(banner(lab)->width(), 360);
+    EXPECT_LT(banner(lab)->fittedBigLine().pixelSize, 32);
+    EXPECT_GT(chips(lab)->height(), chips(lab)->heightForWidth(2000));
+}
+
+TEST(LabWindow, StatusSaysTheState) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame()));
+
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: adjust (sharpness)")))
+        << lab.status().toStdString();
+}
+
+// Leaving Document takes its state out of the status bar at once, not at the next refresh.
+TEST(LabWindow, StatusDropsTheStateWithTheProcessor) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(lab.status().contains(QStringLiteral("State: "))) << lab.status().toStdString();
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("State: "))) << lab.status().toStdString();
+}
+
+const viewer_core::Polygon* guideOn(const Lab& lab) {
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);
+        if (polygon != nullptr && polygon->style == viewer_core::Polygon::Style::Guide) {
+            return polygon;
+        }
+    }
+    return nullptr;
+}
+
+// P4, P10: the outline is drawn as the canvas's guide, coloured by the shown hint, and hides with Overlays.
+TEST(LabWindow, GuideOutlineOnTheCanvas) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good}), guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+    ASSERT_EQ(lab.canvas()->overlays().size(), 1U);
+    const auto* good = std::get_if<viewer_core::Polygon>(&lab.canvas()->overlays()[0]);
+    ASSERT_NE(good, nullptr);
+    EXPECT_EQ(good->style, viewer_core::Polygon::Style::Guide);
+    EXPECT_EQ(good->label, "");
+    EXPECT_EQ(good->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+
+    lab.pump();
+    ASSERT_NE(guideOn(lab), nullptr);
+    EXPECT_EQ(guideOn(lab)->colour, (viewer_core::Colour{0xFF, 0x6B, 0x5E}));
+
+    button(lab, "overlaysCheck")->click();
+    EXPECT_FALSE(lab.canvas()->overlaysShown());
+}
+
+TEST(LabWindow, GuideOnlyOnTheFrameEntry) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .page = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_NE(guideOn(lab), nullptr);
+
+    lab.choose("showCombo", QStringLiteral("page"));
+    lab.pump();
+
+    EXPECT_EQ(guideOn(lab), nullptr);
+}
+
+// Review R1: the outline's colour is fixed with its picture's job, so a picture and its outline arrive
+// together.
+TEST(LabWindow, OutlineTravelsWithItsPicture) {
+    test_support::Latch latch;
+    std::mutex mutex;
+    std::vector<std::pair<std::uint64_t, viewer_core::Colour>> made;
+    Lab lab([&](LabDependencies& dependencies) {
+        documentIs(scriptOf({guided({.shown = Hint::Good}), guided({.shown = Hint::Blurred})}))(dependencies);
+        dependencies.conversionMode = LiveConverter::Mode::Threaded;
+        dependencies.conversion = [&](const LiveJob& job) {
+            if (job.frameNumber == 1) {
+                latch.hold();
+            }
+            for (const viewer_core::Overlay& overlay : job.tags.overlayList()) {
+                if (const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay)) {
+                    const std::lock_guard lock(mutex);
+                    made.emplace_back(job.frameNumber, polygon->colour);
+                }
+            }
+            return convertLiveFrame(job);
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump(); // the first picture is held converting
+    ASSERT_TRUE(latch.waitUntilEntered());
+    lab.pump(); // the second waits
+    latch.release();
+    ASSERT_TRUE(waitForPictures(*lab.window, 2));
+    QApplication::processEvents();
+
+    const std::lock_guard lock(mutex);
+    ASSERT_EQ(made.size(), 2U);
+    EXPECT_EQ(made[0], (std::pair{std::uint64_t{1}, viewer_core::Colour{0x3D, 0xDC, 0x84}}));
+    EXPECT_EQ(made[1], (std::pair{std::uint64_t{2}, viewer_core::Colour{0xFF, 0x6B, 0x5E}}));
+    ASSERT_NE(guideOn(lab), nullptr);
+    EXPECT_EQ(guideOn(lab)->colour, (viewer_core::Colour{0xFF, 0x6B, 0x5E}));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Blurred: hold still"));
+}
+
+TEST(LabWindow, PausedReplayKeepsTheLastHint) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+
+    QApplication::processEvents();
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Blurred: hold still"));
+}
+
+// P17: a value's tone follows the appearance when it changes, as the running app sees it.
+TEST(LabWindow, ToneFollowsAPaletteSwitch) {
+    const test_support::PaletteGuard guard;
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    QTreeWidgetItem* sharpness = lab.resultsTree()->topLevelItem(0);
+    ASSERT_NE(sharpness, nullptr);
+
+    QGuiApplication::setPalette(
+        test_support::paletteWith(QColor(0x1E, 0x21, 0x25), QColor(0xE8, 0xEA, 0xED)));
+    QEvent changed(QEvent::PaletteChange);
+    QCoreApplication::sendEvent(lab.window.get(), &changed);
+    EXPECT_EQ(lab.resultsTree()->topLevelItem(0)->foreground(1).color(), QColor(0xFF, 0x6B, 0x5E));
+
+    test_support::applyPalette(test_support::paletteWith(QColor(236, 236, 236), QColor(0, 0, 0)));
+    EXPECT_EQ(lab.resultsTree()->topLevelItem(0)->foreground(1).color(), QColor(0xC2, 0x39, 0x2E));
 }
 
 } // namespace

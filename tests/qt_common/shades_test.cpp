@@ -17,6 +17,13 @@ bool isNeutral(const QColor& colour) {
     return colour.red() == colour.green() && colour.green() == colour.blue();
 }
 
+// A dark appearance is a window colour darker than its text, whatever Qt version tells.
+TEST(Shades, DarkAppearance) {
+    EXPECT_TRUE(qt_common::isDarkAppearance(paletteWith(QColor(0x20, 0x20, 0x20), QColor(0xE0, 0xE0, 0xE0))));
+    EXPECT_FALSE(
+        qt_common::isDarkAppearance(paletteWith(QColor(0xE0, 0xE0, 0xE0), QColor(0x20, 0x20, 0x20))));
+}
+
 // Each shade steps further from the window colour towards the text, in a light and in a dark appearance, so
 // a hovered cell differs from the panel, a selected one from a hovered one, and focus shows.
 TEST(Shades, StepFromTheWindowColourTowardsTheText) {
