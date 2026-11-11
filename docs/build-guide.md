@@ -4,7 +4,7 @@ How to install the tools, build every part of the project, run the tests and wor
 For running the programs, see the [user guide](user-guide.md).
 
 Verified on macOS 27.0.1 on Apple silicon (Mac mini), Apple clang 21, October 2026. Continuous integration
-also builds and tests every push on Ubuntu 24.04. Windows 11 with Visual Studio 2022 has its own presets
+also builds and tests every pull request and every push to `master` on Ubuntu 24.04. Windows 11 with Visual Studio 2022 has its own presets
 and setup: see [Windows](#windows).
 
 ## Prerequisites (macOS)
@@ -350,6 +350,8 @@ by hand. If a menu has moved in your version, the presets above still work from 
    `ImageView::wheelEvent` to set a breakpoint, start with **Debug → Start Debugging** (⌘Y), and scroll
    the mouse wheel over an image in the viewer. Qt Creator stops at the breakpoint with LLDB.
 
+![Qt Creator's Test Results pane after Run All Tests, the results grouped by test suite (taken in October 2026, before the Document Lab's tests)](images/qt-creator-tests.jpg)
+
 ## Troubleshooting
 
 **Qt Creator cannot find Ninja, Qt or OpenCV when started from the Dock.** Apps started from the Dock or
@@ -413,10 +415,10 @@ in the user guide.
 
 ## Linux
 
-Continuous integration builds and tests every push on Ubuntu 24.04 with the distribution's packages, which
-give OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest versions supported. FFmpeg's four development packages
-(`libavcodec-dev`, `libavformat-dev`, `libswscale-dev`, `libavutil-dev`) are among them, so its tests run there
-too, decoding in software: CI has no GPU. The list lives in
+Continuous integration builds and tests every pull request and every push to `master` on Ubuntu 24.04 with
+the distribution's packages, which give OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest versions supported.
+FFmpeg's four development packages (`libavcodec-dev`, `libavformat-dev`, `libswscale-dev`, `libavutil-dev`) are
+among them, so its tests run there too, decoding in software: CI has no GPU. The list lives in
 [`scripts/install-ubuntu-deps.sh`](../scripts/install-ubuntu-deps.sh), which CI and the Docker image both run;
 on an Ubuntu 24.04 machine:
 
@@ -696,9 +698,9 @@ MSVC's environment itself, and reads `VCPKG_INSTALLATION_ROOT` and `QT_ROOT_DIR`
    `build\windows-release` folders as the command line.
 3. Build, run `visual_debug_viewer` and run the tests as on macOS (steps 3 to 5 of
    [Working in Qt Creator](#working-in-qt-creator), with Ctrl in place of ⌘). The **Test Results** pane
-   reports every test passing except 1 skipped (`ClientServer.RefusesNonLoopbackBindByDefault`) and 2
-   disabled: Qt Creator lists GoogleTest's cases, not CTest's seven whole-program runs, so its total is
-   CTest's less those 7.
+   reports every test passing except the disabled ones and one skipped by design
+   (`ClientServer.RefusesNonLoopbackBindByDefault`): Qt Creator lists GoogleTest's cases, not CTest's
+   whole-program runs, so its total is smaller than CTest's.
 
 **`LNK1104: cannot open file 'apps\visual_debug_viewer.exe'`.** The viewer (or the example sender) from that
 build is still running, and Windows does not let a running program's file be replaced. Quit it and build

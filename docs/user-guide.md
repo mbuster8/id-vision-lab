@@ -297,6 +297,8 @@ A program that sends each frame with `visual_debug::sendLive(frame, "camera")` (
 [worked example 1](#1-one-line-debugging-with-sendimage)), such as `live_sender`, streams it as a **live
 channel**: the viewer shows the channel's newest frame in place, instead of adding every frame to the history.
 
+![Two cameras and a video streaming at once, the Live group stretched to show all six channels, camera 0's edges in the Turbo colour map with the Colours menu open, and the activity log below](images/live-channels.jpg)
+
 - **The Live group.** While channels exist, a **Live** group sits at the top of the sidebar, above the search,
   with a row per channel in the order they started: the newest frame (in the channel's range and colours),
   the channel's name on one line, its frame rate (`30 fps`: frames that arrived in the last second) and its
@@ -411,6 +413,8 @@ Integers print exactly, including negative values of signed images. Floating-poi
 to six significant digits, always with a decimal point regardless of the system's language settings.
 
 ### Region statistics
+
+![Show Clipping marking the clipped highlights of a horse's mane in magenta, and a Shift-drag region labelled with its size and each channel's minimum, maximum, mean and σ](images/clipping-and-statistics.jpg)
 
 Shift-drag in the view to draw a rectangle. It is outlined, and a label beside it gives its size and place and,
 per channel, the minimum, maximum, mean and standard deviation of the original values. Over a whole 2×2
@@ -550,6 +554,8 @@ picture as shown.
 open build/debug/apps/example_sender/visual_debug_example_sender.app
 ```
 
+![The Visual Debug Example Sender after sending a photo: Open, Send image and the Send to field along the top, the result in the status bar](images/example-sender.png)
+
 The Visual Debug Example Sender shows how a Qt application uses the library. Its icon, a white paper
 plane in the viewer's blue ring, tells it apart from the viewer's eye in the Dock. The bar along the top, on the same panel grey as the viewer's sidebar, holds **Open…** (Ctrl+O), **Send
 image** (Ctrl+Return) and the **Send to** field with the endpoint images go to; the preview fills the rest of
@@ -586,6 +592,8 @@ Start it with `open` or from Finder: macOS asks for camera access on behalf of t
 started from a terminal it asks for the terminal (see the [build guide](build-guide.md#building)).
 
 ![The Document Lab replaying a drawn page through the Document processor, its parts numbered as in the README](images/document-lab.png)
+
+The numbers are explained in the [README](../README.md#the-document-lab).
 
 The window has four rows of controls above the canvas: the source (a camera, or **Open File…** and **Open
 Folder…**), the replay, the processing (the processor, Show, Overlays, Record and Capture) and the viewer. Every
