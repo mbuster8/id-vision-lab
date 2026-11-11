@@ -78,6 +78,29 @@ TEST(QualityGates, BlurLowersSharpness) {
     EXPECT_LT(doc_vision::measure(blurred, test_support::kPageQuad).sharpness, 200.0);
 }
 
+// A click-to-focus region's sharpness, at the frame's own resolution.
+TEST(QualityGates, RegionSharpnessFallsWithBlur) {
+    const cv::Mat frame =
+        test_support::pageInFrame(test_support::proceduralPage(), test_support::kPageQuad, {1280, 720});
+    const cv::Rect region(400, 200, 300, 300);
+    cv::Mat blurred;
+    cv::GaussianBlur(frame, blurred, cv::Size(0, 0), 3.0);
+    const double sharp = doc_vision::regionSharpness(frame, region);
+    EXPECT_GT(sharp, 3.0 * doc_vision::regionSharpness(blurred, region));
+}
+
+// A region past the frame's edge is measured on the part inside it; nothing inside gives 0.
+TEST(QualityGates, RegionSharpnessClipsToTheFrame) {
+    const cv::Mat frame =
+        test_support::pageInFrame(test_support::proceduralPage(), test_support::kPageQuad, {1280, 720});
+    const double clipped = doc_vision::regionSharpness(frame, cv::Rect(900, 550, 400, 400));
+    EXPECT_GT(clipped, 0.0);
+    EXPECT_DOUBLE_EQ(clipped, doc_vision::regionSharpness(frame, cv::Rect(900, 550, 380, 170)));
+    EXPECT_DOUBLE_EQ(doc_vision::regionSharpness(frame, cv::Rect(2000, 2000, 50, 50)), 0.0);
+    EXPECT_DOUBLE_EQ(doc_vision::regionSharpness(frame, cv::Rect(10, 10, 0, 0)), 0.0);
+    EXPECT_DOUBLE_EQ(doc_vision::regionSharpness(cv::Mat(), cv::Rect(0, 0, 10, 10)), 0.0);
+}
+
 TEST(QualityGates, HysteresisOnTheMargin) {
     doc_vision::GateJudge judge;
     Measures m = goodMeasures();

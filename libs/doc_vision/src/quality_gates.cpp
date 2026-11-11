@@ -132,4 +132,22 @@ void GateJudge::reset() {
     }
 }
 
+double regionSharpness(const cv::Mat& bgr8, cv::Rect region) {
+    if (bgr8.empty()) {
+        return 0.0;
+    }
+    const cv::Rect inside = region & cv::Rect(0, 0, bgr8.cols, bgr8.rows);
+    if (inside.empty()) {
+        return 0.0;
+    }
+    cv::Mat grey;
+    cv::cvtColor(bgr8(inside), grey, cv::COLOR_BGR2GRAY);
+    cv::Mat laplacian;
+    cv::Laplacian(grey, laplacian, CV_64F);
+    cv::Scalar mean;
+    cv::Scalar deviation;
+    cv::meanStdDev(laplacian, mean, deviation);
+    return deviation[0] * deviation[0];
+}
+
 } // namespace doc_vision
