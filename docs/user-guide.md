@@ -685,6 +685,43 @@ the one in `System32` when the lab's own copy is gone), the banner says "The doc
 "ONNX Runtime could not be loaded" for the whole run, the status bar gives the reason, and the other processors
 work as before.
 
+### Focus on the page
+
+A blurred page cannot be read, and many webcams leave a passport held close blurred. Where the lab can set a
+camera's own focus (a UVC camera such as the Logitech C920 on macOS, or a camera whose driver offers focus on
+Windows), it focuses on the page itself; where it cannot, it says so. Qt Multimedia offers no focus control for
+these cameras, so the lab reaches each camera's own controls directly ([ADR-005](ADR/ADR-005-camera-focus.md)).
+
+- **The camera's own autofocus stays on** until the lab needs to take over.
+- **On the page:** when a page is found, held steady, and sharpness is the first check it fails (it is in view,
+  the right size and flat) for 1.5 s, the lab searches the camera's focus positions for the one where the page is
+  sharpest, then holds it. The banner says **Hold still: focusing** meanwhile, the Sharp chip shows ✗, the
+  outline stays red, and the status bar ends with the time it took: `Focused at 30 in 2.4 s`. Moving the page
+  nearer or further (its size changing by more than 15%), or taking it away for a second, gives the focus back to
+  the camera.
+- **A click on the picture** (with Show on **Frame**, during a camera run) focuses on the area around the click,
+  a fifth of the frame's height wide; **F** focuses on the centre of what the canvas shows. The status bar says
+  `Focusing…`, then `Focused at 30: 12 → 210` (the area's sharpness before and after) or `Could not focus
+  there`. A double-click still fits the picture to the window and never focuses.
+- **When the page cannot be made sharp:**
+
+  | When | Banner |
+  |---|---|
+  | The lab searched every position and none was sharp | ✗ This camera can't focus this close · Move the page a little further away |
+  | The lab cannot set this camera's focus (its own autofocus, if any, did not manage in 3 s, the page held steady) | ✗ This camera can't make the page sharp · Try more light, or another camera |
+
+  Either shows only while the shown hint is **Blurred**: a page that is too far, cut off or tilted keeps its own
+  hint. On Linux the lab cannot set any camera's focus yet, so only the second applies.
+- **The results** gain a **Focus** row for camera runs: `camera` (the camera's own autofocus), `camera (lab
+  can't set it)`, `lab searching`, `lab, 30` (the position held) or `can't focus` (red).
+- **Putting the focus back:** when the lab lets go, and whenever the camera stops, changes or the lab quits, the
+  camera's focus goes back to what it was: its autofocus on, or the position it had. If that fails, the status bar
+  says so: unplug the camera and plug it in again.
+- **If the lab crashes** while it holds the focus, the camera stays in manual focus until it is unplugged and
+  plugged in again, or until another program turns its autofocus on.
+- **Recordings** made while the lab searches hold deliberately blurred frames; for an evaluation, record with
+  the page already sharp. Nothing about focus is sent to the viewer.
+
 ### Replay
 
 **Open File…** replays a video or an image; **Open Folder…** a folder of images (in name order, numbers in

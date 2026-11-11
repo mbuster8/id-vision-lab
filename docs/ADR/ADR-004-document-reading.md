@@ -114,6 +114,9 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
     | 4 | Too close | ✗ Move a little further away | A3 |
     | 5 | Tilted | ✗ Hold the page flat to the camera | A3 |
     | 6 | Blurred | ✗ Blurred: hold still · or move a little closer or further away | A3 |
+    | 6a | The lab's focus searches (it shows over every hint but 1, with Sharp ✗ and the outline red) | Hold still: focusing | A3.3 |
+    | 6b | Blurred, and a search found nothing sharp | ✗ This camera can't focus this close · Move the page a little further away | A3.3 |
+    | 6c | Blurred, steady for 3 s, on a camera whose focus the lab cannot set | ✗ This camera can't make the page sharp · Try more light, or another camera | A3.3 |
     | 7 | Glare | ✗ Glare on the page · tilt it slightly away from the light | A3 |
     | 8 | Too dark | ✗ Too dark · add more light | A3 |
     | 9 | Too bright | ✗ Too bright · move out of direct light | A3 |
