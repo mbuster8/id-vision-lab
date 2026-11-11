@@ -73,3 +73,28 @@ id_vision_lab_copy_runtime_dlls(document_lab)
 id_vision_lab_copy_models(document_lab)
 id_vision_lab_set_warnings(document_lab)
 id_vision_lab_add_sanitizer_defaults(document_lab)
+
+# The camera focus spike (not part of the lab): which focus controls each camera offers through Qt, and what they
+# do to a page's sharpness. A console program on Windows, so that its report shows in the terminal.
+qt_add_executable(camera_focus_probe MACOSX_BUNDLE camera_focus_probe.cpp uvc_controls.cpp uvc_controls.h)
+set_target_properties(camera_focus_probe PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_NAME "Camera Focus Probe"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.proximasus.camera-focus-probe"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/camera_focus_probe.plist.in")
+target_link_libraries(camera_focus_probe PRIVATE document_lab_ui opencv_imgproc)
+if(APPLE)
+    target_link_libraries(camera_focus_probe PRIVATE "-framework IOKit" "-framework CoreFoundation")
+endif()
+if(WIN32)
+    target_link_libraries(camera_focus_probe PRIVATE strmiids ole32 oleaut32)
+endif()
+if(APPLE AND TARGET Qt6::QDarwinCameraPermissionPlugin)
+    qt_import_plugins(camera_focus_probe INCLUDE Qt6::QDarwinCameraPermissionPlugin)
+endif()
+id_vision_lab_use_utf8_code_page(camera_focus_probe)
+id_vision_lab_copy_ffmpeg_dlls(camera_focus_probe)
+id_vision_lab_copy_runtime_dlls(camera_focus_probe)
+id_vision_lab_copy_models(camera_focus_probe)
+id_vision_lab_set_warnings(camera_focus_probe)
