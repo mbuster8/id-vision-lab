@@ -16,7 +16,8 @@ The Document Lab (ADR-003) now has to read a passport from a camera. The roadmap
 Every piece has to:
 
 - carry an accepted licence, for the code and separately for any model weights: MIT, Apache-2.0, BSD-2-Clause,
-  BSD-3-Clause, zlib, ISC or MIT-0. Nothing is used that would need a licence asked for from anyone;
+  BSD-3-Clause, zlib, ISC, MIT-0 or BSL-1.0 (added 11 November 2026). Nothing is used that would need a licence
+  asked for from anyone;
 - avoid patented methods;
 - build into C++ on macOS, Windows and Linux from Homebrew, vcpkg and Ubuntu 24.04, with `libs/` free of Qt;
 - run fully offline. Frames of real passports never leave the machine.
@@ -33,7 +34,7 @@ Options considered, by concern (measured figures are from that spike):
 
 | Concern | Options | Evaluation |
 |---|---|---|
-| Inference runtime | ONNX Runtime, CPU execution provider | Runs every candidate model; on the Mac and the laptop alike. MIT; Eigen inside it is MPL-2.0, accepted. |
+| Inference runtime | ONNX Runtime, CPU execution provider | Runs every candidate model; on the Mac and the laptop alike. MIT; Eigen inside it is MPL-2.0, accepted; its dependencies compile in BSL-1.0 headers (optional-lite, Boost.Config, Boost.Mp11), which need no notice in a binary. |
 | | ONNX Runtime with Core ML (macOS) | 2–3 times slower than the CPU for every model measured, 3–5 times the memory, and 0.3–0.9 s to create a session. |
 | | ONNX Runtime with OpenVINO (Windows) | Its vcpkg port exhausted the laptop's 32 GB at full parallelism, and took 1 h 24 min at 6 jobs. The provider then aborted at load: ONNX Runtime and OpenVINO's ONNX front end register the same protobuf descriptors in one shared protobuf DLL. |
 | | Microsoft's prebuilt ORT packages | Telemetry is on in Microsoft's official builds. vcpkg's and Homebrew's builds leave it off (`onnxruntime_USE_TELEMETRY` defaults to OFF); Homebrew's ran with all network access denied. |
