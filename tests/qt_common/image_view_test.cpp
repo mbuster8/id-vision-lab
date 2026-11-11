@@ -75,7 +75,9 @@ TEST_F(ImageViewTest, ClickEmitsTheImagePointOnce) {
     sendMouseEvent(m_view, QEvent::MouseButtonPress, {100, 100}, Qt::LeftButton);
     sendMouseEvent(m_view, QEvent::MouseButtonRelease, {100, 100}, Qt::LeftButton);
     EXPECT_EQ(clicked.size(), 0); // not before the delay
-    QTest::qWait(50);
+    // Waits for the signal, not for a fixed time: a slow first paint (fonts, on a busy runner) can use up a
+    // fixed wait before the click's timer is seen.
+    EXPECT_TRUE(clicked.wait(5000));
 
     ASSERT_EQ(clicked.size(), 1);
     const QPointF point = clicked.first().at(0).toPointF();

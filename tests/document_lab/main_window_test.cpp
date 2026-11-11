@@ -24,6 +24,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QSlider>
 #include <QSplitter>
 #include <QTest>
@@ -2258,13 +2259,15 @@ void cameraFrames(Lab& lab, int count) {
     }
 }
 
-// A single click at the canvas's centre, as the user makes one.
+// A single click at the canvas's centre, as the user makes one. Waits for the click itself rather than a
+// fixed time, which a slow paint on a busy runner can use up.
 void clickCanvas(Lab& lab) {
     lab.canvas()->setClickDelay(0);
+    QSignalSpy clicked(lab.canvas(), &ImageView::clicked);
     const QPointF centre = QRectF(lab.canvas()->rect()).center();
     sendMouse(*lab.canvas(), QEvent::MouseButtonPress, centre);
     sendMouse(*lab.canvas(), QEvent::MouseButtonRelease, centre);
-    QTest::qWait(1);
+    EXPECT_TRUE(!clicked.isEmpty() || clicked.wait(5000));
 }
 
 std::function<void(LabDependencies&)> camerasAndDocument(const std::shared_ptr<GuidanceScript>& script) {
