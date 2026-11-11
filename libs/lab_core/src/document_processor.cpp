@@ -3,6 +3,7 @@
 #include "number_text.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -30,17 +31,20 @@ std::vector<Finding> pageFindings(const doc_vision::Measures& m, const doc_visio
     if (verdicts.passed[gateIndex(doc_vision::Gate::Flat)]) {
         findings.push_back({"Tilt", wholeNumber(m.tiltDegrees) + "°", Tone::Plain});
     } else {
+        // Rounded away from passing, the limit towards it, so a failing value never reads as its own limit.
         findings.push_back({"Tilt",
-                            wholeNumber(m.tiltDegrees) + "° (max " +
-                                wholeNumber(edgeToReach(m.tiltDegrees, thresholds.tilt, false)) + ")",
+                            wholeNumber(std::ceil(m.tiltDegrees)) + "° (max " +
+                                wholeNumber(std::floor(edgeToReach(m.tiltDegrees, thresholds.tilt, false))) +
+                                ")",
                             Tone::Bad});
     }
     if (verdicts.passed[gateIndex(doc_vision::Gate::Sharp)]) {
         findings.push_back({"Sharpness", wholeNumber(m.sharpness), Tone::Plain});
     } else {
         findings.push_back({"Sharpness",
-                            wholeNumber(m.sharpness) + " (min " +
-                                wholeNumber(edgeToReach(m.sharpness, thresholds.sharpness, true)) + ")",
+                            wholeNumber(std::floor(m.sharpness)) + " (min " +
+                                wholeNumber(std::ceil(edgeToReach(m.sharpness, thresholds.sharpness, true))) +
+                                ")",
                             Tone::Bad});
     }
     findings.push_back({"Glare", oneDecimal(100 * m.glareShare) + " %",

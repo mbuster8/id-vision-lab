@@ -302,9 +302,57 @@ TEST(DocumentProcessor, RecoveringSharpnessShowsThePassAgainEdge) {
     const Finding* sharpness = findingNamed(recovering, "Sharpness");
     ASSERT_NE(sharpness, nullptr);
     EXPECT_EQ(sharpness->tone, Finding::Tone::Bad);
-    EXPECT_NE(sharpness->value.find("(min " + std::to_string(std::lround(measured + 10)) + ")"),
-              std::string::npos)
+    EXPECT_NE(
+        sharpness->value.find("(min " + std::to_string(static_cast<long>(std::ceil(measured + 10))) + ")"),
+        std::string::npos)
         << sharpness->value;
+}
+
+// "22° (max 22)" reads as within the limit: a failing value is rounded away from passing, its limit towards
+// it.
+std::pair<long, long> valueAndLimit(const std::string& text) {
+    const std::size_t open = text.find('(');
+    const std::size_t digits = text.find_first_of("0123456789", open);
+    return {std::stol(text), std::stol(text.substr(digits))};
+}
+
+TEST(DocumentProcessor, FailingTiltNeverShowsItsOwnLimit) {
+    const doc_vision::Quad tilted{{{430, 160}, {850, 160}, {1180, 660}, {100, 660}}};
+    const double tilt = doc_vision::tiltDegrees(tilted, kFrameSize);
+    doc_vision::Thresholds thresholds;
+    thresholds.tilt = {std::round(tilt) - 0.49, std::round(tilt) - 3}; // fails, and rounds to the same number
+    ASSERT_GT(tilt, thresholds.tilt.failsAt);
+    auto script = std::make_shared<Script>();
+    script->steps = {page(tilted)};
+    DocumentProcessor processor(scripted(script), thresholds);
+
+    const ProcessorResult result = processor.process(
+        frameAt(test_support::pageInFrame(test_support::proceduralPage(), tilted, kFrameSize), 0));
+
+    const Finding* finding = findingNamed(result, "Tilt");
+    ASSERT_NE(finding, nullptr);
+    ASSERT_EQ(finding->tone, Finding::Tone::Bad);
+    const auto [value, limit] = valueAndLimit(finding->value);
+    EXPECT_GT(value, limit) << finding->value;
+}
+
+TEST(DocumentProcessor, FailingSharpnessNeverShowsItsOwnLimit) {
+    const cv::Mat frame = goodFrame();
+    const double sharpness = doc_vision::measure(frame, test_support::kPageQuad).sharpness;
+    doc_vision::Thresholds thresholds;
+    thresholds.sharpness = {std::round(sharpness) + 0.49, std::round(sharpness) + 3};
+    ASSERT_LT(sharpness, thresholds.sharpness.failsAt);
+    auto script = std::make_shared<Script>();
+    script->steps = {page(test_support::kPageQuad)};
+    DocumentProcessor processor(scripted(script), thresholds);
+
+    const ProcessorResult result = processor.process(frameAt(frame, 0));
+
+    const Finding* finding = findingNamed(result, "Sharpness");
+    ASSERT_NE(finding, nullptr);
+    ASSERT_EQ(finding->tone, Finding::Tone::Bad);
+    const auto [value, limit] = valueAndLimit(finding->value);
+    EXPECT_LT(value, limit) << finding->value;
 }
 
 TEST(DocumentProcessor, DarkPageIsTooDark) {
