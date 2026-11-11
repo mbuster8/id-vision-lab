@@ -78,6 +78,19 @@ TEST(ScanWords, WordsAreTheSpecs) {
     }
 }
 
+// A3.3: the focus banners, word for word (spec §3.5).
+TEST(ScanWords, FocusWords) {
+    using document_lab::FocusBanner;
+    EXPECT_EQ(document_lab::bannerFor(FocusBanner::Focusing),
+              (BannerContent{Tone::Neutral, false, QStringLiteral("Hold still: focusing"), QString()}));
+    EXPECT_EQ(document_lab::bannerFor(FocusBanner::CannotFocusThisClose),
+              (BannerContent{Tone::Bad, false, QStringLiteral("This camera can't focus this close"),
+                             QStringLiteral("Move the page a little further away")}));
+    EXPECT_EQ(document_lab::bannerFor(FocusBanner::CannotMakeSharp),
+              (BannerContent{Tone::Bad, false, QStringLiteral("This camera can't make the page sharp"),
+                             QStringLiteral("Try more light, or another camera")}));
+}
+
 TEST(ScanWords, WindowStates) {
     EXPECT_EQ(document_lab::bannerFor(WindowState::NoCamera),
               (BannerContent{Tone::Bad, false, "No camera found",

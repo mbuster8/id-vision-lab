@@ -49,6 +49,18 @@ BannerContent bannerFor(doc_vision::Hint hint) {
     return {doc_vision::Tone::Good, false, tr("Good: hold still"), {}};
 }
 
+BannerContent bannerFor(FocusBanner banner) {
+    switch (banner) {
+    case FocusBanner::Focusing:
+        break;
+    case FocusBanner::CannotFocusThisClose:
+        return bad("This camera can't focus this close", "Move the page a little further away");
+    case FocusBanner::CannotMakeSharp:
+        return bad("This camera can't make the page sharp", "Try more light, or another camera");
+    }
+    return {doc_vision::Tone::Neutral, false, tr("Hold still: focusing"), {}};
+}
+
 BannerContent bannerFor(WindowState state, const QString& detail) {
     switch (state) {
     case WindowState::NoCamera:
