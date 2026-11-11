@@ -77,14 +77,23 @@ image, folder or recording runs through a processor on a thread of its own, and 
 viewer's canvas, with what the processor found drawn over the frame and listed beside it. It replays every
 frame in order and goes to any frame of a video, records frames losslessly as PNG folders, captures one at full
 resolution, and streams its frames to the viewer, or sends it one, when asked, showing whether the viewer is
-there. Its first processors find edges and a simple outline of a light four-sided shape; the processor hook is
-where document reading goes next. See [Running the Document Lab](docs/user-guide.md#running-the-document-lab).
+there. Its processors find edges, a simple outline of a light four-sided shape, or a passport's data page.
+See [Running the Document Lab](docs/user-guide.md#running-the-document-lab).
+
+The **Document** processor guides the user to a page the next steps can read. DocAligner LC100, a small page
+model run on ONNX Runtime, finds the page's corners; six checks (in view, size, flat, sharp, no glare, light)
+judge it; and one hint at a time says what to change, with the page outlined in red until everything passes and
+it turns green. Everything runs on this computer: no frame leaves it.
+
+![Searching for the page](docs/images/scan-flow/01-searching.png)
+
+![A blurred page: hold still](docs/images/scan-flow/02-adjust-blurred.png)
 
 ## Coming next
 
-- **Document reading in the Document Lab**: finding the identity document in a frame, checking capture
-  quality, reading the machine-readable zone (MRZ), and reading the passport's chip (ICAO 9303: BAC, PACE,
-  Passive and Active Authentication) through a PC/SC reader.
+- **Document reading in the Document Lab**: reading the machine-readable zone (MRZ) of the page the Document
+  processor found, and reading the passport's chip (ICAO 9303: BAC, PACE, Passive and Active Authentication)
+  through a PC/SC reader.
 
 ## How it works
 
@@ -112,13 +121,15 @@ flowchart LR
 From a clone of this repository, with [Homebrew](https://brew.sh) installed:
 
 ```sh
-brew install cmake ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest
+brew install cmake ninja pkgconf qt opencv zeromq cppzmq nlohmann-json googletest onnxruntime
 cmake --preset debug
 cmake --build --preset debug
 open build/debug/apps/viewer/visual_debug_viewer.app
 build/debug/examples/pipeline_demo/pipeline_demo
 ```
 
+The first configure downloads the Document Lab's page model (4.8 MB) into a cache of your own and checks its
+SHA-256; the [build guide](docs/build-guide.md#the-models) says where, and how to build without a network.
 `open` returns before the viewer is ready, so wait until its status bar says
 `Listening on [tcp://127.0.0.1:7139]` before running the last command. That command runs an OpenCV pipeline
 and sends ten images to the viewer: colour, alpha, greyscale, signed 16-bit, 32- and 64-bit floating
@@ -345,6 +356,7 @@ id-vision-lab/
 │   ├── visual_debug/      the sender library and the viewer's server (no Qt)
 │   ├── viewer_core/       the viewer's logic: display, history, live channels, pixel readout, zoom (no Qt)
 │   ├── frame_io/          video, image and recording readers, the recorder, YUV conversion (no Qt)
+│   ├── doc_vision/        the page model on ONNX Runtime, page geometry, quality gates and hints (no Qt)
 │   └── lab_core/          the Document Lab's processors, engine and result sender (no Qt)
 ├── apps/
 │   ├── viewer/            the Visual Debug Viewer (Qt 6)

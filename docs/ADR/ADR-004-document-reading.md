@@ -37,7 +37,7 @@ Options considered, by concern (measured figures are from that spike):
 | | ONNX Runtime with Core ML (macOS) | 2–3 times slower than the CPU for every model measured, 3–5 times the memory, and 0.3–0.9 s to create a session. |
 | | ONNX Runtime with OpenVINO (Windows) | Its vcpkg port exhausted the laptop's 32 GB at full parallelism, and took 1 h 24 min at 6 jobs. The provider then aborted at load: ONNX Runtime and OpenVINO's ONNX front end register the same protobuf descriptors in one shared protobuf DLL. |
 | | Microsoft's prebuilt ORT packages | Telemetry is on in Microsoft's official builds. vcpkg's and Homebrew's builds leave it off (`onnxruntime_USE_TELEMETRY` defaults to OFF); Homebrew's ran with all network access denied. |
-| Document detector | DocsaidLab DocAligner LC100 (heatmaps, 4.77 MB) | Apache-2.0 code and weights. Page within IoU 0.9 in 94.6% of the owner's frames, 98.5% of MIDV's photos, 75.2% of MIDV's clip frames (the best). Returns no page when a corner is off-screen, which suits the "whole page in view" gate. |
+| Document detector | DocsaidLab DocAligner LC100 (heatmaps, 4.77 MB) | Apache-2.0 code and weights. Page within IoU 0.9 in 94.6% of the owner's frames, 98.5% of MIDV's photos, 75.2% of MIDV's clip frames (the best). Mostly returns no page when a corner is off-screen (none on 82.4% of MIDV's cut clip frames), which suits the "whole page in view" gate; its edge margin catches most of the rest. |
 | | DocAligner FastViT-T8 | 95.9% / 98.5% / 73.7% and faster, but its backbone carries Apple's own licence, which is not on the list. |
 | | A classical line detector (spike prototype) | 95.3% on the owner's clips, but 61.8% and 50.8% on MIDV. |
 | | Apple Vision | macOS only; 91.9% / 70.7% / 68.6%. |
