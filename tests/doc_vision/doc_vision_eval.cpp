@@ -1,9 +1,11 @@
-// doc_vision_eval: the Document processor, as the Document Lab runs it, on labelled clips or on MIDV-2020's
-// annotated passport clips, to tune and check A3.1's gates and timing. It prints aggregates only: no frame,
-// no text from a page, and clips by their number.
+// doc_vision_eval: the Document processor, as the Document Lab runs it, on labelled clips, on MIDV-2020's
+// annotated passport clips, or on any replay without labels (a video, an image, a folder of images or a
+// Document Lab recording), to tune and check A3.1's gates and timing. It prints aggregates only: no frame, no
+// text from a page, and clips by their number.
 //
 //   doc_vision_eval --model <onnx> [options] --labels <labels.csv> <clip>...
 //   doc_vision_eval --model <onnx> [options] --midv <clips folder> --frames <n> <type>...
+//   doc_vision_eval --model <onnx> [options] --replay <video, image, folder or recording>...
 //
 // Options: --threads <n> (ONNX Runtime's intra-op threads; 0 for its default), --margin <share> (the in-view
 // gate fails under it and passes again 0.005 above), --size <width>x<height> (each frame resized first,
@@ -16,6 +18,7 @@
 #include <doc_vision/page_detector.h>
 #include <doc_vision/page_geometry.h>
 #include <doc_vision/quality_gates.h>
+#include <frame_io/recording.h>
 #include <lab_core/document_processor.h>
 
 #include <nlohmann/json.hpp>
@@ -142,6 +145,7 @@ struct Group {
     int allPassed = 0;
     int frameGood = 0;
     int shownGood = 0;
+    std::vector<double> sharpness; // of the pages found wholly in view (the In view gate passed)
 };
 
 struct Run {
@@ -159,6 +163,7 @@ struct Options {
     std::optional<cv::Size> size;
     std::optional<std::filesystem::path> labels;
     std::optional<std::filesystem::path> midv;
+    bool replay = false;
     int frames = 30;
     std::vector<std::string> inputs;
 };
@@ -189,7 +194,7 @@ public:
     }
 
     void frame(cv::Mat image, std::uint64_t number, double seconds, Group* group,
-               const std::optional<Quad>& truth) {
+               const std::optional<Quad>& truth, const visual_debug::ImageDescription& tags = {}) {
         if (m_options.size && image.size() != *m_options.size) {
             cv::resize(image, image, *m_options.size, 0, 0, cv::INTER_LINEAR);
         }
@@ -197,12 +202,12 @@ public:
                                     .number = number,
                                     .at = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                         std::chrono::duration<double>(seconds)),
-                                    .tags = {}};
+                                    .tags = tags};
         const Clock::time_point start = Clock::now();
         const lab_core::ProcessorResult result = m_processor->process(frame);
         m_run.timings.total.push_back(msSince(start));
         const Clock::time_point convertStart = Clock::now();
-        const cv::Mat bgr = doc_vision::toBgr8(image);
+        const cv::Mat bgr = doc_vision::toBgr8(image, tags.valueRange.min, tags.valueRange.max);
         m_run.timings.convert.push_back(msSince(convertStart));
 
         if (!result.guidance) {
@@ -217,6 +222,7 @@ public:
             m_run.firstGood.back() = seconds;
         }
         std::optional<doc_vision::Verdicts> verdicts;
+        double sharpness = 0;
         if (m_finder.raw) {
             const Clock::time_point warpStart = Clock::now();
             const cv::Mat page = doc_vision::flatten(bgr, *m_finder.raw, doc_vision::kGatePageSize);
@@ -226,6 +232,7 @@ public:
             m_run.timings.warp.push_back(warp);
             m_run.timings.gates.push_back(std::max(0.0, msSince(measureStart) - warp));
             verdicts = doc_vision::GateJudge(m_thresholds).judge(measures);
+            sharpness = measures.sharpness;
         }
         if (group == nullptr) {
             return;
@@ -237,6 +244,9 @@ public:
                 group->passed[i] += verdicts->passed[i] ? 1 : 0;
             }
             group->allPassed += verdicts->allPassed() ? 1 : 0;
+            if (verdicts->passed[static_cast<std::size_t>(Gate::InView)]) {
+                group->sharpness.push_back(sharpness);
+            }
         }
         if (truth) {
             ++group->withTruth;
@@ -347,6 +357,35 @@ void runLabelled(const Options& options, Scorer& scorer, Run& run) {
     }
 }
 
+// Any replay the Document Lab opens, without labels: every frame at its own time, its tags too (a 16-bit
+// recording's value range), into one group.
+void runReplay(const Options& options, Scorer& scorer, Run& run) {
+    for (std::size_t c = 0; c < options.inputs.size(); ++c) {
+        std::string error;
+        const std::unique_ptr<frame_io::ReplaySource> source =
+            frame_io::openReplay(std::filesystem::path(options.inputs[c]), error);
+        if (!source) {
+            std::fprintf(stderr, "source %zu: cannot be opened: %s\n", c + 1, error.c_str());
+            continue;
+        }
+        scorer.startClip();
+        double last = 0;
+        for (;;) {
+            frame_io::ReadResult read = source->next();
+            if (read.status != frame_io::ReadStatus::Frame) {
+                if (read.status == frame_io::ReadStatus::Error) {
+                    std::fprintf(stderr, "source %zu: %s\n", c + 1, read.error.c_str());
+                }
+                break;
+            }
+            last = std::chrono::duration<double>(read.frame.at).count();
+            scorer.frame(read.frame.image, read.frame.number, last, &run.groups["all"], std::nullopt,
+                         read.frame.tags);
+        }
+        run.seconds += last;
+    }
+}
+
 // MIDV-2020's annotated frames of a clip, in order, with each frame's number from its file name.
 struct Annotated {
     std::filesystem::path file;
@@ -451,6 +490,26 @@ void report(const Run& run) {
     }
     std::printf(
         "(gates: share of the frames the raw detector found, each judged afresh; Good: share of all)\n");
+    std::printf("\nsharpness of the pages found wholly in view (the Sharp gate fails under %.0f):\n",
+                doc_vision::Thresholds{}.sharpness.failsAt);
+    for (const auto& [name, g] : run.groups) {
+        std::vector<double> values = g.sharpness;
+        std::sort(values.begin(), values.end());
+        if (values.empty()) {
+            std::printf("  %-8s none\n", name.c_str());
+            continue;
+        }
+        const auto at = [&values](double q) {
+            return values[static_cast<std::size_t>(q * static_cast<double>(values.size() - 1) + 0.5)];
+        };
+        std::printf("  %-8s %zu pages: p5 %.0f, p25 %.0f, p50 %.0f, p75 %.0f, p95 %.0f; at or above",
+                    name.c_str(), values.size(), at(0.05), at(0.25), at(0.5), at(0.75), at(0.95));
+        for (const double threshold : {80.0, 100.0, 120.0, 150.0, 200.0}) {
+            const auto above = values.end() - std::lower_bound(values.begin(), values.end(), threshold);
+            std::printf(" %.0f: %.1f%%%s", threshold, 100.0 * static_cast<double>(above) / values.size(),
+                        threshold < 200.0 ? "," : "\n");
+        }
+    }
     std::printf("\nbanner switches a minute: %.1f (over %.1f s)\n",
                 run.seconds > 0 ? 60.0 * run.switches / run.seconds : 0.0, run.seconds);
     if (run.firstGood.size() <= 12) {
@@ -478,7 +537,9 @@ int usage() {
                  "usage: doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--size <w>x<h>]\n"
                  "                       --labels <labels.csv> <clip>...\n"
                  "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--size <w>x<h>]\n"
-                 "                       --midv <clips folder> [--frames <n>] <type>...\n");
+                 "                       --midv <clips folder> [--frames <n>] <type>...\n"
+                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--size <w>x<h>]\n"
+                 "                       --replay <video, image, folder of images or recording>...\n");
     return 2;
 }
 
@@ -494,6 +555,10 @@ std::optional<Options> parse(int argc, char** argv) {
         }
         if (arg.rfind("--", 0) != 0) {
             options.inputs.push_back(arg);
+            continue;
+        }
+        if (arg == "--replay") {
+            options.replay = true;
             continue;
         }
         const std::optional<std::string> v = value();
@@ -522,8 +587,8 @@ std::optional<Options> parse(int argc, char** argv) {
             return std::nullopt;
         }
     }
-    if (options.model.empty() || options.labels.has_value() == options.midv.has_value() ||
-        options.inputs.empty()) {
+    const int modes = (options.labels ? 1 : 0) + (options.midv ? 1 : 0) + (options.replay ? 1 : 0);
+    if (options.model.empty() || modes != 1 || options.inputs.empty()) {
         return std::nullopt;
     }
     return options;
@@ -562,8 +627,10 @@ int main(int argc, char** argv) {
     Scorer scorer(*options, *detector, run);
     if (options->labels) {
         runLabelled(*options, scorer, run);
-    } else {
+    } else if (options->midv) {
         runMidv(*options, scorer, run);
+    } else {
+        runReplay(*options, scorer, run);
     }
     report(run);
     return 0;
