@@ -13,6 +13,7 @@
 #include <QRect>
 #include <QSignalSpy>
 #include <QStringList>
+#include <QTest>
 #include <QWheelEvent>
 
 #include <gtest/gtest.h>
@@ -62,6 +63,64 @@ protected:
 
     ImageView m_view;
 };
+
+// --- A single click (A3.3: click-to-focus)
+// -------------------------------------------------------------------
+
+// A click that did not move reports its image point once the double-click interval has passed.
+TEST_F(ImageViewTest, ClickEmitsTheImagePointOnce) {
+    m_view.setClickDelay(10);
+    QSignalSpy clicked(&m_view, &ImageView::clicked);
+
+    sendMouseEvent(m_view, QEvent::MouseButtonPress, {100, 100}, Qt::LeftButton);
+    sendMouseEvent(m_view, QEvent::MouseButtonRelease, {100, 100}, Qt::LeftButton);
+    EXPECT_EQ(clicked.size(), 0); // not before the delay
+    QTest::qWait(50);
+
+    ASSERT_EQ(clicked.size(), 1);
+    const QPointF point = clicked.first().at(0).toPointF();
+    EXPECT_NEAR(point.x(), 50.0, 1.0);
+    EXPECT_NEAR(point.y(), 50.0, 1.0);
+}
+
+// A real double-click arrives as press, release, double-click, release: it fits the view and clicks nothing.
+TEST_F(ImageViewTest, DoubleClickEmitsNothing) {
+    m_view.setClickDelay(10);
+    QSignalSpy clicked(&m_view, &ImageView::clicked);
+    QSignalSpy scaled(&m_view, &ImageView::scaleChanged);
+
+    sendMouseEvent(m_view, QEvent::MouseButtonPress, {100, 100}, Qt::LeftButton);
+    sendMouseEvent(m_view, QEvent::MouseButtonRelease, {100, 100}, Qt::LeftButton);
+    sendMouseEvent(m_view, QEvent::MouseButtonDblClick, {100, 100}, Qt::LeftButton);
+    sendMouseEvent(m_view, QEvent::MouseButtonRelease, {100, 100}, Qt::LeftButton);
+    QTest::qWait(50);
+
+    EXPECT_EQ(clicked.size(), 0);
+    EXPECT_EQ(scaled.size(), 1);
+}
+
+TEST_F(ImageViewTest, DragEmitsNothing) {
+    m_view.setClickDelay(10);
+    QSignalSpy clicked(&m_view, &ImageView::clicked);
+
+    drag(m_view, {20, 40}, {60, 100});
+    QTest::qWait(50);
+
+    EXPECT_EQ(clicked.size(), 0);
+}
+
+// The letterbox around a wide image is not the image.
+TEST_F(ImageViewTest, ClickOutsideTheImageEmitsNothing) {
+    m_view.setImage(filledImage(100, 50)); // 200 × 100 at scale 2, from y 50 to 150
+    m_view.setClickDelay(10);
+    QSignalSpy clicked(&m_view, &ImageView::clicked);
+
+    sendMouseEvent(m_view, QEvent::MouseButtonPress, {100, 20}, Qt::LeftButton);
+    sendMouseEvent(m_view, QEvent::MouseButtonRelease, {100, 20}, Qt::LeftButton);
+    QTest::qWait(50);
+
+    EXPECT_EQ(clicked.size(), 0);
+}
 
 // --- Regions (the 100×100 image fills the 200×200 view at scale 2) ---------------------------------------
 

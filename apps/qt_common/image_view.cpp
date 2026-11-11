@@ -2,11 +2,13 @@
 
 #include <QBrush>
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 #include <QPixmap>
 #include <QResizeEvent>
+#include <QStyleHints>
 #include <QTransform>
 #include <QWheelEvent>
 
@@ -41,7 +43,12 @@ ImageView::ImageView(QWidget* parent)
                      "visual_debug::sendLive(), or use File → Open…")) {
     setMouseTracking(true); // pixel readout while hovering, not only while dragging
     setMinimumSize(200, 200);
+    m_clickTimer.setSingleShot(true);
+    m_clickTimer.setInterval(std::min(QGuiApplication::styleHints()->mouseDoubleClickInterval(), 500));
+    connect(&m_clickTimer, &QTimer::timeout, this, [this] { emit clicked(m_clickPoint); });
 }
+
+void ImageView::setClickDelay(int milliseconds) { m_clickTimer.setInterval(milliseconds); }
 
 void ImageView::setImage(const QImage& image, KeepView keep, viewer_core::ImageTags::Overlays overlays) {
     setImage(image, keep, image.size(), std::move(overlays));
@@ -331,11 +338,18 @@ void ImageView::mouseReleaseEvent(QMouseEvent* event) {
     unsetCursor();
     if (clicked) {
         clearRegion();
+        const cv::Point2d point = imagePointAt(event->position());
+        if (!m_image.isNull() && point.x >= 0 && point.y >= 0 && point.x < m_imageSize.width() &&
+            point.y < m_imageSize.height()) {
+            m_clickPoint = QPointF(point.x, point.y);
+            m_clickTimer.start();
+        }
     }
 }
 
 void ImageView::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        m_clickTimer.stop(); // the first click of a double-click is no click
         m_viewport.fit();
         update();
         reportPixelAt(event->position()); // fitting moves the image under the cursor
