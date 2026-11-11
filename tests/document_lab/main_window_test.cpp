@@ -2467,6 +2467,35 @@ TEST(LabWindow, FailedRestoreShowsAfterOpeningAFile) {
         << lab.status().toStdString();
 }
 
+// The Legion's hand check: a window 2000 px wide cut the focus note off the status line's end. News comes
+// straight after the run's state, before the source and the counters, so a narrow window keeps it.
+TEST(LabWindow, NewsComesBeforeTheCounters) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Blurred})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    lab.focusLog->failSetAuto = true;
+    lab.choose("cameraCombo", QStringLiteral("C920")); // the restore fails: the engine's message
+    lab.pump();
+    lab.focusLog->failSetAuto = false; // the next camera's focus can be set: a click gives a note
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+
+    const QString status = lab.status();
+    const qsizetype counters = status.indexOf(QStringLiteral("fps processed"));
+    ASSERT_GE(counters, 0) << status.toStdString();
+    EXPECT_TRUE(status.startsWith(QStringLiteral("Live"))) << status.toStdString();
+    for (const QString& news : {QStringLiteral("State: adjust (sharpness)"), QStringLiteral("Focusing…"),
+                                QString::fromUtf8(lab_core::kFocusRestoreFailed)}) {
+        const qsizetype at = status.indexOf(news);
+        EXPECT_GE(at, 0) << news.toStdString() << " missing: " << status.toStdString();
+        EXPECT_LT(at, counters) << news.toStdString() << " after the counters: " << status.toStdString();
+    }
+}
+
 // Final review F8: F is the focus key only while a camera runs; otherwise the window's lists keep it.
 TEST(LabWindow, FKeyOnlyDuringACameraRun) {
     Lab lab(twoCameras);

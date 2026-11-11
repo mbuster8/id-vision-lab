@@ -1114,6 +1114,25 @@ void LabWindow::refreshStatus() {
         }
     }
     QStringList parts{stateText(status.state)};
+    // The news next, before the source and the counters: a window narrower than the whole line cuts its end.
+    if (documentChosen() && m_running) {
+        const lab_core::Guidance* guidance = drawnGuidance();
+        if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
+            parts
+                << tr("State: %1").arg(stateWord(guidance ? guidance->shownHint : doc_vision::Hint::NoPage));
+        } else {
+            parts << QString::fromStdString(guidance->reason);
+        }
+    }
+    if (!m_focusNote.isEmpty() && at - m_focusNoteAt < kFocusNoteShown) {
+        parts << m_focusNote;
+    }
+    if (!status.message.empty()) {
+        parts << QString::fromStdString(status.message);
+    }
+    if (!m_message.isEmpty()) {
+        parts << m_message;
+    }
     if (!status.source.empty()) {
         parts << QString::fromStdString(status.source);
     }
@@ -1178,24 +1197,6 @@ void LabWindow::refreshStatus() {
         parts << tr("processing frame %1 for %2 s")
                      .arg(*status.busyFrame + 1)
                      .arg(std::chrono::duration_cast<std::chrono::seconds>(at - *status.busySince).count());
-    }
-    if (documentChosen() && m_running) {
-        const lab_core::Guidance* guidance = drawnGuidance();
-        if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
-            parts
-                << tr("State: %1").arg(stateWord(guidance ? guidance->shownHint : doc_vision::Hint::NoPage));
-        } else {
-            parts << QString::fromStdString(guidance->reason);
-        }
-    }
-    if (!m_focusNote.isEmpty() && at - m_focusNoteAt < kFocusNoteShown) {
-        parts << m_focusNote;
-    }
-    if (!status.message.empty()) {
-        parts << QString::fromStdString(status.message);
-    }
-    if (!m_message.isEmpty()) {
-        parts << m_message;
     }
     m_status->setText(parts.join(QStringLiteral(" · ")));
 }

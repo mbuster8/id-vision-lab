@@ -622,10 +622,11 @@ appearance's own shades); a processor's error is a red row of its own. It keeps 
 window grows; drag its edge to change it, or all the way to the window's side to shut it, and back to open it.
 **View → Results** shuts and opens it too, and the lab remembers its width and whether it shows.
 
-The status bar shows the run (Live, Playing, Paused, Ended, Stopped), the source, the frame and of how many,
-the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a camera's
-frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas drew
-them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
+The status bar shows the run (Live, Playing, Paused, Ended, Stopped), then the news (the document's state, a
+focus note, why something failed) so that a narrow window still shows it, then the source, the frame and of how
+many, the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a
+camera's frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas
+drew them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
 how long; a seek on its way says `seeking…`. With no camera connected, the empty canvas says so: "No camera
 found. Connect one, or open a video, an image or a folder of images."
 
@@ -696,7 +697,7 @@ these cameras, so the lab reaches each camera's own controls directly ([ADR-005]
 - **On the page:** when a page is found, held steady, and sharpness is the first check it fails (it is in view,
   the right size and flat) for 1.5 s, the lab searches the camera's focus positions for the one where the page is
   sharpest, then holds it. The banner says **Hold still: focusing** meanwhile, the Sharp chip shows ✗, the
-  outline stays red, and the status bar ends with the time it took: `Focused at 30 in 2.4 s`. Moving the page
+  outline stays red, and the status bar then gives the time it took: `Focused at 30 in 2.4 s`. Moving the page
   nearer or further (its size changing by more than 15%), or taking it away for a second, gives the focus back to
   the camera. The lab searches at most twice for the same page; if it is blurred again after that, the camera's
   own autofocus gets it back.
