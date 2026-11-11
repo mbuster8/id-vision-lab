@@ -105,6 +105,8 @@ private:
         std::optional<doc_vision::Quad> quad{};
         double frameSide = 0.0; // the frame's longer side, in pixels
     };
+    // The page the page searches were for: its side when the last one ended, how many ran, and whether the
+    // last failed (no page search until the page is lost or changes size).
     struct Memory {
         double side = 0.0;
         int searches = 0;
@@ -120,7 +122,7 @@ private:
         double side = 0.0;   // the page's longer side when it started
         cv::Rect region{};   // a click's
         double before = 0.0; // a click's region before any move
-        int lastMoveFrom = 0;
+        int lensFrom = 0;    // where the lens was before the last move
         std::uint64_t waitFrom = 0;
         std::optional<std::chrono::nanoseconds> firstCountingAt{};
         std::chrono::nanoseconds settle{};
@@ -134,26 +136,28 @@ private:
     bool canFocus() const { return m_range.has_value() && m_reachable; }
     void checkControl();
     void watch(const frame_io::Frame& frame, const std::optional<PageFacts>& page);
-    bool steady(std::chrono::nanoseconds at) const;
+    bool steady() const;
     bool lost(std::chrono::nanoseconds at) const;
+    bool mayStartPageSearch(std::chrono::nanoseconds at) const;
     void startPageSearch(const frame_io::Frame& frame, const PageFacts& page, bool local);
     void startClickSearch(const frame_io::Frame& frame, double x, double y);
     bool takeControl();
+    void searchFrame(const frame_io::Frame& frame, const std::optional<PageFacts>& page);
     void beginStage(Stage stage, std::vector<int> positions, const frame_io::Frame& frame);
-    void moveTo(int position, const frame_io::Frame& frame);
-    void measure(const frame_io::Frame& frame, const std::optional<PageFacts>& page);
+    bool moveTo(int position, const frame_io::Frame& frame);
     void afterStep(const frame_io::Frame& frame);
-    bool earlyStop() const;
-    bool succeeded() const;
+    bool succeeded(const Search& search) const;
     void finishSearch(const frame_io::Frame& frame);
     void abortSearch(const frame_io::Frame& frame);
-    void hold(int position, const frame_io::Frame& frame);
+    void hold(const Search& search, const frame_io::Frame& frame);
     void letGo();
     void giveUp();
     bool restore();
     void setNote(std::string note);
     double clickValue(const frame_io::Frame& frame, cv::Rect region) const;
+    std::optional<int> predicted(double side) const;
     std::vector<int> coarsePositions(int start) const;
+    int top() const;
     int onGrid(int position) const;
     int coarseStep() const;
     int fineStep() const;
@@ -164,8 +168,10 @@ private:
     bool m_checked = false;
     std::optional<FocusRange> m_range;
     bool m_reachable = true;
+    bool m_hasAuto = false;
+    bool m_autoOff = false; // the lab turned the camera's autofocus off
     std::optional<FocusFound> m_found;
-    bool m_changed = false;
+    bool m_changed = false; // the lab changed the camera's focus since the last restore
     FocusStatus m_status;
     std::vector<FocusStep> m_curve;
 

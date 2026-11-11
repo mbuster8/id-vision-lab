@@ -9,6 +9,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -36,9 +37,12 @@ struct Curve {
     double peak = 500.0;
     double at = 30.0;
     double width = 6.0;
+    double bumpAt = 0.0; // a second, lower peak, where a test wants one
+    double bumpPeak = 0.0;
     double operator()(int position) const {
         const double d = (position - at) / width;
-        return floor + peak * std::exp(-d * d);
+        const double b = (position - bumpAt) / width;
+        return floor + peak * std::exp(-d * d) + bumpPeak * std::exp(-b * b);
     }
 };
 
@@ -62,8 +66,9 @@ public:
     bool page = true;         // a fresh page in the next frame
     std::optional<Hint> hint; // the frame's hint, when not the lens's
     bool lightFails = false;
-    bool numbered = false;              // each frame's sharpness 1000 + its number
-    std::optional<std::uint64_t> offer; // what nextOffer answers instead of the next frame's number
+    bool numbered = false;        // each frame's sharpness 1000 + its number
+    bool sharpFlicker = false;    // the next frame alone passes Sharp, as a noisy one may
+    std::uint64_t offerAhead = 1; // nextOffer answers this frame's number plus this: 2 when one frame waits
     std::uint64_t number = 0;
     std::chrono::nanoseconds at{};
     int searches = 0; // transitions into Searching
@@ -89,7 +94,7 @@ public:
         if (!page) {
             return std::nullopt;
         }
-        const double s = sharpness(at);
+        const double s = sharpFlicker ? 60.0 : sharpness(at);
         // A3.1's band: fails under 50, passes again from 55.
         if (m_sharpPassing && s < 50.0) {
             m_sharpPassing = false;
@@ -113,6 +118,12 @@ public:
         facts.verdicts.passed[static_cast<std::size_t>(Gate::Light)] = !lightFails;
         facts.frameHint =
             hint ? *hint : (lightFails ? Hint::TooDark : (m_sharpPassing ? Hint::Good : Hint::Blurred));
+        if (sharpFlicker) {
+            sharpFlicker = false;
+            m_sharpPassing = false; // only this frame
+            facts.verdicts.passed[static_cast<std::size_t>(Gate::Sharp)] = true;
+            facts.frameHint = Hint::Good;
+        }
         return facts;
     }
 
@@ -154,8 +165,37 @@ public:
 
     cv::Mat image; // the frames' picture: empty unless a click test draws one
 
+    // The camera's own autofocus moved the lens to `position` while the lab was not driving it.
+    void wander(int position) {
+        log->moves.push_back({.at = at - 10s, .from = log->position, .to = position});
+        log->position = position;
+    }
+
+    // The first position the lab set after `calls` calls had been made; nothing if none.
+    std::optional<int> firstMoveAfter(std::size_t calls) const {
+        for (std::size_t i = calls; i < log->calls.size(); ++i) {
+            if (log->calls[i].rfind("position ", 0) == 0) {
+                return std::stoi(log->calls[i].substr(9));
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool visited(int position) const { return log->count("position " + std::to_string(position)) > 0; }
+
+    // Frames until the search holds; the state reached.
+    State searchToTheEnd(std::chrono::nanoseconds limit = 20s) {
+        if (!until(State::Searching, limit)) {
+            return last.state;
+        }
+        const std::chrono::nanoseconds until = at + limit;
+        while (at < until && frame().state == State::Searching) {
+        }
+        return last.state;
+    }
+
 private:
-    std::uint64_t nextOffer() const { return offer ? *offer : number + 1; }
+    std::uint64_t nextOffer() const { return number + offerAhead; }
     std::optional<int> m_startPosition;
     bool m_sharpPassing = true;
 };
@@ -255,6 +295,370 @@ TEST(FocusController, ControlWithoutARangeIgnoresClicks) {
     EXPECT_EQ(run.last.note, "This camera's focus can't be set from the lab");
     EXPECT_EQ(run.last.state, State::Camera);
     EXPECT_EQ(run.log->calls, std::vector<std::string>{"range"});
+}
+
+// --- Task 4: the page search ---
+
+TEST(FocusController, SearchFindsThePeakAndHolds) {
+    CameraRun run; // the lens at 120 with the camera's autofocus on: about 4, blurred
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_EQ(run.last.position, 30);
+    EXPECT_EQ(run.log->position, 30);
+    EXPECT_FALSE(run.log->autoFocus);
+    EXPECT_EQ(lab_core::focusFinding(run.last),
+              (lab_core::Finding{"Focus", "lab, 30", lab_core::Finding::Tone::Plain}));
+    EXPECT_EQ(run.last.note.rfind("Focused at 30 in ", 0), 0u) << run.last.note;
+    EXPECT_EQ(run.searches, 1);
+}
+
+TEST(FocusController, TakeOverWaitsOneAndAHalfSeconds) {
+    CameraRun run;
+    run.framesFor(1400ms);
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_EQ(run.log->count("auto off"), 0);
+    run.framesFor(200ms);
+    EXPECT_EQ(run.last.state, State::Searching);
+}
+
+TEST(FocusController, TooFarOrTiltedStartsNoSearch) {
+    CameraRun run;
+    run.hint = Hint::TooFar;
+    run.framesFor(5s);
+    run.hint = Hint::Tilted;
+    run.framesFor(5s);
+    EXPECT_EQ(run.searches, 0);
+    EXPECT_EQ(run.log->count("auto off"), 0);
+}
+
+// Review Focus 1: a frame offered before the lens was told to move never counts for the new position.
+TEST(FocusController, FrameOfferedBeforeTheMoveNeverCounts) {
+    CameraRun run;
+    run.offerAhead = 2; // one frame always waiting when the lab moves the lens
+    ASSERT_TRUE(run.until(State::Searching));
+    const std::uint64_t k = run.number - 1; // the frame that made the first move: 0 → from 120, 120 units
+    run.numbered = true;
+    while (run.controller->curve().empty() && run.at < 20s) {
+        run.frame();
+    }
+    ASSERT_FALSE(run.controller->curve().empty());
+    EXPECT_EQ(run.controller->curve().front().countingFrom, k + 2);
+    // From frame k + 2 (at_k + 66 ms), 150 + 2 × 110 = 370 ms: frames k + 14 and k + 15.
+    EXPECT_DOUBLE_EQ(run.controller->curve().front().sharpness, 1000.0 + static_cast<double>(k) + 14.5);
+}
+
+TEST(FocusController, SettleGrowsWithTheJump) {
+    CameraRun run;
+    run.log->range = lab_core::FocusRange{.minimum = 0, .maximum = 500, .step = 10};
+    run.log->position = 220; // nearer end 0: a move of 220 units, settle 150 + 2 × 210 = 570 ms
+    ASSERT_TRUE(run.until(State::Searching));
+    const std::uint64_t k = run.number - 1;
+    run.numbered = true;
+    while (run.controller->curve().empty() && run.at < 20s) {
+        run.frame();
+    }
+    ASSERT_FALSE(run.controller->curve().empty());
+    EXPECT_EQ(run.controller->curve().front().position, 0);
+    // The first counting frame is k + 1 (at_k + 33); from at_k + 603 ms: frames k + 19 and k + 20.
+    EXPECT_DOUBLE_EQ(run.controller->curve().front().sharpness, 1000.0 + static_cast<double>(k) + 19.5);
+}
+
+TEST(FocusController, EarlyStopFromTheNearEnd) {
+    CameraRun run;
+    run.log->position = 0;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_TRUE(run.visited(60));
+    EXPECT_FALSE(run.visited(70));
+}
+
+TEST(FocusController, EarlyStopIsConsecutive) {
+    CameraRun run;
+    run.log->position = 0;
+    run.curve.bumpAt = 50;
+    run.curve.bumpPeak = 200; // 204 at 50: above 30% of the best, so the count of steps below starts again
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_TRUE(run.visited(80));
+    EXPECT_FALSE(run.visited(90));
+}
+
+TEST(FocusController, FineStepsEitherSideOfTheBest) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    std::vector<int> positions;
+    for (const lab_core::FocusStep& step : run.controller->curve()) {
+        positions.push_back(step.position);
+    }
+    EXPECT_NE(std::find(positions.begin(), positions.end(), 25), positions.end());
+    EXPECT_NE(std::find(positions.begin(), positions.end(), 35), positions.end());
+}
+
+TEST(FocusController, PositionsStayOnTheGrid) {
+    CameraRun run;
+    run.log->range = lab_core::FocusRange{.minimum = 0, .maximum = 250, .step = 3};
+    run.log->position = 240; // nearer the top, which is 249 on this grid
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    for (const std::string& call : run.log->calls) {
+        if (call.rfind("position ", 0) == 0 && call != "position?") {
+            const int position = std::stoi(call.substr(9));
+            EXPECT_EQ(position % 3, 0) << call;
+            EXPECT_LE(position, 249) << call;
+        }
+    }
+    EXPECT_TRUE(run.visited(249));
+}
+
+TEST(FocusController, NeverSharpGivesCannotFocusAndRestores) {
+    CameraRun run;
+    run.curve.peak = 36; // never above 40: no position reaches 55
+    ASSERT_EQ(run.searchToTheEnd(), State::CannotFocus);
+    EXPECT_TRUE(run.last.afterSearch);
+    EXPECT_TRUE(run.log->autoFocus);
+    EXPECT_EQ(lab_core::focusFinding(run.last),
+              (lab_core::Finding{"Focus", "can't focus", lab_core::Finding::Tone::Bad}));
+}
+
+// Review Focus 4: after a failed search, tremor and a noisy sharp frame start no second sweep.
+TEST(FocusController, TremorAfterAFailedSearchStartsNoSecondSweep) {
+    CameraRun run;
+    run.curve.peak = 36;
+    ASSERT_EQ(run.searchToTheEnd(), State::CannotFocus);
+    const std::chrono::nanoseconds end = run.at + 10s;
+    while (run.at < end) {
+        run.sharpFlicker = true; // leaves CannotFocus: only the page memory stops a search now
+        run.framesFor(2s);
+        for (int i = 0; i < 15; ++i) {
+            run.dx = i % 2 == 0 ? 0.03 * kFrame.width : 0.0;
+            run.frame();
+        }
+        run.dx = 0.0;
+    }
+    EXPECT_EQ(run.searches, 1);
+}
+
+TEST(FocusController, TremorWithoutAFailedSearchStartsOne) {
+    CameraRun run;
+    run.curve.peak = 36;
+    const std::chrono::nanoseconds end = run.at + 10s;
+    while (run.at < end && run.searches == 0) {
+        run.framesFor(2s);
+        for (int i = 0; i < 15 && run.searches == 0; ++i) {
+            run.dx = i % 2 == 0 ? 0.03 * kFrame.width : 0.0;
+            run.frame();
+        }
+        run.dx = 0.0;
+    }
+    EXPECT_EQ(run.searches, 1);
+}
+
+TEST(FocusController, SizeChangeAllowsANewSearch) {
+    CameraRun run;
+    run.curve.peak = 36;
+    ASSERT_EQ(run.searchToTheEnd(), State::CannotFocus);
+    run.framesFor(3s); // the cool-down
+    run.side = 0.48 * 1.2;
+    EXPECT_TRUE(run.until(State::Searching, 3s));
+    EXPECT_EQ(run.searches, 2);
+}
+
+TEST(FocusController, LossAllowsANewSearch) {
+    CameraRun run;
+    run.curve.peak = 36;
+    ASSERT_EQ(run.searchToTheEnd(), State::CannotFocus);
+    run.page = false;
+    run.framesFor(1100ms);
+    run.page = true;
+    EXPECT_TRUE(run.until(State::Searching, 6s));
+    EXPECT_EQ(run.searches, 2);
+}
+
+TEST(FocusController, AtMostTwoSearchesPerPage) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.curve.at = 60; // the page now sharp at 60, outside the local search's 10 to 50
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_EQ(run.last.position, 60);
+    EXPECT_EQ(run.searches, 2);
+    run.curve.at = 120;
+    run.framesFor(8s);
+    EXPECT_EQ(run.searches, 2);
+    EXPECT_EQ(run.last.state, State::Holding);
+}
+
+TEST(FocusController, LightFailingAbortsTheSearch) {
+    CameraRun run;
+    ASSERT_TRUE(run.until(State::Searching));
+    while (run.last.position != 10 && run.at < 20s) {
+        run.frame();
+    }
+    run.lightFails = true;
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
+TEST(FocusController, LostPageAbortsAndKeepsAPassingBest) {
+    CameraRun run;
+    ASSERT_TRUE(run.until(State::Searching));
+    const auto measured30 = [&] {
+        for (const lab_core::FocusStep& step : run.controller->curve()) {
+            if (step.position == 30) {
+                return true;
+            }
+        }
+        return false;
+    };
+    while (!measured30() && run.at < 20s) {
+        run.frame();
+    }
+    run.page = false;
+    ASSERT_TRUE(run.until(State::Holding, 2s));
+    EXPECT_EQ(run.last.position, 30);
+    run.framesFor(1100ms);
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
+TEST(FocusController, SearchStopsAtTwelveSeconds) {
+    CameraRun run;
+    ASSERT_TRUE(run.until(State::Searching));
+    run.offerAhead = 1'000'000; // no frame ever counts
+    run.framesFor(12s);
+    EXPECT_NE(run.last.state, State::Searching);
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
+TEST(FocusController, SearchStopsAtTwelveSecondsHoldsAPassingBest) {
+    CameraRun run;
+    ASSERT_TRUE(run.until(State::Searching));
+    while (run.controller->curve().size() < 4 && run.at < 20s) { // 0, 10, 20, 30
+        run.frame();
+    }
+    run.offerAhead = 1'000'000;
+    run.framesFor(12s);
+    EXPECT_EQ(run.last.state, State::Holding);
+    EXPECT_EQ(run.last.position, 30);
+}
+
+TEST(FocusController, HoldingLetsGoWhenTheSizeChanges) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.side = 0.48 * 0.8;
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
+TEST(FocusController, HoldingResearchesLocallyFirst) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    const std::size_t calls = run.log->calls.size();
+    run.curve.at = 40;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    EXPECT_EQ(run.last.position, 40);
+    for (std::size_t i = calls; i < run.log->calls.size(); ++i) {
+        const std::string& call = run.log->calls[i];
+        if (call.rfind("position ", 0) == 0 && call != "position?") {
+            const int position = std::stoi(call.substr(9));
+            EXPECT_GE(position, 10) << call;
+            EXPECT_LE(position, 50) << call;
+        }
+    }
+}
+
+TEST(FocusController, PredictedPositionStartsTheNextSearch) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.page = false;
+    run.framesFor(1100ms);
+    ASSERT_EQ(run.last.state, State::Camera);
+    run.wander(200); // the camera's own autofocus moved the lens: position() alone would start at 250
+    run.page = true;
+    const std::size_t calls = run.log->calls.size();
+    ASSERT_TRUE(run.until(State::Searching, 6s));
+    EXPECT_EQ(run.firstMoveAfter(calls), 0);
+}
+
+TEST(FocusController, NoPredictionForAnotherSize) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.page = false;
+    run.framesFor(1100ms);
+    run.wander(200);
+    run.page = true;
+    run.side = 0.60;
+    const std::size_t calls = run.log->calls.size();
+    ASSERT_TRUE(run.until(State::Searching, 6s));
+    EXPECT_EQ(run.firstMoveAfter(calls), 250);
+}
+
+TEST(FocusController, AFailingCallGivesUp) {
+    CameraRun run;
+    run.log->failSetPosition = true;
+    ASSERT_TRUE(run.until(State::Searching, 3s) || run.log->count("auto off") == 1);
+    run.frame();
+    EXPECT_FALSE(run.last.controllable);
+    EXPECT_EQ(run.last.note, "the camera's focus could not be set");
+    EXPECT_EQ(run.log->count("auto on"), 1);
+    const std::size_t calls = run.log->calls.size();
+    run.framesFor(5s);
+    EXPECT_EQ(run.log->calls.size(), calls);
+}
+
+TEST(FocusController, EndPutsBackWhatWasFound) {
+    { // (a) autofocus on at the start
+        CameraRun run;
+        ASSERT_TRUE(run.until(State::Searching));
+        EXPECT_TRUE(run.controller->end());
+        EXPECT_TRUE(run.log->autoFocus);
+        const std::size_t calls = run.log->calls.size();
+        EXPECT_TRUE(run.controller->end()); // a second end makes no call
+        EXPECT_EQ(run.log->calls.size(), calls);
+    }
+    { // (b) autofocus off at 80
+        CameraRun run;
+        run.log->autoFocus = false;
+        run.log->position = 80;
+        ASSERT_TRUE(run.until(State::Searching));
+        run.framesFor(500ms);
+        EXPECT_TRUE(run.controller->end());
+        EXPECT_FALSE(run.log->autoFocus);
+        EXPECT_EQ(run.log->position, 80);
+    }
+    { // (c) the restore fails
+        CameraRun run;
+        ASSERT_TRUE(run.until(State::Searching));
+        run.log->failSetAuto = true;
+        EXPECT_FALSE(run.controller->end());
+    }
+    { // (d) found in manual focus with the position unreadable: nothing to put back
+        CameraRun run;
+        run.log->autoFocus = false;
+        run.log->positionReadable = false;
+        ASSERT_TRUE(run.until(State::Searching));
+        run.framesFor(500ms);
+        const std::size_t calls = run.log->calls.size();
+        EXPECT_TRUE(run.controller->end());
+        EXPECT_EQ(run.log->calls.size(), calls);
+    }
+}
+
+TEST(FocusController, CoolDownOfThreeSeconds) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.curve.at = 40; // blurred again at once
+    run.framesFor(2900ms);
+    EXPECT_EQ(run.searches, 1);
+    run.framesFor(2s);
+    EXPECT_EQ(run.searches, 2);
+}
+
+TEST(FocusController, FailedLetGoRestoreIsReported) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.log->failSetAuto = true;
+    run.page = false;
+    run.framesFor(1100ms);
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_TRUE(run.last.restoreFailed);
 }
 
 } // namespace
