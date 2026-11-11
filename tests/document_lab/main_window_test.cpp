@@ -2247,7 +2247,7 @@ TEST(LabWindow, ToneFollowsAPaletteSwitch) {
     EXPECT_EQ(lab.resultsTree()->topLevelItem(0)->foreground(1).color(), QColor(0xC2, 0x39, 0x2E));
 }
 
-// --- A3.3: focus on the page
+// --- A3.3: focus on the document
 // ------------------------------------------------------------------------------------------------
 
 // A camera run's frames: delivered 33 ms apart on the window's clock, each pumped.
@@ -2467,8 +2467,8 @@ TEST(LabWindow, FailedRestoreShowsAfterOpeningAFile) {
         << lab.status().toStdString();
 }
 
-// The Legion's hand check: a window 2000 px wide cut the focus note off the status line's end. News comes
-// straight after the run's state, before the source and the counters, so a narrow window keeps it.
+// A hand check on Windows: a window about 2000 px wide cut the focus note off the status line's end. News
+// comes straight after the run's state, before the source and the counters, so a narrow window keeps it.
 TEST(LabWindow, NewsComesBeforeTheCounters) {
     Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Blurred})})));
     lab.choose("processorCombo", QStringLiteral("Document"));

@@ -93,7 +93,7 @@ foreach(port IN ITEMS opencv4 ffmpeg zeromq cppzmq nlohmann-json libjpeg-turbo l
     install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${port}/copyright"
         DESTINATION licenses/vcpkg/${port})
 endforeach()
-# ONNX Runtime and the ports vcpkg builds it from (the list the Legion's build made); a port this baseline does not
+# ONNX Runtime and the ports vcpkg builds it from (the list a Windows build made); a port this baseline does not
 # build is skipped.
 foreach(port IN ITEMS onnxruntime protobuf abseil onnx re2 flatbuffers eigen3 utf8-range date cpuinfo wil dlpack
                       optional-lite ms-gsl safeint boost-config boost-mp11)

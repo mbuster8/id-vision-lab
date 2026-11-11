@@ -1,6 +1,6 @@
 #pragma once
 
-// The camera's own focus, reached around Qt Multimedia, which offers none for the owner's cameras (A3.3,
+// The camera's own focus, reached around Qt Multimedia, which offers none for the cameras tried (A3.3,
 // ADR-005): a UVC camera's focus controls through IOKit on macOS, a driver's through DirectShow on Windows,
 // none elsewhere. Only this header and lab_core's focus_control.h are included beside <windows.h>.
 

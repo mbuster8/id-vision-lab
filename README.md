@@ -34,7 +34,7 @@ brought it back, ported to Qt 6 and OpenCV 5, tested, documented, and grown into
 
 | Program | What it is for |
 |---|---|
-| **Document Lab** | The workbench for document-reading code: a camera or a replayed video, image, folder or recording through a processor, with guidance, focus on the page, recording, capture and streaming to the viewer ([Running the Document Lab](docs/user-guide.md#running-the-document-lab)) |
+| **Document Lab** | The workbench for document-reading code: a camera or a replayed video, image, folder or recording through a processor, with guidance, focus on the document, recording, capture and streaming to the viewer ([Running the Document Lab](docs/user-guide.md#running-the-document-lab)) |
 | **Visual Debug Viewer** | Shows every image and live frame sent to it: zoom, history, pixel values, display ranges, HDR, overlays ([Running the viewer](docs/user-guide.md#running-the-viewer)) |
 | **Visual Debug Example Sender** | A small Qt app that opens an image and sends it, to show how a GUI program uses the library ([Running the example sender](docs/user-guide.md#running-the-example-sender)) |
 | `live_sender` | Streams a camera, a video file, a phone's HDR video or a test pattern to the viewer as live channels ([Running live_sender](docs/user-guide.md#running-live_sender)) |
@@ -62,7 +62,7 @@ sharp, no glare, light) judge it; and one hint at a time says what to change, wi
 everything passes and it turns green. Where the lab can set a camera's own focus (a UVC camera such as the
 Logitech C920 on macOS, or a camera whose driver offers focus on Windows), it focuses on the page itself when a
 steady page stays blurred, and on the spot you click; where it cannot, it says so
-([Focus on the page](docs/user-guide.md#focus-on-the-page), [ADR-005](docs/ADR/ADR-005-camera-focus.md)).
+([Focus on the document](docs/user-guide.md#focus-on-the-document), [ADR-005](docs/ADR/ADR-005-camera-focus.md)).
 Everything runs on this computer, and the lab never downloads anything: no frame leaves it unless you stream or
 send it to a viewer.
 
@@ -285,7 +285,7 @@ sanitizers on macOS; the CI badge above shows the latest result.
 ## Roadmap
 
 Done: the viewer with live channels, HDR and overlays; the Document Lab with replay, recording and capture; the
-Document processor's guidance; focus on the page. Next, as [ADR-004](docs/ADR/ADR-004-document-reading.md) sets
+Document processor's guidance; focus on the document. Next, as [ADR-004](docs/ADR/ADR-004-document-reading.md) sets
 out: the photo zone on the flattened page, then reading and checking the MRZ, then reading the chip (ICAO 9303:
 BAC, PACE, Passive and Active Authentication) through a PC/SC reader.
 

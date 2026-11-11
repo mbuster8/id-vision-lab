@@ -12,8 +12,7 @@ namespace {
 
 using document_lab::makeFocusControl;
 
-// The ids Qt gave the owner's cameras (spec §12): the C920 on macOS, the Legion's integrated camera on
-// Windows.
+// The ids Qt gave two real cameras on 11 November: a C920 on macOS, a laptop's integrated camera on Windows.
 const QByteArray kMacUsbId = "0x1100000046d082d";
 const QByteArray kWindowsUsbPath =
     R"(\\?\usb#vid_04f2&pid_b7b6&mi_00#6&16f8534&1&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global)";
@@ -39,7 +38,7 @@ TEST(CameraFocus, UsbIdHasAControlOnThisPlatform) {
 #endif
 }
 
-// By hand, with the owner's C920 plugged into the Mac: reads its focus controls through the real control and
+// By hand, with a Logitech C920 plugged into a Mac: reads its focus controls through the real control and
 // writes nothing. --gtest_also_run_disabled_tests runs it.
 TEST(CameraFocus, DISABLED_ReadsTheC920) {
     const std::unique_ptr<lab_core::FocusControl> control = makeFocusControl(kMacUsbId);

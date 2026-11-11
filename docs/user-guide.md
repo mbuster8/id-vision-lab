@@ -694,7 +694,7 @@ the one in `System32` when the lab's own copy is gone), the banner says "The doc
 "ONNX Runtime could not be loaded" for the whole run, the status bar gives the reason, and the other processors
 work as before.
 
-### Focus on the page
+### Focus on the document
 
 A blurred page cannot be read, and many webcams leave a passport held close blurred. Where the lab can set a
 camera's own focus (a UVC camera such as the Logitech C920 on macOS, or a camera whose driver offers focus on
