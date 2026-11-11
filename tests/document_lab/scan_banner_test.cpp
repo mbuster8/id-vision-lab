@@ -202,8 +202,10 @@ TEST(GateChips, ChipsShowCrossForAFailedGate) {
     chips.setStates({.visible = true, .passed = {true, true, true, false, true, true}});
     const QImage sharpFails = rendered(chips, {700, 80});
 
+    // A 14 px label and a thin cross have few pixels of the exact colour, fewer still in Windows' Segoe UI
+    // (16 on CI); what matters is that the red is there only when a gate fails.
     EXPECT_EQ(pixelsOf(allPass, QColor(0xFF, 0x6B, 0x5E)), 0);
-    EXPECT_GE(pixelsOf(sharpFails, QColor(0xFF, 0x6B, 0x5E)), 20);
+    EXPECT_GE(pixelsOf(sharpFails, QColor(0xFF, 0x6B, 0x5E)), 8);
 }
 
 TEST(GateChips, ChipsWrapWhenNarrow) {

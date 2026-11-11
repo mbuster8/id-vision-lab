@@ -16,7 +16,8 @@ jobs:
   analyze:
     name: Analyse (${{ matrix.language }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Room for building ONNX Runtime when its cache misses.
+    timeout-minutes: 150
     permissions:
       contents: read
       security-events: write
@@ -39,6 +40,41 @@ jobs:
 
       - if: matrix.build-mode == 'manual'
         uses: ./.github/actions/install-ubuntu-deps
+
+      # ONNX Runtime as the CI's Ubuntu job has it (scripts/install-onnxruntime.sh), from the same cache, built only
+      # when that misses; before CodeQL starts watching the compiler, so its own build is not analysed.
+      - if: matrix.build-mode == 'manual'
+        name: Restore ONNX Runtime
+        id: ort-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/onnxruntime/installed
+          key: onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/onnxruntime-vcpkg/**', 'scripts/install-onnxruntime.sh') }}
+
+      - if: matrix.build-mode == 'manual' && steps.ort-cache.outputs.cache-hit != 'true'
+        name: Build ONNX Runtime
+        id: ort-build
+        timeout-minutes: 90
+        run: scripts/install-onnxruntime.sh "$HOME/onnxruntime"
+
+      - if: always() && matrix.build-mode == 'manual' && steps.ort-build.outcome == 'success'
+        name: Save ONNX Runtime
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/onnxruntime/installed
+          key: onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/onnxruntime-vcpkg/**', 'scripts/install-onnxruntime.sh') }}
+
+      - if: matrix.build-mode == 'manual'
+        name: Point CMake at ONNX Runtime
+        run: echo "onnxruntime_ROOT=$(ls -d "$HOME"/onnxruntime/installed/*-linux-dynamic-release)" >> "$GITHUB_ENV"
+
+      # The page model the configure resolves (cmake/models.cmake).
+      - if: matrix.build-mode == 'manual'
+        name: Cache the models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/id-vision-lab/models
+          key: models-${{ hashFiles('CMakeLists.txt') }}
 
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
