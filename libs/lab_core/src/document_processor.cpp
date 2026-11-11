@@ -118,6 +118,7 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
     const std::chrono::duration<double, std::milli> took = std::chrono::steady_clock::now() - started;
 
     std::optional<std::pair<doc_vision::Quad, doc_vision::Verdicts>> judged;
+    std::optional<PageFacts> facts;
     if (found) {
         const doc_vision::Quad quad =
             m_previous ? doc_vision::alignTo(found->quad, *m_previous) : found->quad;
@@ -126,6 +127,12 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         m_page = std::move(page);
         judged.emplace(quad, m_judge.judge(m_measures));
         m_previous = quad;
+        facts = PageFacts{.quad = quad,
+                          .frameSize = bgr.size(),
+                          .sharpness = m_measures.sharpness,
+                          .longerSide = m_measures.longerSide,
+                          .verdicts = judged->second,
+                          .frameHint = doc_vision::Hint::NoPage};
     }
     const std::optional<doc_vision::Held> held = m_hold.next(judged, frame.at);
     if (!held) {
@@ -137,6 +144,10 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
     const std::optional<doc_vision::Verdicts> verdicts =
         held ? std::optional<doc_vision::Verdicts>(held->verdicts) : std::nullopt;
     guidance.frameHint = doc_vision::hintFor(verdicts);
+    if (facts) {
+        facts->frameHint = guidance.frameHint;
+        guidance.page = std::move(facts);
+    }
     guidance.shownHint = m_hintTimer.next(guidance.frameHint, frame.at);
     guidance.chips = m_chipTimer.next(verdicts, guidance.shownHint, frame.at);
 
