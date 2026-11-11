@@ -58,6 +58,9 @@ struct LabDependencies {
     lab_core::ViewerLink::Mode linkMode = lab_core::ViewerLink::Mode::Threaded;
     std::function<std::unique_ptr<lab_core::FrameProcessor>(lab_core::ProcessorKind)>
         makeProcessor; // null: lab_core's
+    // The camera's own focus control for a camera run (A3.3). Null: no control, for every camera; main()
+    // passes document_lab::makeFocusControl, the tests a fake, so no test reaches a real camera's focus.
+    std::function<std::unique_ptr<lab_core::FocusControl>(const QByteArray& cameraId)> makeFocusControl;
     lab_core::Engine::Mode engineMode = lab_core::Engine::Mode::Threaded;
     LiveConverter::Mode conversionMode = LiveConverter::Mode::Threaded;
     LiveConverter::Conversion conversion = convertLiveFrame;
@@ -123,8 +126,9 @@ private:
     void refreshStatus();
     void chooseProcessor(int index);
     bool documentChosen() const;
-    // The guidance of the result the canvas shows (the newest while the placeholder shows), of this run and
-    // processor; null when there is none.
+    // The result the canvas shows (the newest while the placeholder shows), of this run and processor, when
+    // it has guidance; null otherwise. drawnGuidance() is its guidance.
+    const lab_core::LabResult* drawnResult() const;
     const lab_core::Guidance* drawnGuidance() const;
     // The banner, the chips and the canvas's empty text, from the drawn guidance or the window's state.
     void updateScan();
@@ -132,6 +136,12 @@ private:
     std::string currentShow() const;
     Clock::time_point now() const;
     void updateStartStop();
+
+    // Focus (A3.3): a click on the canvas, or F, focuses there while a camera runs and the Frame shows.
+    void canvasClicked(QPointF imagePoint);
+    void focusOnTheCentre();
+    void focusAt(QPointF imagePoint);
+    void noteFocus(const QString& note);
 
     // Cameras.
     void fillCameras();
@@ -202,6 +212,7 @@ private:
     QAction* m_stepBackAction = nullptr;
     QAction* m_back10Action = nullptr;
     QAction* m_forward10Action = nullptr;
+    QAction* m_focusAction = nullptr;
     QPushButton* m_record = nullptr;
     QPushButton* m_capture = nullptr;
     QPushButton* m_openLabFolder = nullptr;
@@ -232,7 +243,11 @@ private:
     QTimer* m_statusTimer = nullptr;
 
     QString m_wantedShow; // the Show entry chosen last, selected again when a frame has it
-    QString m_message;    // the window's own: a refused permission, a camera gone
+    // The focus note in the status line, for kFocusNoteShown after it came; the run's last note number seen.
+    QString m_focusNote;
+    Clock::time_point m_focusNoteAt{};
+    std::uint64_t m_focusNoteNumber = 0;
+    QString m_message; // the window's own: a refused permission, a camera gone
     // Why nothing runs, for the Document processor's banner: a refused permission or a camera gone; cleared
     // by the next run. No camera, or one and nothing running, the banner reads from m_cameras.
     std::optional<WindowState> m_windowState;

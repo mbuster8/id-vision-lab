@@ -4,6 +4,7 @@
 
 #include "card_frame.h"
 #include "fake_camera_backend.h"
+#include "fake_focus_control.h"
 #include "fake_sender.h"
 #include "latch.h"
 #include "list_source.h"
@@ -96,6 +97,10 @@ struct Lab {
         dependencies.confirm = [](const QString&) { return true; };
         dependencies.labFolder = QString::fromStdString(folder.path().string());
         dependencies.clock = [this] { return Clock::time_point(Clock::duration(ticks.load())); };
+        // A fake focus control for every camera: no test reaches a real camera's focus.
+        dependencies.makeFocusControl = [this](const QByteArray&) -> std::unique_ptr<lab_core::FocusControl> {
+            return std::make_unique<test_support::FakeFocusControl>(focusLog);
+        };
         if (adjust) {
             adjust(dependencies);
         }
@@ -165,6 +170,7 @@ struct Lab {
     std::atomic<Clock::rep> ticks = Clock::duration(1000s).count();
     std::atomic<int> conversions = 0;
     test_support::FakeCameraBackend* backend = nullptr;
+    std::shared_ptr<test_support::FocusLog> focusLog = std::make_shared<test_support::FocusLog>();
     std::unique_ptr<LabWindow> window;
 };
 
@@ -1839,6 +1845,7 @@ struct Guided {
     bool outline = true;
     bool page = false;
     lab_core::Guidance::Unavailable unavailable = lab_core::Guidance::Unavailable::None;
+    bool facts = false; // the page found in this frame, steady, with sharpness 10: never sharp
 };
 
 // A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
@@ -1869,6 +1876,18 @@ lab_core::ProcessorResult guided(const Guided& wanted) {
     if (wanted.page) {
         result.images.push_back(
             {.name = "page", .image = cv::Mat(44, 62, CV_8UC3, cv::Scalar::all(180)), .description = {}});
+    }
+    if (wanted.facts) {
+        lab_core::PageFacts facts;
+        facts.quad = {{{10, 8}, {54, 8}, {54, 40}, {10, 40}}};
+        facts.frameSize = cv::Size(64, 48);
+        facts.sharpness = 10.0;
+        facts.longerSide = 0.69;
+        facts.verdicts.passed.fill(true);
+        facts.verdicts.passed[static_cast<std::size_t>(doc_vision::Gate::Sharp)] =
+            wanted.shown != Hint::Blurred;
+        facts.frameHint = wanted.shown;
+        guidance.page = facts;
     }
     result.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
     result.guidance = guidance;
@@ -2224,6 +2243,192 @@ TEST(LabWindow, ToneFollowsAPaletteSwitch) {
 
     test_support::applyPalette(test_support::paletteWith(QColor(236, 236, 236), QColor(0, 0, 0)));
     EXPECT_EQ(lab.resultsTree()->topLevelItem(0)->foreground(1).color(), QColor(0xC2, 0x39, 0x2E));
+}
+
+// --- A3.3: focus on the page
+// ------------------------------------------------------------------------------------------------
+
+// A camera run's frames: delivered 33 ms apart on the window's clock, each pumped.
+void cameraFrames(Lab& lab, int count) {
+    for (int i = 0; i < count; ++i) {
+        lab.advance(33ms);
+        lab.backend->deliver(cameraFrame(120));
+        lab.pump();
+    }
+}
+
+// A single click at the canvas's centre, as the user makes one.
+void clickCanvas(Lab& lab) {
+    lab.canvas()->setClickDelay(0);
+    const QPointF centre = QRectF(lab.canvas()->rect()).center();
+    sendMouse(*lab.canvas(), QEvent::MouseButtonPress, centre);
+    sendMouse(*lab.canvas(), QEvent::MouseButtonRelease, centre);
+    QTest::qWait(1);
+}
+
+std::function<void(LabDependencies&)> camerasAndDocument(const std::shared_ptr<GuidanceScript>& script) {
+    return [script](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        documentIs(script)(dependencies);
+    };
+}
+
+// Review Focus 5: while the lens sweeps, never Good: the focusing banner, Sharp ✗ and the Bad outline.
+TEST(LabWindow, SearchingShowsFocusingOverGood) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Good})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Hold still: focusing"));
+    EXPECT_FALSE(chips(lab)->states().passed[static_cast<std::size_t>(doc_vision::Gate::Sharp)]);
+    EXPECT_TRUE(chips(lab)->states().passed[static_cast<std::size_t>(doc_vision::Gate::InView)]);
+    ASSERT_NE(guideOn(lab), nullptr);
+    EXPECT_EQ(guideOn(lab)->colour, (viewer_core::Colour{0xFF, 0x6B, 0x5E}));
+}
+
+TEST(LabWindow, CannotFocusWithoutControlWords) {
+    Lab lab([](LabDependencies& dependencies) {
+        camerasAndDocument(scriptOf({guided({.shown = Hint::Blurred, .facts = true})}))(dependencies);
+        dependencies.makeFocusControl = nullptr;
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    cameraFrames(lab, 95); // steady and blurred for more than 3 s
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("This camera can't make the page sharp"));
+    EXPECT_EQ(banner(lab)->content()->smallLine, QStringLiteral("Try more light, or another camera"));
+}
+
+TEST(LabWindow, CannotFocusAfterSearchWords) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Blurred, .facts = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    for (int i = 0; i < 500 && bannerLine(lab) != QStringLiteral("This camera can't focus this close"); ++i) {
+        cameraFrames(lab, 1);
+    }
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("This camera can't focus this close"));
+    EXPECT_EQ(banner(lab)->content()->smallLine, QStringLiteral("Move the page a little further away"));
+    EXPECT_TRUE(lab.focusLog->autoFocus); // put back
+}
+
+// "Can't focus" shows only while the shown hint is Blurred: an earlier hint keeps its own banner.
+TEST(LabWindow, TooFarKeepsItsBanner) {
+    std::vector<lab_core::ProcessorResult> results(95, guided({.shown = Hint::Blurred, .facts = true}));
+    results.push_back(guided({.shown = Hint::TooFar, .facts = true}));
+    Lab lab([&results](LabDependencies& dependencies) {
+        camerasAndDocument(scriptOf(results))(dependencies);
+        dependencies.makeFocusControl = nullptr;
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 95);
+    ASSERT_EQ(bannerLine(lab), QStringLiteral("This camera can't make the page sharp"));
+
+    cameraFrames(lab, 3);
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Move closer"));
+}
+
+TEST(LabWindow, ClickFocusesOnlyInACameraRunOnTheFrame) {
+    { // a replay: nothing reaches a camera
+        Lab lab;
+        lab.replay(framesOf(test_support::cardFrame(), 3));
+        lab.pump();
+        clickCanvas(lab);
+        lab.pump();
+        EXPECT_TRUE(lab.focusLog->calls.empty());
+    }
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Blurred, .page = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+
+    lab.choose("showCombo", QStringLiteral("page"));
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Show the Frame to focus by clicking")))
+        << lab.status().toStdString();
+    EXPECT_EQ(lab.focusLog->count("auto off"), 0);
+
+    lab.choose("showCombo", QStringLiteral("Frame"));
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    EXPECT_EQ(lab.focusLog->count("auto off"), 1);
+}
+
+TEST(LabWindow, FKeyFocusesTheCentre) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_F);
+    cameraFrames(lab, 1);
+
+    EXPECT_EQ(lab.focusLog->count("auto off"), 1);
+}
+
+TEST(LabWindow, FocusRowShowsInTheResults) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("Focus: camera")))
+        << lab.results().join(" | ").toStdString();
+}
+
+TEST(LabWindow, NullMakeFocusControlMeansNone) {
+    Lab lab([](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        dependencies.makeFocusControl = nullptr;
+    });
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("Focus: camera (lab can't set it)")))
+        << lab.results().join(" | ").toStdString();
+}
+
+TEST(LabWindow, FocusNoteInTheStatusLine) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Focusing…"))) << lab.status().toStdString();
+
+    lab.advance(5100ms);
+    lab.pump();
+
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("Focusing…"))) << lab.status().toStdString();
+}
+
+// A new run's controller numbers its notes from 1 again: its first note still shows.
+TEST(LabWindow, NoteOfANewRunShows) {
+    Lab lab(twoCameras);
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+    lab.advance(6s);
+    lab.pump();
+    startStop(lab)->click(); // stop
+    startStop(lab)->click(); // and start again
+    cameraFrames(lab, 1);
+
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Focusing…"))) << lab.status().toStdString();
 }
 
 } // namespace

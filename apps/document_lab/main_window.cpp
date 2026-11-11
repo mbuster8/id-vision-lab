@@ -79,6 +79,8 @@ constexpr int kToneRole = Qt::UserRole + 1;
 
 // A processor busy this long on one frame is named in the status bar.
 constexpr auto kBusyShownAfter = std::chrono::seconds(1);
+// A focus note stays in the status line this long after it came.
+constexpr auto kFocusNoteShown = std::chrono::seconds(5);
 constexpr int kStatusRefreshMs = 500; // also how often the busy time moves on
 constexpr int kClosePollMs = 100;     // while closing waits for the recording
 
@@ -124,7 +126,10 @@ void markGuide(viewer_core::ImageTags& tags, const lab_core::LabResult& result) 
     }
     polygon->style = viewer_core::Polygon::Style::Guide;
     polygon->label.clear();
-    polygon->colour = coreColour(guidance->shownHint == doc_vision::Hint::Good ? kGuideGood : kGuideBad);
+    // Never green while the lab's focus searches: the lens sweeps through sharp positions (A3.3, spec §3.5).
+    const bool searching = result.focus && result.focus->state == lab_core::FocusStatus::State::Searching;
+    polygon->colour =
+        coreColour(guidance->shownHint == doc_vision::Hint::Good && !searching ? kGuideGood : kGuideBad);
     tags.overlays = viewer_core::makeOverlays(std::move(overlays));
 }
 
@@ -385,6 +390,10 @@ void LabWindow::buildUi() {
     m_forward10Action = new QAction(tr("Ten Seconds Forward"), this);
     m_forward10Action->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Right));
     addActions({m_playPauseAction, m_stepAction, m_stepBackAction, m_back10Action, m_forward10Action});
+    // F focuses the camera on the centre of what the canvas shows (A3.3).
+    m_focusAction = new QAction(tr("Focus on the Centre"), this);
+    m_focusAction->setShortcut(QKeySequence(Qt::Key_F));
+    addAction(m_focusAction);
 
     auto* processingRow = new QHBoxLayout;
     processingRow->addWidget(new QLabel(tr("Processor:"), central));
@@ -482,6 +491,8 @@ void LabWindow::buildUi() {
     m_canvas->setRegionsEnabled(false);
     m_canvas->setOverlaysShown(m_overlaysCheck->isChecked());
     m_canvas->setEmptyText(tr("Start a camera, or open a video, an image or a folder of images."));
+    connect(m_canvas, &ImageView::clicked, this, &LabWindow::canvasClicked);
+    connect(m_focusAction, &QAction::triggered, this, &LabWindow::focusOnTheCentre);
     canvasLayout->addWidget(m_canvas, 0, 0);
     m_placeholder = new QLabel(canvasArea);
     m_placeholder->setObjectName(QStringLiteral("placeholder"));
@@ -618,6 +629,8 @@ void LabWindow::startReplay(lab_core::ReplayOpener open) {
 void LabWindow::beginRun() {
     m_running = true;
     m_message.clear();
+    m_focusNote.clear(); // a new run's controller numbers its notes from 1 again
+    m_focusNoteNumber = 0;
     m_windowState.reset();
     // Space now plays and pauses this run, not the button that started it.
     m_canvas->setFocus(Qt::OtherFocusReason);
@@ -786,7 +799,8 @@ void LabWindow::startCameraGranted() {
     m_firstFrameAt.reset();
     m_geometry = {.frontCamera = camera->front};
     m_engine->startLive(
-        (format ? camera->name + QStringLiteral(" · ") + format->label() : camera->name).toStdString());
+        (format ? camera->name + QStringLiteral(" · ") + format->label() : camera->name).toStdString(),
+        m_dependencies.makeFocusControl ? m_dependencies.makeFocusControl(camera->id) : nullptr);
     m_session = m_dependencies.cameras->start(camera->id, format.value_or(CameraFormat{}));
     refreshStatus();
 }
@@ -811,6 +825,48 @@ void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
     m_engine->offer({[frame, geometry = m_geometry, at](std::string& error) {
         return toFrame(frame, geometry, at, error);
     }});
+}
+
+// A click on the canvas focuses there while a camera runs and the Frame shows: the canvas's image pixels are
+// then the frame's, which the engine's focusAt takes as shares.
+void LabWindow::canvasClicked(QPointF imagePoint) {
+    if (!m_cameraRunning) {
+        return;
+    }
+    if (currentShow() != kFrameEntry.toStdString()) {
+        noteFocus(tr("Show the Frame to focus by clicking"));
+        refreshStatus();
+        return;
+    }
+    focusAt(imagePoint);
+}
+
+void LabWindow::focusOnTheCentre() {
+    if (!m_cameraRunning) {
+        return;
+    }
+    if (currentShow() != kFrameEntry.toStdString()) {
+        noteFocus(tr("Show the Frame to focus by clicking"));
+        refreshStatus();
+        return;
+    }
+    const QRect visible = m_canvas->visibleArea();
+    if (!visible.isEmpty()) {
+        focusAt(QRectF(visible).center());
+    }
+}
+
+void LabWindow::focusAt(QPointF imagePoint) {
+    if (!m_current || m_current->frame.image.empty()) {
+        return;
+    }
+    m_engine->focusAt(imagePoint.x() / m_current->frame.image.cols,
+                      imagePoint.y() / m_current->frame.image.rows);
+}
+
+void LabWindow::noteFocus(const QString& note) {
+    m_focusNote = note;
+    m_focusNoteAt = now();
 }
 
 void LabWindow::cameraFailed(const QString& reason) {
@@ -862,6 +918,13 @@ void LabWindow::takeResult() {
     m_previousSequence = m_resultSequence;
     m_current = std::move(*result);
     ++m_resultSequence;
+    if (const std::optional<lab_core::FocusStatus>& focus = m_current->focus;
+        focus && focus->noteNumber != m_focusNoteNumber) {
+        m_focusNoteNumber = focus->noteNumber;
+        if (!focus->note.empty()) {
+            noteFocus(QString::fromStdString(focus->note));
+        }
+    }
     updateShowEntries(*m_current);
     showResults(*m_current);
     display(m_fitNext ? ImageView::KeepView::No : ImageView::KeepView::IfSameSize);
@@ -1121,6 +1184,9 @@ void LabWindow::refreshStatus() {
             parts << QString::fromStdString(guidance->reason);
         }
     }
+    if (!m_focusNote.isEmpty() && at - m_focusNoteAt < kFocusNoteShown) {
+        parts << m_focusNote;
+    }
     if (!status.message.empty()) {
         parts << QString::fromStdString(status.message);
     }
@@ -1150,7 +1216,7 @@ bool LabWindow::documentChosen() const {
            lab_core::ProcessorKind::Document;
 }
 
-const lab_core::Guidance* LabWindow::drawnGuidance() const {
+const lab_core::LabResult* LabWindow::drawnResult() const {
     if (!m_running) {
         return nullptr;
     }
@@ -1161,7 +1227,12 @@ const lab_core::Guidance* LabWindow::drawnGuidance() const {
     if (!result || sequence < m_scanFrom || !result->processed.guidance) {
         return nullptr;
     }
-    return &*result->processed.guidance;
+    return &*result;
+}
+
+const lab_core::Guidance* LabWindow::drawnGuidance() const {
+    const lab_core::LabResult* result = drawnResult();
+    return result != nullptr ? &*result->processed.guidance : nullptr;
 }
 
 void LabWindow::updateScan() {
@@ -1183,8 +1254,21 @@ void LabWindow::updateScan() {
                                     ? WindowState::RuntimeMissing
                                     : WindowState::ModelMissing);
         } else {
-            content = bannerFor(guidance->shownHint);
+            // Spec §3.5: a search running shows "focusing" over every hint but NoPage, with Sharp ✗; "can't
+            // focus" shows only while the shown hint is Blurred.
+            const std::optional<lab_core::FocusStatus>& focus = drawnResult()->focus;
             chips = guidance->chips;
+            if (focus && focus->state == lab_core::FocusStatus::State::Searching &&
+                guidance->shownHint != doc_vision::Hint::NoPage) {
+                content = bannerFor(FocusBanner::Focusing);
+                chips.passed[static_cast<std::size_t>(doc_vision::Gate::Sharp)] = false;
+            } else if (focus && focus->state == lab_core::FocusStatus::State::CannotFocus &&
+                       guidance->shownHint == doc_vision::Hint::Blurred) {
+                content = bannerFor(focus->afterSearch ? FocusBanner::CannotFocusThisClose
+                                                       : FocusBanner::CannotMakeSharp);
+            } else {
+                content = bannerFor(guidance->shownHint);
+            }
         }
     } else if (m_running) {
         content = bannerFor(doc_vision::Hint::NoPage);
