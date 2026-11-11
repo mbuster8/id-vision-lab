@@ -1101,6 +1101,71 @@ int selfTest(const std::filesystem::path& model, Report& report) {
 #endif
 }
 
+// What the lab will do at a run's end: put the camera's own focus back from a thread that is not the main
+// one, after Qt has stopped the camera. Sets manual focus while streaming, stops the camera, then restores
+// and reads it back. Each native step runs on a thread of its own.
+int restoreTest(const QCameraDevice& device, Report& report) {
+    QCamera camera(device);
+    QVideoSink sink;
+    QMediaCaptureSession session; // goes before the sink
+    session.setCamera(&camera);
+    session.setVideoSink(&sink);
+    int frames = 0;
+    QObject::connect(&sink, &QVideoSink::videoFrameChanged, &sink, [&frames] { ++frames; });
+    camera.start();
+    waitUntil(6000, [&] { return frames >= 10; });
+    report.say(QStringLiteral("streaming: %1 frames").arg(frames));
+
+    std::unique_ptr<uvc::Camera> control;
+    QString why;
+    QString before;
+    QString during;
+    bool setOff = false;
+    bool setPosition = false;
+    std::thread([&] {
+        control = uvc::Camera::forQtId(device.id(), why);
+        if (!control) {
+            return;
+        }
+        before = control->summary();
+        setOff = control->setAutoFocus(false);
+        setPosition = control->setFocus(100);
+        during = control->summary();
+    }).join();
+    if (!control) {
+        report.say(QStringLiteral("no native focus control: ") + why);
+        return 1;
+    }
+    report.say(QStringLiteral("before, on a worker thread:\n") + before);
+    report.say(QStringLiteral("set autofocus off: %1, set focus 100: %2, while streaming:\n")
+                   .arg(setOff ? QStringLiteral("ok") : QStringLiteral("FAILED"))
+                   .arg(setPosition ? QStringLiteral("ok") : QStringLiteral("FAILED")) +
+               during);
+    waitUntil(1000, [] { return false; });
+    const int framesBeforeStop = frames;
+    camera.stop();
+    waitUntil(300, [] { return false; });
+    report.say(QStringLiteral("camera stopped (%1 frames in all)").arg(framesBeforeStop));
+
+    bool restored = false;
+    QString after;
+    std::thread([&] {
+        restored = control->setAutoFocus(true);
+        after = control->summary();
+        control.reset();
+    }).join();
+    report.say(QStringLiteral("restore after stop, on another worker thread: %1\n")
+                   .arg(restored ? QStringLiteral("ok") : QStringLiteral("FAILED")) +
+               after);
+    QString check;
+    if (const std::unique_ptr<uvc::Camera> fresh = uvc::Camera::forQtId(device.id(), why)) {
+        const std::optional<bool> on = fresh->autoFocus();
+        check = on ? (*on ? QStringLiteral("on") : QStringLiteral("off")) : QStringLiteral("unreadable");
+    }
+    report.say(QStringLiteral("read again on the main thread: autofocus %1").arg(check));
+    return restored && check == QStringLiteral("on") ? 0 : 1;
+}
+
 QString argumentAfter(const QStringList& arguments, const QString& name) {
     const qsizetype at = arguments.indexOf(name);
     return at >= 0 && at + 1 < arguments.size() ? arguments[at + 1] : QString();
@@ -1116,6 +1181,7 @@ int main(int argc, char* argv[]) {
         report.say(QStringLiteral(
             "usage: camera_focus_probe --list [--no-prompt] [--no-start]\n"
             "       camera_focus_probe --self-test [--model <file>]\n"
+            "       camera_focus_probe --restore-test --camera <number or part of its name>\n"
             "       camera_focus_probe [--camera <number or part of its name>] [--search] [--model <file>] "
             "[--out <file>]"));
         return 0;
@@ -1148,6 +1214,17 @@ int main(int argc, char* argv[]) {
     if (!device) {
         report.say(QStringLiteral("No camera matches \"%1\"; --list shows them.").arg(wanted));
         return 2;
+    }
+    if (arguments.contains(QStringLiteral("--restore-test"))) {
+        int status = 1;
+        withCameraPermission(true, [&](bool granted) {
+            if (granted) {
+                status = restoreTest(*device, report);
+            } else {
+                report.say(QStringLiteral("The camera may not be used."));
+            }
+        });
+        return status;
     }
     QString out = argumentAfter(arguments, QStringLiteral("--out"));
     if (out.isEmpty()) {
