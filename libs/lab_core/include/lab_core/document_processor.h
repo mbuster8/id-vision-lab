@@ -19,7 +19,7 @@ namespace lab_core {
 
 // The Document processor: a PageFinder finds the page, the six gates judge it, and the hint, the chips and a
 // briefly lost page are steadied by the frames' own times (ADR-004). Its results carry Guidance, the page's
-// outline as an overlay, the findings, and the 625 × 440 page the gates looked at as the picture "page".
+// outline as an overlay, the findings, and the 625 × 440 page the gates looked at as the picture "document".
 class DocumentProcessor final : public FrameProcessor {
 public:
     // Opens the finder: on the processing thread, on a run's first frame. Null, with `error` and `failure`,

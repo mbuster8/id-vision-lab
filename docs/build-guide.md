@@ -4,7 +4,7 @@ How to install the tools, build every part of the project, run the tests and wor
 For running the programs, see the [user guide](user-guide.md).
 
 Verified on macOS 27.0.1 on Apple silicon (Mac mini), Apple clang 21, October 2026. Continuous integration
-also builds and tests every push on Ubuntu 24.04. Windows 11 with Visual Studio 2022 has its own presets
+also builds and tests every pull request and every push to `master` on Ubuntu 24.04. Windows 11 with Visual Studio 2022 has its own presets
 and setup: see [Windows](#windows).
 
 ## Prerequisites (macOS)
@@ -118,6 +118,7 @@ or library cannot break the build, but a new warning from project code should be
 | `live_sender` | Command-line example: streams a camera, a video file or a test pattern as live channels; reads files through `frame_io` | `examples/live_sender/live_sender` |
 | `visual_debug_tests`, `viewer_core_tests`, `frame_io_tests`, `doc_vision_tests`, `lab_core_tests`, `qt_common_tests`, `viewer_ui_tests`, `example_sender_ui_tests`, `document_lab_ui_tests`, `pipeline_tests`, `live_sender_tests` | GoogleTest executables | `tests/` |
 | `doc_vision_eval` | The Document processor's evaluation on labelled clips and MIDV-2020, run by hand ([below](#evaluating-the-document-processor)) | `tests/doc_vision_eval` |
+| `document_lab_picture` | The README's labelled picture of the Document Lab, made by hand ([below](#the-document-labs-picture)) | `tests/document_lab_picture` |
 
 FFmpeg's reader in `frame_io` (`FfmpegVideo`) is built only when CMake finds FFmpeg's development files
 (`libavformat`, `libavcodec`, `libswscale`, `libavutil`); configuring says so when it does not.
@@ -174,6 +175,21 @@ The build copies the model into `build/<preset>/models`, into the Document Lab's
 (`document_lab.app/Contents/Resources/models`) on macOS, and into a `models` folder beside `document_lab` on
 Linux and Windows, where the lab looks for it. A lab that cannot open it says so in its banner, "The document
 model is missing", and the other processors work as before. The programs never download anything.
+
+### The Document Lab's picture
+
+`document_lab_picture` makes `docs/images/document-lab.png`, the README's labelled picture of the lab: the real
+window and page model replaying the drawn page of `tests/doc_vision/procedural_page.h` (no real document), with
+the tests' fake cameras and senders, so nothing reaches a camera or a viewer. Each part is outlined and numbered
+where the window put it. Run it on a Mac, in the appearance the picture should have, after a change to the
+window:
+
+```sh
+cmake --build --preset debug --target document_lab_picture
+build/debug/tests/document_lab_picture docs/images/document-lab.png
+```
+
+The window shows briefly while it is made.
 
 ### Evaluating the Document processor
 
@@ -334,6 +350,8 @@ by hand. If a menu has moved in your version, the presets above still work from 
    `ImageView::wheelEvent` to set a breakpoint, start with **Debug → Start Debugging** (⌘Y), and scroll
    the mouse wheel over an image in the viewer. Qt Creator stops at the breakpoint with LLDB.
 
+![Qt Creator's Test Results pane after Run All Tests, the results grouped by test suite (taken in October 2026, before the Document Lab's tests)](images/qt-creator-tests.jpg)
+
 ## Troubleshooting
 
 **Qt Creator cannot find Ninja, Qt or OpenCV when started from the Dock.** Apps started from the Dock or
@@ -397,10 +415,10 @@ in the user guide.
 
 ## Linux
 
-Continuous integration builds and tests every push on Ubuntu 24.04 with the distribution's packages, which
-give OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest versions supported. FFmpeg's four development packages
-(`libavcodec-dev`, `libavformat-dev`, `libswscale-dev`, `libavutil-dev`) are among them, so its tests run there
-too, decoding in software: CI has no GPU. The list lives in
+Continuous integration builds and tests every pull request and every push to `master` on Ubuntu 24.04 with
+the distribution's packages, which give OpenCV 4.6, Qt 6.4 and FFmpeg 6.1, the oldest versions supported.
+FFmpeg's four development packages (`libavcodec-dev`, `libavformat-dev`, `libswscale-dev`, `libavutil-dev`) are
+among them, so its tests run there too, decoding in software: CI has no GPU. The list lives in
 [`scripts/install-ubuntu-deps.sh`](../scripts/install-ubuntu-deps.sh), which CI and the Docker image both run;
 on an Ubuntu 24.04 machine:
 
@@ -680,9 +698,9 @@ MSVC's environment itself, and reads `VCPKG_INSTALLATION_ROOT` and `QT_ROOT_DIR`
    `build\windows-release` folders as the command line.
 3. Build, run `visual_debug_viewer` and run the tests as on macOS (steps 3 to 5 of
    [Working in Qt Creator](#working-in-qt-creator), with Ctrl in place of ⌘). The **Test Results** pane
-   reports every test passing except 1 skipped (`ClientServer.RefusesNonLoopbackBindByDefault`) and 2
-   disabled: Qt Creator lists GoogleTest's cases, not CTest's seven whole-program runs, so its total is
-   CTest's less those 7.
+   reports every test passing except the disabled ones and one skipped by design
+   (`ClientServer.RefusesNonLoopbackBindByDefault`): Qt Creator lists GoogleTest's cases, not CTest's
+   whole-program runs, so its total is smaller than CTest's.
 
 **`LNK1104: cannot open file 'apps\visual_debug_viewer.exe'`.** The viewer (or the example sender) from that
 build is still running, and Windows does not let a running program's file be replaced. Quit it and build

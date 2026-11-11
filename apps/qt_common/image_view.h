@@ -9,6 +9,7 @@
 #include <QPointF>
 #include <QRect>
 #include <QStringList>
+#include <QTimer>
 #include <QWidget>
 
 #include <optional>
@@ -70,6 +71,9 @@ public:
     // The lines of the region's label, drawn in a box above it (below when there is no room above).
     void setRegionText(const QStringList& lines);
     const QStringList& regionText() const;
+    // How long a click waits for a second one before it counts as a click: the system's double-click
+    // interval, at most 500 ms, unless set.
+    void setClickDelay(int milliseconds);
 
 signals:
     void pixelHovered(int x, int y);
@@ -77,6 +81,9 @@ signals:
     void scaleChanged(); // after a zoom, a fit or a resize; never for a new picture
     void panned();       // after a drag moved the image; the scale is unchanged
     void regionChanged(std::optional<QRect> region);
+    // A left click that did not move, on the image, in image pixels; sent once the click delay has passed
+    // with no second press, so a double-click (which fits the view) never sends one.
+    void clicked(QPointF imagePoint);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -109,4 +116,6 @@ private:
     bool m_overlaysShown = true;
     bool m_regionsEnabled = true;
     QString m_emptyText;
+    QTimer m_clickTimer; // a click waiting for the double-click interval
+    QPointF m_clickPoint;
 };

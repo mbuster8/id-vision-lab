@@ -21,6 +21,7 @@
 #include <doc_vision/quality_gates.h>
 #include <frame_io/recording.h>
 #include <lab_core/document_processor.h>
+#include <lab_core/focus_controller.h>
 
 #include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
@@ -155,6 +156,10 @@ struct Run {
     int switches = 0;
     double seconds = 0;
     std::vector<std::optional<double>> firstGood; // per clip
+    // A3.3's rule for a camera the lab cannot focus, run on the replay: how often it would say so, and the
+    // first time how long after sharpness began to fail first.
+    int cannotFocus = 0;
+    std::optional<double> firstCannotFocusAfter;
 };
 
 struct Options {
@@ -196,6 +201,9 @@ public:
             m_thresholds);
         m_shown.reset();
         m_run.firstGood.emplace_back();
+        // No control: the rule for a camera the lab cannot focus. Every frame of a replay counts at once.
+        m_focus = std::make_unique<lab_core::FocusController>(nullptr, [this] { return m_number + 1; });
+        m_focusState = lab_core::FocusStatus::State::Camera;
     }
 
     void frame(cv::Mat image, std::uint64_t number, double seconds, Group* group,
@@ -218,6 +226,16 @@ public:
         if (!result.guidance) {
             return;
         }
+        m_number = number;
+        const lab_core::FocusStatus focus = m_focus->next(frame, result.guidance->page);
+        if (focus.state == lab_core::FocusStatus::State::CannotFocus && m_focusState != focus.state) {
+            ++m_run.cannotFocus;
+            if (!m_run.firstCannotFocusAfter && focus.blurredFirstSince) {
+                m_run.firstCannotFocusAfter =
+                    std::chrono::duration<double>(frame.at - *focus.blurredFirstSince).count();
+            }
+        }
+        m_focusState = focus.state;
         const Hint shown = result.guidance->shownHint;
         if (m_shown && *m_shown != shown) {
             ++m_run.switches;
@@ -268,6 +286,9 @@ private:
     Run& m_run;
     std::unique_ptr<lab_core::DocumentProcessor> m_processor;
     std::optional<Hint> m_shown;
+    std::unique_ptr<lab_core::FocusController> m_focus;
+    std::uint64_t m_number = 0;
+    lab_core::FocusStatus::State m_focusState = lab_core::FocusStatus::State::Camera;
 };
 
 struct Label {
@@ -517,6 +538,13 @@ void report(const Run& run) {
     }
     std::printf("\nbanner switches a minute: %.1f (over %.1f s)\n",
                 run.seconds > 0 ? 60.0 * run.switches / run.seconds : 0.0, run.seconds);
+    if (run.firstCannotFocusAfter) {
+        std::printf(
+            "can't focus (no control): %d episodes, the first %.2f s after sharpness began to fail first\n",
+            run.cannotFocus, *run.firstCannotFocusAfter);
+    } else {
+        std::printf("can't focus (no control): %d episodes\n", run.cannotFocus);
+    }
     if (run.firstGood.size() <= 12) {
         std::printf("first Good:");
         for (std::size_t c = 0; c < run.firstGood.size(); ++c) {

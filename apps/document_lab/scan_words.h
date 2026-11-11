@@ -23,6 +23,12 @@ struct BannerContent {
 
 // A hint's banner (ADR-004's table, A3.1's rows).
 BannerContent bannerFor(doc_vision::Hint hint);
+
+// The focus banners (A3.3, spec §3.5): a search running; a search that found nothing sharp; a camera the lab
+// cannot focus that stayed blurred.
+enum class FocusBanner { Focusing, CannotFocusThisClose, CannotMakeSharp };
+BannerContent bannerFor(FocusBanner banner);
+
 // A window state's banner. `detail` is CameraStopped's small line, the failure's reason; ignored otherwise.
 // AccessOff's small line is the running platform's.
 BannerContent bannerFor(WindowState state, const QString& detail = {});

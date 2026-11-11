@@ -26,7 +26,7 @@ double edgeToReach(double value, const doc_vision::Band& band, bool failsWhenLow
 std::vector<Finding> pageFindings(const doc_vision::Measures& m, const doc_vision::Verdicts& verdicts,
                                   const doc_vision::Thresholds& thresholds) {
     std::vector<Finding> findings;
-    findings.push_back({"Document", "TD3 page", Tone::Plain});
+    findings.push_back({"Document", "found", Tone::Plain}); // which kind waits for the MRZ (A4)
     findings.push_back({"Fill", wholeNumber(100 * m.fill) + " %", Tone::Plain});
     if (verdicts.passed[gateIndex(doc_vision::Gate::Flat)]) {
         findings.push_back({"Tilt", wholeNumber(m.tiltDegrees) + "°", Tone::Plain});
@@ -73,7 +73,7 @@ std::vector<Finding> pageFindings(const doc_vision::Measures& m, const doc_visio
 }
 
 std::vector<Finding> noPageFindings() {
-    return {{"Document", "not found", Tone::Plain}, {"Gates", "no page yet", Tone::Plain}};
+    return {{"Document", "not found", Tone::Plain}, {"Gates", "no document yet", Tone::Plain}};
 }
 
 } // namespace
@@ -93,7 +93,7 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         if (!m_finder) {
             m_unavailable = failure == doc_vision::OpenFailure::Runtime ? Guidance::Unavailable::Runtime
                                                                         : Guidance::Unavailable::Model;
-            m_reason = error.empty() ? "the page finder could not be opened" : std::move(error);
+            m_reason = error.empty() ? "the document finder could not be opened" : std::move(error);
         }
     }
 
@@ -118,6 +118,7 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
     const std::chrono::duration<double, std::milli> took = std::chrono::steady_clock::now() - started;
 
     std::optional<std::pair<doc_vision::Quad, doc_vision::Verdicts>> judged;
+    std::optional<PageFacts> facts;
     if (found) {
         const doc_vision::Quad quad =
             m_previous ? doc_vision::alignTo(found->quad, *m_previous) : found->quad;
@@ -126,6 +127,12 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         m_page = std::move(page);
         judged.emplace(quad, m_judge.judge(m_measures));
         m_previous = quad;
+        facts = PageFacts{.quad = quad,
+                          .frameSize = bgr.size(),
+                          .sharpness = m_measures.sharpness,
+                          .longerSide = m_measures.longerSide,
+                          .verdicts = judged->second,
+                          .frameHint = doc_vision::Hint::NoPage};
     }
     const std::optional<doc_vision::Held> held = m_hold.next(judged, frame.at);
     if (!held) {
@@ -137,6 +144,10 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
     const std::optional<doc_vision::Verdicts> verdicts =
         held ? std::optional<doc_vision::Verdicts>(held->verdicts) : std::nullopt;
     guidance.frameHint = doc_vision::hintFor(verdicts);
+    if (facts) {
+        facts->frameHint = guidance.frameHint;
+        guidance.page = std::move(facts);
+    }
     guidance.shownHint = m_hintTimer.next(guidance.frameHint, frame.at);
     guidance.chips = m_chipTimer.next(verdicts, guidance.shownHint, frame.at);
 
@@ -147,7 +158,7 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
                                                         .colour = guidance.shownHint == doc_vision::Hint::Good
                                                                       ? visual_debug::kOverlayGreen
                                                                       : visual_debug::kOverlayRed});
-        result.images.push_back({.name = "page", .image = m_page, .description = {}});
+        result.images.push_back({.name = "document", .image = m_page, .description = {}});
         result.findings = pageFindings(m_measures, held->verdicts, m_judge.thresholds());
     } else {
         result.findings = noPageFindings();

@@ -154,7 +154,7 @@ TEST(DocumentProcessor, NoPageShowsHintOneAtOnce) {
     EXPECT_TRUE(result.images.empty());
     EXPECT_EQ(namesOf(result), (std::vector<std::string>{"Document", "Gates", "Detector"}));
     EXPECT_EQ(*findingNamed(result, "Document"), (Finding{"Document", "not found", Finding::Tone::Plain}));
-    EXPECT_EQ(*findingNamed(result, "Gates"), (Finding{"Gates", "no page yet", Finding::Tone::Plain}));
+    EXPECT_EQ(*findingNamed(result, "Gates"), (Finding{"Gates", "no document yet", Finding::Tone::Plain}));
 }
 
 // P1: red at once, green only once Good has held half a second and NoPage its 800 ms.
@@ -177,6 +177,36 @@ TEST(DocumentProcessor, GoodPageTurnsGreenAfterHalfASecond) {
     EXPECT_EQ(outlineOf(green).colour, visual_debug::kOverlayGreen);
     EXPECT_EQ(outlineOf(green).label, "Document");
     EXPECT_TRUE(green.guidance->chips.visible);
+}
+
+// A3.3: the focus controller judges the page found in this frame, with its measures, verdicts and hint.
+TEST(DocumentProcessor, PageFactsForAFreshPage) {
+    auto script = std::make_shared<Script>();
+    script->steps = {page(test_support::kPageQuad)};
+    DocumentProcessor processor(scripted(script));
+    const ProcessorResult result = processor.process(frameAt(goodFrame(), 0));
+    ASSERT_TRUE(result.guidance);
+    ASSERT_TRUE(result.guidance->page);
+    const lab_core::PageFacts& facts = *result.guidance->page;
+    EXPECT_EQ(facts.quad, test_support::kPageQuad); // the first quad: nothing to align it to
+    EXPECT_EQ(facts.frameSize, kFrameSize);
+    const doc_vision::Measures measures = doc_vision::measure(goodFrame(), test_support::kPageQuad);
+    EXPECT_DOUBLE_EQ(facts.sharpness, measures.sharpness);
+    EXPECT_DOUBLE_EQ(facts.longerSide, measures.longerSide);
+    EXPECT_TRUE(facts.verdicts.allPassed());
+    EXPECT_EQ(facts.frameHint, result.guidance->frameHint);
+}
+
+// A page PageHold keeps after a missed detection is shown, but it is not a page found in this frame.
+TEST(DocumentProcessor, NoPageFactsForAHeldPage) {
+    auto script = std::make_shared<Script>();
+    script->steps = {page(test_support::kPageQuad), nothing()};
+    DocumentProcessor processor(scripted(script));
+    ASSERT_TRUE(processor.process(frameAt(goodFrame(), 0)).guidance->page);
+    const ProcessorResult held = processor.process(frameAt(goodFrame(), 1)); // 33 ms: within kHoldFor
+    ASSERT_TRUE(held.guidance);
+    EXPECT_TRUE(held.guidance->outlineOverlay); // still shown
+    EXPECT_FALSE(held.guidance->page);
 }
 
 // P6: the engine resets on every seek, loop and restart; the model is opened once.
@@ -227,7 +257,7 @@ TEST(DocumentProcessor, FindingsInOrderWithTheirTones) {
     EXPECT_EQ(tonesOf(result), (std::vector<Tone>{Tone::Plain, Tone::Plain, Tone::Plain, Tone::Plain,
                                                   Tone::Plain, Tone::Plain, Tone::Good, Tone::Plain}));
     const doc_vision::Measures measures = doc_vision::measure(frame, test_support::kPageQuad);
-    EXPECT_EQ(findingNamed(result, "Document")->value, "TD3 page");
+    EXPECT_EQ(findingNamed(result, "Document")->value, "found");
     EXPECT_EQ(findingNamed(result, "Fill")->value, std::to_string(std::lround(100 * measures.fill)) + " %");
     EXPECT_EQ(findingNamed(result, "Tilt")->value,
               std::to_string(std::lround(measures.tiltDegrees)) + "\xC2\xB0");
@@ -461,7 +491,7 @@ TEST(DocumentProcessor, PageImageIsTheGatePage) {
     const ProcessorResult result = processor.process(frameAt(goodFrame(), 0));
 
     ASSERT_EQ(result.images.size(), 1U);
-    EXPECT_EQ(result.images[0].name, "page");
+    EXPECT_EQ(result.images[0].name, "document");
     EXPECT_EQ(result.images[0].image.size(), doc_vision::kGatePageSize);
     EXPECT_EQ(result.images[0].image.type(), CV_8UC3);
 }

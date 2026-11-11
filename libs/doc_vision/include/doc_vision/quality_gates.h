@@ -31,6 +31,11 @@ struct Measures {
 // the gates looked at.
 Measures measure(const cv::Mat& bgr8, const Quad& quad, cv::Mat* gatePage = nullptr);
 
+// The variance of the Laplacian of a region of an 8-bit BGR frame, at the frame's own resolution: what
+// click-to-focus judges. The region is clipped to the frame first; nothing left (or no frame) gives 0. Its
+// scale is not the page's sharpness, which is measured on the page warped to 625 × 440.
+double regionSharpness(const cv::Mat& bgr8, cv::Rect region);
+
 // A gate's two edges: it fails beyond `failsAt` and passes again only beyond `passesAgainAt`, so a measure
 // that hovers at the edge does not flip the verdict from frame to frame.
 struct Band {

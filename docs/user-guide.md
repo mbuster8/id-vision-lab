@@ -297,6 +297,8 @@ A program that sends each frame with `visual_debug::sendLive(frame, "camera")` (
 [worked example 1](#1-one-line-debugging-with-sendimage)), such as `live_sender`, streams it as a **live
 channel**: the viewer shows the channel's newest frame in place, instead of adding every frame to the history.
 
+![Two cameras and a video streaming at once, the Live group stretched to show all six channels, camera 0's edges in the Turbo colour map with the Colours menu open, and the activity log below](images/live-channels.jpg)
+
 - **The Live group.** While channels exist, a **Live** group sits at the top of the sidebar, above the search,
   with a row per channel in the order they started: the newest frame (in the channel's range and colours),
   the channel's name on one line, its frame rate (`30 fps`: frames that arrived in the last second) and its
@@ -411,6 +413,8 @@ Integers print exactly, including negative values of signed images. Floating-poi
 to six significant digits, always with a decimal point regardless of the system's language settings.
 
 ### Region statistics
+
+![Show Clipping marking the clipped highlights of a horse's mane in magenta, and a Shift-drag region labelled with its size and each channel's minimum, maximum, mean and σ](images/clipping-and-statistics.jpg)
 
 Shift-drag in the view to draw a rectangle. It is outlined, and a label beside it gives its size and place and,
 per channel, the minimum, maximum, mean and standard deviation of the original values. Over a whole 2×2
@@ -550,6 +554,8 @@ picture as shown.
 open build/debug/apps/example_sender/visual_debug_example_sender.app
 ```
 
+![The Visual Debug Example Sender after sending a photo: Open, Send image and the Send to field along the top, the result in the status bar](images/example-sender.png)
+
 The Visual Debug Example Sender shows how a Qt application uses the library. Its icon, a white paper
 plane in the viewer's blue ring, tells it apart from the viewer's eye in the Dock. The bar along the top, on the same panel grey as the viewer's sidebar, holds **Open…** (Ctrl+O), **Send
 image** (Ctrl+Return) and the **Send to** field with the endpoint images go to; the preview fills the rest of
@@ -584,6 +590,10 @@ open build/debug/apps/document_lab/document_lab.app
 
 Start it with `open` or from Finder: macOS asks for camera access on behalf of the app that started it, so
 started from a terminal it asks for the terminal (see the [build guide](build-guide.md#building)).
+
+![The Document Lab replaying a drawn page through the Document processor, its parts numbered as in the README](images/document-lab.png)
+
+The numbers are explained in the [README](../README.md#the-document-lab).
 
 The window has four rows of controls above the canvas: the source (a camera, or **Open File…** and **Open
 Folder…**), the replay, the processing (the processor, Show, Overlays, Record and Capture) and the viewer. Every
@@ -622,10 +632,11 @@ appearance's own shades); a processor's error is a red row of its own. It keeps 
 window grows; drag its edge to change it, or all the way to the window's side to shut it, and back to open it.
 **View → Results** shuts and opens it too, and the lab remembers its width and whether it shows.
 
-The status bar shows the run (Live, Playing, Paused, Ended, Stopped), the source, the frame and of how many,
-the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a camera's
-frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas drew
-them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
+The status bar shows the run (Live, Playing, Paused, Ended, Stopped), then the news (the document's state, a
+focus note, why something failed) so that a narrow window still shows it, then the source, the frame and of how
+many, the frames processed and shown per second, the processing time, and four counts: frames **dropped** (a
+camera's frame replaced by a newer one before it was processed), **not drawn** (results replaced before the canvas
+drew them), **not sent** and **not recorded**. A processor busy for more than a second on one frame is named, with
 how long; a seek on its way says `seeking…`. With no camera connected, the empty canvas says so: "No camera
 found. Connect one, or open a video, an image or a folder of images."
 
@@ -634,24 +645,22 @@ found. Connect one, or open a video, an image or a folder of images."
 **Document** guides you to hold a passport's data page so that the next steps can read it. DocAligner LC100, a
 small page model run on ONNX Runtime, finds the page's four corners in each frame; six checks judge the page;
 and one hint at a time, in a banner at the top of the canvas, says what to change. It works on a camera and on
-every replay, so the checks can be tried on recorded clips.
-
-![Searching for the page](images/scan-flow/01-searching.png)
-
-![A blurred page: hold still](images/scan-flow/02-adjust-blurred.png)
+every replay, so the checks can be tried on recorded clips. What it says speaks of the **document**, since an ID
+card has no page; until the MRZ is read (A4), the lab cannot tell a passport from a card, and its checks measure
+the passport's data page (TD3).
 
 - **The banner** shows the first hint that applies, checked from the top:
 
   | # | When | Banner |
   |---|---|---|
-  | 1 | No page found | Show the passport's photo page · Hold it so the whole page is in view |
-  | 2 | The page is cut by the frame's edge | ✗ Move back · the whole page must be in view |
-  | 2b | Cut by the edge, but small enough to fit | ✗ Move the page to the middle · the whole page must be in view |
+  | 1 | No page found | Show the document · the side with the photo, all of it in view |
+  | 2 | The page is cut by the frame's edge | ✗ Move back · the whole document must be in view |
+  | 2b | Cut by the edge, but small enough to fit | ✗ Move the document to the middle · the whole document must be in view |
   | 3 | Too far: its longer side under 40% of the frame's | ✗ Move closer |
   | 4 | Too close: it fills more than 92% of the frame's width or height | ✗ Move a little further away |
-  | 5 | Tilted more than 25° from facing the camera | ✗ Hold the page flat to the camera |
+  | 5 | Tilted more than 25° from facing the camera | ✗ Hold the document flat to the camera |
   | 6 | Blurred | ✗ Blurred: hold still · or move a little closer or further away |
-  | 7 | Glare on the page | ✗ Glare on the page · tilt it slightly away from the light |
+  | 7 | Glare on the page | ✗ Glare on the document · tilt it slightly away from the light |
   | 8 | Too dark | ✗ Too dark · add more light |
   | 9 | Too bright | ✗ Too bright · move out of direct light |
   | 10 | Every check passes | ✓ Good: hold still |
@@ -665,17 +674,17 @@ every replay, so the checks can be tried on recorded clips.
   **Sharp**, **No glare** and **Light**, while a page is found.
 - **The outline** of the page is red, and turns green with "Good: hold still". It shows only over the Frame,
   and hides with **Overlays**; the banner and the chips do not.
-- **The results** list `Document` (`TD3 page` or `not found`), `Fill`, `Tilt`, `Sharpness`, `Glare` and
-  `Exposure` while a page is found, then `Gates` (`all pass` in green, `5 of 6 pass` in red) and `Detector`
-  (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 50)`.
-- **Show → page** shows the page flattened, as the checks see it.
+- **The results** list `Document` (`found` or `not found`), `Fill`, `Tilt`, `Sharpness`, `Glare` and
+  `Exposure` while a page is found, then `Gates` (`all pass` in green, `5 of 6 pass` in red, `no document yet`)
+  and `Detector` (the model and its time). A failing measure is red, with its limit: `Sharpness 41 (min 50)`.
+- **Show → document** shows the page flattened, as the checks see it.
 - **The status bar** adds the state: `State: searching`, `State: adjust (sharpness)` (the check to fix) or
   `State: good`.
 - **The viewer and captures** get the outline as an ordinary polygon labelled `Document`, green or red.
 
 While Document is chosen and nothing runs, the banner says why instead: **No camera found**, **Camera access is
 off** (with where to allow it), **The camera stopped** (with the reason), or **Start the camera** when one is
-connected. From the moment a camera or a replay starts, it asks for the page.
+connected. From the moment a camera or a replay starts, it asks for the document.
 
 **The model and privacy.** Everything runs on this computer: no frame, page or result leaves it, unless you
 stream or send to a viewer yourself. The model comes with the lab: the build fetches it once, checks it and
@@ -684,6 +693,46 @@ the model is missing, or the ONNX Runtime the lab loads is older than the one it
 the one in `System32` when the lab's own copy is gone), the banner says "The document model is missing" or
 "ONNX Runtime could not be loaded" for the whole run, the status bar gives the reason, and the other processors
 work as before.
+
+### Focus on the document
+
+A blurred page cannot be read, and many webcams leave a passport held close blurred. Where the lab can set a
+camera's own focus (a UVC camera such as the Logitech C920 on macOS, or a camera whose driver offers focus on
+Windows), it focuses on the page itself; where it cannot, it says so. Qt Multimedia offers no focus control for
+these cameras, so the lab reaches each camera's own controls directly ([ADR-005](ADR/ADR-005-camera-focus.md)).
+
+- **The camera's own autofocus stays on** until the lab needs to take over.
+- **On the page:** when a page is found, held steady, and sharpness is the first check it fails (it is in view,
+  the right size and flat) for 1.5 s, the lab searches the camera's focus positions for the one where the page is
+  sharpest, then holds it. The banner says **Hold still: focusing** meanwhile, the Sharp chip shows ✗, the
+  outline stays red, and the status bar then gives the time it took: `Focused at 30 in 2.4 s`. Moving the page
+  nearer or further (its size changing by more than 15%), or taking it away for a second, gives the focus back to
+  the camera. The lab searches at most twice for the same page; if it is blurred again after that, the camera's
+  own autofocus gets it back.
+- **A click on the picture** (with Show on **Frame**, during a camera run) focuses on the area around the click,
+  a square a fifth of the frame's shorter side wide; **F** focuses on the centre of what the canvas shows. The
+  status bar says `Focusing…`, then `Focused at 30: 12 → 210` (the area's sharpness before and after) or `Could
+  not focus there`. A click's focus stays until another click, a page search or the end of the run. A
+  double-click still fits the picture to the window and never focuses.
+- **When the page cannot be made sharp:**
+
+  | When | Banner |
+  |---|---|
+  | The lab searched every position and none was sharp | ✗ This camera can't focus this close · Move the document a little further away |
+  | The lab cannot set this camera's focus (its own autofocus, if any, did not manage in 3 s, the page held steady) | ✗ This camera can't make the document sharp · Try more light, or another camera |
+
+  Either shows only while the shown hint is **Blurred**: a page that is too far, cut off or tilted keeps its own
+  hint. On Linux the lab cannot set any camera's focus yet, so only the second applies.
+- **The results** gain a **Focus** row for camera runs: `camera` (the camera's own autofocus), `camera (lab
+  can't set it)`, `lab searching`, `lab, 30` (the position held) or `can't focus` (red).
+- **Putting the focus back:** when the lab lets go, and whenever the camera stops, changes or the lab quits, the
+  camera's focus goes back to what it was: its autofocus on, or the position it had. If that fails, the status bar
+  says so, through later runs and files too, until a camera's focus has been put back: unplug the camera and plug
+  it in again.
+- **If the lab crashes** while it holds the focus, the camera stays in manual focus until it is unplugged and
+  plugged in again, or until another program turns its autofocus on.
+- **Recordings** made while the lab searches hold deliberately blurred frames; for an evaluation, record with
+  the page already sharp. Nothing about focus is sent to the viewer.
 
 ### Replay
 

@@ -35,6 +35,17 @@ struct Finding {
 // "Name: value", or the name alone when there is no value: how captures keep findings.
 std::string toText(const Finding& finding);
 
+// The page the Document processor found in this frame, for the focus controller (A3.3): never one PageHold
+// kept over a missed detection.
+struct PageFacts {
+    doc_vision::Quad quad{}; // aligned to the previous quad, as the outline is
+    cv::Size frameSize{};
+    double sharpness = 0.0;  // doc_vision::Measures::sharpness
+    double longerSide = 0.0; // doc_vision::Measures::longerSide
+    doc_vision::Verdicts verdicts{};
+    doc_vision::Hint frameHint = doc_vision::Hint::NoPage; // this frame's own
+};
+
 // What the Document processor tells the user about a frame: the banner's hint, the chips, and which overlay
 // is the page's outline that the canvas draws as its guide.
 struct Guidance {
@@ -47,7 +58,8 @@ struct Guidance {
     // chooses its words by it.
     enum class Unavailable { None, Model, Runtime };
     Unavailable unavailable = Unavailable::None;
-    std::string reason{}; // the error, for the status bar
+    std::string reason{};            // the error, for the status bar
+    std::optional<PageFacts> page{}; // the page found in this frame, if any
 };
 
 // What a processor found in one frame.

@@ -7,6 +7,8 @@ add_library(lab_core STATIC
     include/lab_core/document_outline.h
     include/lab_core/document_processor.h
     include/lab_core/engine.h
+    include/lab_core/focus_control.h
+    include/lab_core/focus_controller.h
     include/lab_core/frame_processor.h
     include/lab_core/lab_result.h
     include/lab_core/processors.h
@@ -15,6 +17,7 @@ add_library(lab_core STATIC
     src/document_outline.cpp
     src/document_processor.cpp
     src/engine.cpp
+    src/focus_controller.cpp
     src/number_text.h
     src/processors.cpp
     src/result_sender.cpp

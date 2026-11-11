@@ -1,5 +1,7 @@
 #include "lab_core/engine.h"
 
+#include "lab_core/focus_controller.h"
+
 #include "lab_core/processors.h"
 
 #include <opencv2/core.hpp>
@@ -91,7 +93,7 @@ Engine::~Engine() {
 // --- What the window calls
 // ----------------------------------------------------------------------------------
 
-void Engine::startLive(std::string name) {
+void Engine::startLive(std::string name, std::unique_ptr<FocusControl> focus) {
     std::optional<Pending> old; // destroyed without the lock
     std::uint64_t run = 0;
     {
@@ -99,11 +101,25 @@ void Engine::startLive(std::string name) {
         old = std::move(m_pending);
         m_pending.reset();
         m_seekRequest.reset(); // for the replay this ends
+        m_focusRequest.reset();
         m_acceptLive = true;
         m_offered = 0;
         run = ++m_run;
     }
-    post([this, name = std::move(name), run] { doStartLive(name, run); });
+    // A command is copyable; the control is not. A command destroyed unrun (the engine's end) destroys the
+    // control unopened, which makes no native call.
+    auto control = std::make_shared<std::unique_ptr<FocusControl>>(std::move(focus));
+    post([this, name = std::move(name), run, control] { doStartLive(name, run, std::move(*control)); });
+}
+
+void Engine::focusAt(double x, double y) {
+    std::uint64_t run = 0;
+    {
+        const std::lock_guard lock(m_mutex);
+        m_focusRequest = std::pair{x, y};
+        run = m_run;
+    }
+    post([this, run] { doFocusAt(run); });
 }
 
 void Engine::offer(PendingFrame frame) {
@@ -130,6 +146,7 @@ void Engine::startReplay(ReplayOpener open) {
         old = std::move(m_pending);
         m_pending.reset();
         m_seekRequest.reset(); // for the source this replaces
+        m_focusRequest.reset();
         m_acceptLive = false;
         ++m_run;
     }
@@ -143,6 +160,7 @@ void Engine::stop() {
         old = std::move(m_pending);
         m_pending.reset();
         m_seekRequest.reset();
+        m_focusRequest.reset();
         m_acceptLive = false;
         ++m_run;
     }
@@ -399,6 +417,7 @@ void Engine::stopAfterThrow(const std::string& what) {
         m_status.busyFrame.reset();
         m_status.busySince.reset();
         m_seekRequest.reset();
+        m_focusRequest.reset();
         pending = std::move(m_pending);
         m_pending.reset();
         m_acceptLive = false;
@@ -418,6 +437,7 @@ void Engine::stopAfterThrow(const std::string& what) {
     }
     closeSource();
     m_live = false;
+    endFocusRun();
     setMessage("stopped: internal error (" + what + ")");
     setState(EngineState::Stopped);
 }
@@ -553,6 +573,23 @@ void Engine::process(frame_io::Frame frame, bool record) {
         result.processorError = "the processor changed its input frame";
     }
 #endif
+    // A camera run's focus, after the processor and with no lock held (the controller reads the offer count
+    // under it), while the frame is still the busy one, so a stuck native call shows in the status.
+    if (m_live && m_focus) {
+        try {
+            const std::optional<PageFacts> page =
+                result.processed.guidance ? result.processed.guidance->page : std::nullopt;
+            result.focus = m_focus->next(frame, page);
+            result.processed.findings.push_back(focusFinding(*result.focus));
+            if (result.focus->restoreFailed && !m_restoreFailedReported) {
+                m_restoreFailedReported = true;
+                m_restoreFailure = kFocusRestoreFailed;
+                setMessage(m_messageBase);
+            }
+        } catch (...) {
+            // Nothing leaves the processing thread; the result goes on without focus.
+        }
+    }
     if (record) {
         this->record(frame);
     }
@@ -680,16 +717,44 @@ void Engine::closeDown() {
     stopRecordingNow();
     closeSource();
     m_live = false;
+    endFocusRun();
+}
+
+void Engine::endFocusRun() {
+    if (!m_focus) {
+        return;
+    }
+    const bool changed = m_focus->changedFocus();
+    const bool failedDuringTheRun = m_focus->status().restoreFailed;
+    bool restored = false;
+    try {
+        restored = m_focus->end();
+        m_focus.reset();
+    } catch (...) {
+        m_focus.reset();
+    }
+    m_restoreFailedReported = false;
+    if (!restored || failedDuringTheRun) {
+        m_restoreFailure = kFocusRestoreFailed;
+    } else if (changed) {
+        m_restoreFailure.clear(); // a camera's focus went back this time: it answers again
+    }
 }
 
 // --- Commands, on the processing thread
 // ---------------------------------------------------------------------
 
-void Engine::doStartLive(const std::string& name, std::uint64_t run) {
+void Engine::doStartLive(const std::string& name, std::uint64_t run, std::unique_ptr<FocusControl> focus) {
+    endFocusRun();
     stopRecordingNow();
     closeSource();
     m_live = true;
     m_liveRun = run;
+    // Frames are numbered by the order they were offered; the next one offered gets m_offered.
+    m_focus = std::make_unique<FocusController>(std::move(focus), [this] {
+        const std::lock_guard lock(m_mutex);
+        return m_offered;
+    });
     newGeneration();
     m_onScreen.reset();
     {
@@ -700,11 +765,25 @@ void Engine::doStartLive(const std::string& name, std::uint64_t run) {
         m_status.canStepBack = false;
         m_status.loop = m_loop;
     }
-    setMessage({});
+    setMessage({}); // a failed restore of a camera's focus still shows: setMessage adds it
     setState(EngineState::Live);
 }
 
+void Engine::doFocusAt(std::uint64_t run) {
+    std::optional<std::pair<double, double>> request;
+    {
+        const std::lock_guard lock(m_mutex);
+        request = m_focusRequest;
+        m_focusRequest.reset();
+    }
+    if (!request || !m_live || run != m_liveRun || !m_focus) {
+        return;
+    }
+    m_focus->requestAt(request->first, request->second);
+}
+
 void Engine::doStartReplay(const ReplayOpener& open) {
+    endFocusRun();
     stopRecordingNow();
     closeSource();
     m_live = false;
@@ -750,7 +829,8 @@ void Engine::doStop() {
     stopRecordingNow();
     closeSource();
     m_live = false;
-    setMessage({});
+    endFocusRun();
+    setMessage({}); // nothing, unless a camera's focus could not be put back
     setState(EngineState::Stopped);
 }
 
@@ -1041,6 +1121,10 @@ void Engine::setState(EngineState state) {
 }
 
 void Engine::setMessage(std::string message) {
+    m_messageBase = message;
+    if (!m_restoreFailure.empty()) {
+        message = message.empty() ? m_restoreFailure : message + " · " + m_restoreFailure;
+    }
     const std::lock_guard lock(m_mutex);
     if (m_status.message == message) {
         return;

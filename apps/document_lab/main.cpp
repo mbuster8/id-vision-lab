@@ -1,6 +1,7 @@
 #include "appearance.h"
 #include "application_identity.h"
 #include "camera_backend.h"
+#include "camera_focus.h"
 #include "main_window.h"
 
 #include "visual_debug/client.h"
@@ -21,6 +22,7 @@ int main(int argc, char* argv[]) {
 
     document_lab::LabDependencies dependencies;
     dependencies.cameras = document_lab::makeQtCameraBackend();
+    dependencies.makeFocusControl = document_lab::makeFocusControl;
     dependencies.makeSender = [](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
         return std::make_unique<visual_debug::Client>(visual_debug::ClientOptions{.endpoint = endpoint});
     };
