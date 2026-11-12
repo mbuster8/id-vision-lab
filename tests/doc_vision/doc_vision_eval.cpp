@@ -726,7 +726,7 @@ void runMidv(const Options& options, Scorer& scorer, Run& run) {
     for (const std::string& type : options.inputs) {
         // Reading: clips 00, 04, …, 96, as the spike ran them (spec §6).
         for (int c = 0; c < 100; c += options.read ? 4 : 1) {
-            char clip[8];
+            char clip[12]; // any int: GCC cannot bound the loop's step
             std::snprintf(clip, sizeof clip, "%02d", c);
             std::vector<Annotated> frames = annotatedFrames(*options.midv, type, clip);
             if (frames.empty()) {
