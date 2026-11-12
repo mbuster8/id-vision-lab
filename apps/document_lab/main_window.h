@@ -143,6 +143,7 @@ private:
     void updateShowEntries(const lab_core::LabResult& result);
     void forgetShowEntries();
     void showResults(const lab_core::LabResult& result);
+    void showFindings(const std::vector<lab_core::Finding>& findings, const std::string& processorError = {});
     void colourResults();
     void display(ImageView::KeepView keep);
     void applyPicture(LiveResult result);
@@ -374,7 +375,10 @@ private:
     // A4.1: a TD1 card's front, kept after its back; handled as the scan is.
     std::shared_ptr<const lab_core::FrontShot> m_front;
     std::weak_ptr<const lab_core::FrontShot> m_handledFront;
-    bool m_frontSource = false;  // in TurnOver, the run is a source opened for the front (D11)
+    bool m_frontSource = false; // in TurnOver, the run is a source opened for the front (D11)
+    // The source each side's frame came from, as a save names it: after D11's carry-on they differ.
+    std::string m_scanSourceName;
+    std::string m_frontSourceName;
     bool m_frontSkipped = false; // Skip the front was chosen
     // A state entered without a key (an accept, a front kept) takes Enter and Esc only from this time on, so
     // a press meant for the step before never lands on the next (A4.1, spec §6.5).

@@ -1003,6 +1003,9 @@ void LabWindow::startCameraGranted() {
     m_session = m_dependencies.cameras->start(camera->id, format.value_or(CameraFormat{}));
     if (carryOn) {
         carryTurnOverOn();
+        // A camera started again looks at the side it looked at, most likely still the back: its run's reset
+        // is no turn, as a clip's is. Posted after that reset, so the stage awaits the turn again.
+        m_engine->setFrontStage(true);
     }
     refreshStatus();
 }
@@ -1156,7 +1159,13 @@ void LabWindow::takeResult() {
         frontKept(guidance->front);
     }
     updateShowEntries(*m_current);
-    showResults(*m_current);
+    // Scanned lists the accept's rows (Screen 04's): after a TD1 card's turn-over, this result's are the
+    // front stage's page rows (A4.1).
+    if (scanShowing()) {
+        showFindings(m_scanFindings);
+    } else {
+        showResults(*m_current);
+    }
     display(m_fitNext ? ImageView::KeepView::No : ImageView::KeepView::IfSameSize);
     m_fitNext = false;
     updateScan();
@@ -1182,16 +1191,20 @@ void LabWindow::updateShowEntries(const lab_core::LabResult& result) {
 // A finding as a row of its name and its value, the value coloured by its tone; the tone is kept in the row,
 // so a change of appearance can colour it again.
 void LabWindow::showResults(const lab_core::LabResult& result) {
+    showFindings(result.processed.findings, result.processorError);
+}
+
+void LabWindow::showFindings(const std::vector<lab_core::Finding>& findings,
+                             const std::string& processorError) {
     m_results->clear();
-    for (const lab_core::Finding& finding : result.processed.findings) {
+    for (const lab_core::Finding& finding : findings) {
         auto* row = new QTreeWidgetItem(
             QStringList{QString::fromStdString(finding.name), QString::fromStdString(finding.value)});
         row->setData(1, kToneRole, static_cast<int>(finding.tone));
         m_results->addTopLevelItem(row);
     }
-    if (!result.processorError.empty()) {
-        auto* row =
-            new QTreeWidgetItem(QStringList{tr("error"), QString::fromStdString(result.processorError)});
+    if (!processorError.empty()) {
+        auto* row = new QTreeWidgetItem(QStringList{tr("error"), QString::fromStdString(processorError)});
         row->setData(1, kToneRole, static_cast<int>(lab_core::Finding::Tone::Bad));
         m_results->addTopLevelItem(row);
     }
@@ -1541,8 +1554,12 @@ void LabWindow::updateScan() {
             // focus" shows only while the shown hint is Blurred.
             const std::optional<lab_core::FocusStatus>& focus = drawnResult()->focus;
             chips = guidance->chips;
-            if (focus && focus->state == lab_core::FocusStatus::State::Searching &&
-                guidance->shownHint != doc_vision::Hint::NoPage) {
+            if (turnOver && guidance->frontStage != lab_core::FrontStage::Looking) {
+                // A4.1, spec §6.3: awaiting the turn, its words whatever the hint or a focus search, which
+                // would ask the user to hold still the side they must turn.
+                content = bannerFor(TurnOverBanner::AwaitingTurn);
+            } else if (focus && focus->state == lab_core::FocusStatus::State::Searching &&
+                       guidance->shownHint != doc_vision::Hint::NoPage) {
                 content = bannerFor(FocusBanner::Focusing);
                 chips.passed[static_cast<std::size_t>(doc_vision::Gate::Sharp)] = false;
             } else if (focus && focus->state == lab_core::FocusStatus::State::CannotFocus &&
@@ -1550,11 +1567,8 @@ void LabWindow::updateScan() {
                 content = bannerFor(focus->afterSearch ? FocusBanner::CannotFocusThisClose
                                                        : FocusBanner::CannotMakeSharp);
             } else if (turnOver) {
-                // A4.1, spec §6.3: the turn first, whatever the hint (the back still in view is Good); then
-                // the front's hints. Nothing is read.
-                content = guidance->frontStage == lab_core::FrontStage::Looking
-                              ? frontBannerFor(guidance->shownHint)
-                              : bannerFor(TurnOverBanner::AwaitingTurn);
+                // A4.1, spec §6.3: looking for the front, its own hints. Nothing is read.
+                content = frontBannerFor(guidance->shownHint);
             } else {
                 content = bannerFor(guidance->shownHint);
                 // A4's Reading (spec §3.2): hint 10 with the count and its bar, or why nothing is read.
@@ -1609,6 +1623,7 @@ void LabWindow::accept(std::shared_ptr<const lab_core::MrzScan> scan) {
     m_frontSource = false;
     m_frontSkipped = false;
     m_scanFindings = m_current ? m_current->processed.findings : std::vector<lab_core::Finding>{};
+    m_scanSourceName = m_engine->status().source; // the run this accepted result came from
     m_scannedCard->setKind(lab_core::documentKind(m_scan->mrz));
     m_keysFrom = now() + kKeyGuard;
     applyStep(*step);
@@ -1621,6 +1636,7 @@ void LabWindow::frontKept(std::shared_ptr<const lab_core::FrontShot> front) {
     }
     m_handledFront = front;
     m_front = std::move(front);
+    m_frontSourceName = m_engine->status().source;
     m_keysFrom = now() + kKeyGuard;
     applyStep(*step);
 }
@@ -1657,6 +1673,9 @@ void LabWindow::applyStep(const ScanStep& step) {
             m_scanFrom = m_resultSequence + 1;
         }
         resumeScanning();
+    }
+    if (fromTurnOver && m_scanState == ScanState::Scanned) {
+        showFindings(m_scanFindings); // Skip the front shows no new result: the panel held the front stage's
     }
     showScanState();
 }
@@ -1744,6 +1763,9 @@ void LabWindow::dropScan(bool runContinues) {
         return;
     }
     m_engine->setFrontStage(false); // the stage outlives the processor's reset (spec §6.4)
+    // The processor drops its own scan and front too, and the engine its last result's: Stop resets nothing
+    // else, and a stopped lab would keep the document's frame until the next run (spec §6.9).
+    m_engine->resetProcessor();
     m_scanState = ScanState::Guiding;
     m_scan.reset();
     m_front.reset();
@@ -1941,13 +1963,12 @@ void LabWindow::saveScan() {
     if (!m_saveStamp) {
         m_saveStamp = timeStamp().toStdString();
     }
-    const std::string source = m_engine->status().source;
     std::vector<SideFile> files;
     if (m_scan->mrz.format != doc_vision::MrzFormat::Td1) {
         files.push_back({.side = std::nullopt,
                          .baseName = *m_saveStamp,
                          .frame = m_scan->frame,
-                         .info = {.source = source,
+                         .info = {.source = m_scanSourceName,
                                   .findings = findingsOf(m_scan->gates, true),
                                   .overlays = reviewOverlays(true),
                                   .sections = {mrzSection(m_scan->mrz)}}});
@@ -1956,7 +1977,7 @@ void LabWindow::saveScan() {
             files.push_back({.side = CardSide::Back,
                              .baseName = *m_saveStamp + " back",
                              .frame = m_scan->frame,
-                             .info = {.source = source,
+                             .info = {.source = m_scanSourceName,
                                       .findings = findingsOf(m_scan->gates, true),
                                       .overlays = reviewOverlays(true),
                                       .sections = {mrzSection(m_scan->mrz), cardSection("back")}}});
@@ -1965,7 +1986,7 @@ void LabWindow::saveScan() {
             files.push_back({.side = CardSide::Front,
                              .baseName = *m_saveStamp + " front",
                              .frame = m_front->frame,
-                             .info = {.source = source,
+                             .info = {.source = m_frontSourceName,
                                       .findings = findingsOf(m_front->gates, false),
                                       .overlays = reviewOverlays(true, CardSide::Front),
                                       .sections = {cardSection("front")}}});

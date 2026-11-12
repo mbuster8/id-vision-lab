@@ -204,7 +204,8 @@ A4.1 reads ID cards' MRZ: a TD1 card's on its back (three lines of 30) and a TD2
   the side with the photo". The camera keeps running through it, since the card is turned in front of it; a
   replay pauses, and another clip opened then carries the turn-over on (D11). The Document processor reads nothing
   in this stage: the first frame after the card has been out of view (more than a third of a second, or a new
-  source) on which "Good: hold still" shows and every gate passes is kept as the front. Then the Scanned card says
+  clip; a camera started again still looks at the back, so it waits for the turn again) on which "Good: hold
+  still" shows and every gate passes is kept as the front. Then the Scanned card says
   "ID card scanned", with a card drawn on the reader. A TD2 document goes straight to Scanned. Skip the front
   goes to Scanned without one.
 - **18, Review's two sides.** With a front, Review's bar has a Back | Front switch: the front shows its outline,

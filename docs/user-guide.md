@@ -722,11 +722,12 @@ and TD2, a code starting `I`, `A` or `C`) are accepted; a visa, or a code that d
   photo**; once the card has been out of view for a third of a second, the hints guide you again, hint 1 asking
   for **the side with the photo**, and the first frame on which **Good: hold still** shows and every check
   passes is kept as the front. Nothing is read from it. On a replay the clip pauses with its controls off and the
-  bar says **✓ Back scanned · open the front's clip**: open the clip of the front (or start a camera) and the
-  turn-over goes on there, with that clip's controls on. If the camera stops, the back is kept and the banner says
-  **The camera stopped · start it again, open the front's clip, or skip the front**. Capture and Send Frame are
-  off meanwhile, and the status bar says `State: turn over`. A TD2 document's MRZ is on its front: it goes
-  straight to Scanned.
+  bar says **✓ Back scanned · open the front's clip**: open the clip of the front and the turn-over goes on there,
+  with that clip's controls on; its first frames count as the card turned. If the camera stops, the back is kept
+  and the banner says **The camera stopped · start it again, open the front's clip, or skip the front**; a camera
+  started again, or another camera or format chosen, waits for the card to be taken out of view again. Capture
+  and Send Frame are off meanwhile, and the status bar says `State: turn over`. A TD2 document's MRZ is on its
+  front: it goes straight to Scanned.
 - **Scanned:** on the accept (a TD1 card: once its front is kept or skipped) the frame read best is kept and a
   card shows over it: **Passport scanned** or **ID card scanned**, and to place the passport, or the card, on the
   chip reader, which comes in A5 (until then the card says **Chip reading arrives in A5**). The camera is paused
@@ -737,8 +738,8 @@ and TD2, a code starting `I`, `A` or `C`) are accepted; a visa, or a code that d
 - **Review:** the captured frame with a bar above it to show the document outline, the MRZ band (dashed amber),
   the corner numbers (1 is the page's top left as read) and the gate values; the panel beside it lists the MRZ's
   fields with ✓ for each check digit, dates as `12 Aug 1974`, and a warning when the document has expired (the
-  scan itself still succeeded). An ID card's last row is **Optional data**, where a passport's is **Personal
-  no.**. It shows whatever **View ▸ Results** says, at least 330 px wide. **Save to captures** (Enter) keeps the
+  scan itself still succeeded). An ID card's **Optional data** row stands where a passport's **Personal no.**
+  does. It shows whatever **View ▸ Results** says, at least 330 px wide. **Save to captures** (Enter) keeps the
   frame with every overlay, whatever the check boxes, and the MRZ in the capture's `mrz` section; **Send to the
   viewer** sends it as `lab passport frame N` (a TD2 document: `lab ID card frame N`) with the overlays as
   checked, asking first for another computer; **Discard** and **Scan another** go back to the hints. Esc does

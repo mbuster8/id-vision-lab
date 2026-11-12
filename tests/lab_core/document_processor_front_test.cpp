@@ -52,9 +52,12 @@ struct BackAccepted {
 
     BackAccepted() {
         lab.reader->last = test_support::readingOf(test_support::kTd1Specimen);
+        ProcessorResult last;
         for (; next < 4; ++next) {
-            lab.step(frameAt(goodFrame(), next));
+            last = lab.step(frameAt(goodFrame(), next));
         }
+        // A fatal assertion cannot leave a constructor: the tests built on this say so if it is not.
+        EXPECT_TRUE(last.guidance && last.guidance->scan) << "the back was not accepted";
         lab.processor->setFrontStage(true);
     }
     ProcessorResult step() { return lab.step(frameAt(goodFrame(), next++)); }
