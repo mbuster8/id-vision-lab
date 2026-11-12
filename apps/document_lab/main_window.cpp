@@ -109,27 +109,42 @@ viewer_core::Colour coreColour(const QColor& colour) {
 }
 
 // The Document processor's outline as the canvas's guide (spec §3.5): a thick line on a halo, in the shown
-// hint's colour, with no label. toImageTags keeps one overlay per input and in order
-// (image_tags_conversion.cpp), so the processor's i-th overlay follows the frame's own. The viewer and
-// captures keep the plain "Document" polygon.
+// hint's colour, with no label; and A4's MRZ band as a dashed green guide, not drawn while the lab's focus
+// searches (spec §3.2). toImageTags keeps one overlay per input and in order (image_tags_conversion.cpp), so
+// the processor's i-th overlay follows the frame's own. The viewer and captures keep the plain "Document" and
+// "MRZ band" polygons.
 void markGuide(viewer_core::ImageTags& tags, const lab_core::LabResult& result) {
     const std::optional<lab_core::Guidance>& guidance = result.processed.guidance;
-    if (!guidance || !guidance->outlineOverlay ||
-        *guidance->outlineOverlay >= result.processed.overlays.size()) {
+    if (!guidance) {
         return;
     }
     std::vector<viewer_core::Overlay> overlays = tags.overlayList();
-    const std::size_t index = result.frame.tags.overlays.size() + *guidance->outlineOverlay;
-    auto* polygon = index < overlays.size() ? std::get_if<viewer_core::Polygon>(&overlays[index]) : nullptr;
-    if (polygon == nullptr) {
-        return;
-    }
-    polygon->style = viewer_core::Polygon::Style::Guide;
-    polygon->label.clear();
+    const auto polygonAt = [&](const std::optional<std::size_t>& processorIndex) -> viewer_core::Polygon* {
+        if (!processorIndex || *processorIndex >= result.processed.overlays.size()) {
+            return nullptr;
+        }
+        const std::size_t index = result.frame.tags.overlays.size() + *processorIndex;
+        return index < overlays.size() ? std::get_if<viewer_core::Polygon>(&overlays[index]) : nullptr;
+    };
     // Never green while the lab's focus searches: the lens sweeps through sharp positions (A3.3, spec §3.5).
     const bool searching = result.focus && result.focus->state == lab_core::FocusStatus::State::Searching;
-    polygon->colour =
-        coreColour(guidance->shownHint == doc_vision::Hint::Good && !searching ? kGuideGood : kGuideBad);
+    if (viewer_core::Polygon* outline = polygonAt(guidance->outlineOverlay)) {
+        outline->style = viewer_core::Polygon::Style::Guide;
+        outline->label.clear();
+        outline->colour =
+            coreColour(guidance->shownHint == doc_vision::Hint::Good && !searching ? kGuideGood : kGuideBad);
+    }
+    if (viewer_core::Polygon* band = polygonAt(guidance->bandOverlay)) {
+        if (searching) {
+            const auto index =
+                static_cast<std::ptrdiff_t>(result.frame.tags.overlays.size() + *guidance->bandOverlay);
+            overlays.erase(overlays.begin() + index);
+        } else {
+            band->style = viewer_core::Polygon::Style::GuideDashed;
+            band->label.clear();
+            band->colour = coreColour(kGuideGood);
+        }
+    }
     tags.overlays = viewer_core::makeOverlays(std::move(overlays));
 }
 
@@ -1118,8 +1133,10 @@ void LabWindow::refreshStatus() {
     if (documentChosen() && m_running) {
         const lab_core::Guidance* guidance = drawnGuidance();
         if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
-            parts
-                << tr("State: %1").arg(stateWord(guidance ? guidance->shownHint : doc_vision::Hint::NoPage));
+            parts << tr("State: %1").arg(scanStateWord(guidance));
+            if (guidance != nullptr && guidance->reading && !guidance->reading->available) {
+                parts << tr("MRZ reader: %1").arg(QString::fromStdString(guidance->reading->reason));
+            }
         } else {
             parts << QString::fromStdString(guidance->reason);
         }
@@ -1252,6 +1269,7 @@ void LabWindow::updateScan() {
     }
     m_canvas->setEmptyText(QString()); // the banner is the one message
     std::optional<BannerContent> content;
+    std::optional<int> progress;
     doc_vision::ChipStates chips{};
     if (const lab_core::Guidance* guidance = drawnGuidance()) {
         if (guidance->unavailable != lab_core::Guidance::Unavailable::None) {
@@ -1273,6 +1291,18 @@ void LabWindow::updateScan() {
                                                        : FocusBanner::CannotMakeSharp);
             } else {
                 content = bannerFor(guidance->shownHint);
+                // A4's Reading (spec §3.2): hint 10 with the count and its bar, or why nothing is read.
+                if (guidance->shownHint == doc_vision::Hint::Good && guidance->reading) {
+                    if (!guidance->reading->available) {
+                        content->smallLine = readerUnavailableLine();
+                    } else if (oneFrameSource()) {
+                        content->smallLine = readingNeedsMotion();
+                    } else {
+                        const int agreeing = std::clamp(guidance->reading->agreeing, 0, 3);
+                        content->smallLine = readingLine(agreeing);
+                        progress = agreeing;
+                    }
+                }
             }
         }
     } else if (m_running) {
@@ -1283,7 +1313,22 @@ void LabWindow::updateScan() {
         content = bannerFor(m_cameras.empty() ? WindowState::NoCamera : WindowState::Idle);
     }
     m_banner->setContent(std::move(content));
+    m_banner->setProgress(progress);
     m_chips->setStates(chips);
+}
+
+bool LabWindow::oneFrameSource() const { return m_engine->status().frameCount == std::uint64_t{1}; }
+
+QString LabWindow::scanStateWord(const lab_core::Guidance* guidance) const {
+    if (guidance == nullptr) {
+        return stateWord(doc_vision::Hint::NoPage);
+    }
+    // Hint 10 says "reading" while the reader reads; "good" when it cannot (spec §3.2).
+    const bool reads = guidance->reading && guidance->reading->available && !oneFrameSource();
+    if (guidance->shownHint == doc_vision::Hint::Good && reads) {
+        return stateWord(doc_vision::Hint::NoMrzBand); // "reading"
+    }
+    return stateWord(guidance->shownHint);
 }
 
 // Show lists the pictures of the processor chosen: the earlier one's go, the frame shows until the choice

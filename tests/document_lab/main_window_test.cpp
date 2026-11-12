@@ -1848,6 +1848,11 @@ struct Guided {
     bool page = false;
     lab_core::Guidance::Unavailable unavailable = lab_core::Guidance::Unavailable::None;
     bool facts = false; // the page found in this frame, steady, with sharpness 10: never sharp
+    // A4: the reader reads and this many reads agree; nothing: the processor has no reader.
+    std::optional<int> agreeing{};
+    bool readerAvailable = true; // false: "model missing"
+    bool band = false;           // the MRZ band among the overlays, after the outline
+    std::shared_ptr<const lab_core::MrzScan> scan{};
 };
 
 // A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
@@ -1891,6 +1896,21 @@ lab_core::ProcessorResult guided(const Guided& wanted) {
         facts.frameHint = wanted.shown;
         guidance.page = facts;
     }
+    if (wanted.agreeing) {
+        lab_core::MrzProgress progress;
+        progress.available = wanted.readerAvailable;
+        progress.reason = wanted.readerAvailable ? "" : "model missing";
+        progress.agreeing = *wanted.agreeing;
+        guidance.reading = progress;
+    }
+    if (wanted.band) {
+        guidance.bandOverlay = result.overlays.size();
+        result.overlays.push_back(
+            visual_debug::Polygon{.points = {{120, 330}, {480, 335}, {478, 365}, {118, 360}},
+                                  .label = "MRZ band",
+                                  .colour = visual_debug::kOverlayGreen});
+    }
+    guidance.scan = wanted.scan;
     result.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
     result.guidance = guidance;
     return result;
@@ -2508,6 +2528,143 @@ TEST(LabWindow, FKeyOnlyDuringACameraRun) {
 
     startStop(lab)->click();
     EXPECT_FALSE(focus->isEnabled());
+}
+
+// --- A4: Reading
+// ------------------------------------------------------------------------------------------------
+
+const viewer_core::Polygon* dashedOn(const Lab& lab) {
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);
+        if (polygon != nullptr && polygon->style == viewer_core::Polygon::Style::GuideDashed) {
+            return polygon;
+        }
+    }
+    return nullptr;
+}
+
+QString smallLine(const Lab& lab) {
+    const document_lab::ScanBanner* shown = banner(lab);
+    return shown != nullptr && shown->content() ? shown->content()->smallLine : QStringLiteral("(no banner)");
+}
+
+TEST(LabWindow, ReadingShowsTheCountAndBar) {
+    Lab lab(documentIs(scriptOf(
+        {guided({.shown = Hint::Good, .agreeing = 0}), guided({.shown = Hint::Good, .agreeing = 2})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("Reading the lines at the bottom · 0 of 3"));
+    EXPECT_EQ(banner(lab)->progress(), 0);
+
+    lab.pump();
+    EXPECT_EQ(smallLine(lab), QStringLiteral("Reading the lines at the bottom · 2 of 3"));
+    EXPECT_EQ(banner(lab)->progress(), 2);
+}
+
+// Good without a reader (another lab's processor, or none of A4's) keeps A3.1's banner, with no bar.
+TEST(LabWindow, GoodWithoutAReaderHasNoBar) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_EQ(smallLine(lab), document_lab::bannerFor(Hint::Good).smallLine);
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
+}
+
+// Spec §3.2: while the lab's focus searches, its banner shows over Reading's; the band is not drawn and the
+// bar hides.
+TEST(LabWindow, FocusingHidesReadingAndTheBand) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Good, .agreeing = 1, .band = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_EQ(banner(lab)->progress(), 1);
+    ASSERT_NE(dashedOn(lab), nullptr);
+
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Hold still: focusing"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_EQ(dashedOn(lab), nullptr);
+    EXPECT_NE(guideOn(lab), nullptr); // the outline stays, red
+}
+
+// The processor resolves 12 over 11; the window shows the hint it is given, with the band still drawn.
+TEST(LabWindow, HintTwelveOverEleven) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::CannotReadMrz, .agreeing = 0, .band = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Can't read the lines at the bottom"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("check for glare or fingers; only passports are read for now"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_NE(dashedOn(lab), nullptr);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: reading"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, BandIsADashedGuide) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 0, .band = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    ASSERT_EQ(lab.canvas()->overlays().size(), 2U);
+    const viewer_core::Polygon* band = dashedOn(lab);
+    ASSERT_NE(band, nullptr);
+    EXPECT_EQ(band->label, "");
+    EXPECT_EQ(band->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+    ASSERT_NE(guideOn(lab), nullptr);
+    EXPECT_EQ(guideOn(lab)->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+}
+
+TEST(LabWindow, StatusSaysReading) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Good, .agreeing = 1})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Live · State: reading")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, ReaderUnavailableLine) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 0, .readerAvailable = false})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+    EXPECT_EQ(smallLine(lab),
+              QStringLiteral("The MRZ reader could not be opened · reinstall the Document Lab"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("MRZ reader: model missing")))
+        << lab.status().toStdString();
+}
+
+// Spec §3.1: three reads of one picture are no evidence.
+TEST(LabWindow, OneFrameSourceSaysReadingNeedsMotion) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 0})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 1));
+
+    lab.pump();
+
+    EXPECT_EQ(smallLine(lab), QStringLiteral("MRZ reading needs a camera or a video"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
 }
 
 } // namespace

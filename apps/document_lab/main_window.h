@@ -132,6 +132,10 @@ private:
     const lab_core::Guidance* drawnGuidance() const;
     // The banner, the chips and the canvas's empty text, from the drawn guidance or the window's state.
     void updateScan();
+    // A replay of one frame (an image file): three reads of one picture are no evidence (A4, spec §3.1).
+    bool oneFrameSource() const;
+    // The status line's "State:" word for the drawn guidance.
+    QString scanStateWord(const lab_core::Guidance* guidance) const;
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
