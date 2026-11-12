@@ -78,6 +78,8 @@ constexpr std::array kProcessors{lab_core::ProcessorKind::None, lab_core::Proces
 
 constexpr int kResultsMinimumWidth = 120;
 constexpr int kReviewPanelWidth = 330; // spec §3.4: at least this, whatever View ▸ Results says
+// A4.1, spec §6.5: Enter and Esc wait this long after a state entered without a key (my call; not measured).
+constexpr std::chrono::milliseconds kKeyGuard{300};
 // Where a results row keeps its value's tone (lab_core::Finding::Tone), to colour it again for another
 // appearance.
 constexpr int kToneRole = Qt::UserRole + 1;
@@ -1608,6 +1610,7 @@ void LabWindow::accept(std::shared_ptr<const lab_core::MrzScan> scan) {
     m_frontSkipped = false;
     m_scanFindings = m_current ? m_current->processed.findings : std::vector<lab_core::Finding>{};
     m_scannedCard->setKind(lab_core::documentKind(m_scan->mrz));
+    m_keysFrom = now() + kKeyGuard;
     applyStep(*step);
 }
 
@@ -1618,6 +1621,7 @@ void LabWindow::frontKept(std::shared_ptr<const lab_core::FrontShot> front) {
     }
     m_handledFront = front;
     m_front = std::move(front);
+    m_keysFrom = now() + kKeyGuard;
     applyStep(*step);
 }
 
@@ -1629,6 +1633,7 @@ void LabWindow::applyScanEvent(ScanEvent event) {
     if (event == ScanEvent::SkipFront) {
         m_frontSkipped = true;
     }
+    m_keysFrom.reset(); // the user's own step: the keys follow it at once
     applyStep(*step);
 }
 
@@ -1639,6 +1644,7 @@ void LabWindow::applyStep(const ScanStep& step) {
         m_scan.reset();
         m_front.reset();
         m_frontSource = false;
+        forgetScanInResults();
     }
     pauseFor(step.pause);
     // Before a resume's reset: a processor's front stage outlives reset() (spec §6.4).
@@ -1670,6 +1676,24 @@ void LabWindow::pauseFor(Pause pause) {
     if (m_running && m_engine->status().state == lab_core::EngineState::Playing) {
         m_replayWasPlaying = true;
         m_engine->pause();
+    }
+}
+
+void LabWindow::forgetScanInResults() {
+    const auto forget = [](lab_core::LabResult& result) {
+        if (result.processed.guidance) {
+            result.processed.guidance->scan.reset();
+            result.processed.guidance->front.reset();
+        }
+    };
+    if (m_current) {
+        forget(*m_current);
+    }
+    for (auto& [number, result] : m_drawing) {
+        forget(result);
+    }
+    if (m_onScreen) {
+        forget(*m_onScreen);
     }
 }
 
@@ -1723,6 +1747,7 @@ void LabWindow::dropScan(bool runContinues) {
     m_scanState = ScanState::Guiding;
     m_scan.reset();
     m_front.reset();
+    forgetScanInResults();
     m_frontSource = false;
     m_frontSkipped = false;
     m_cameraPaused = false;
@@ -2334,6 +2359,10 @@ bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
             QApplication::activePopupWidget() == nullptr) {
             // A key held down acts once: its repeats would carry Scanned's Enter on into Review's Save.
             if (key->isAutoRepeat()) {
+                return true;
+            }
+            // Just after a step the user did not take: the press was meant for the one before (A4.1).
+            if (m_keysFrom && now() < *m_keysFrom) {
                 return true;
             }
             if (const std::optional<ScanEvent> scanEvent =

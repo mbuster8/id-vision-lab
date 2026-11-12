@@ -2914,6 +2914,7 @@ TEST(LabWindow, EnterSkipsTheChipEscScansAgain) {
     ASSERT_TRUE(scannedShown(lab));
     const int resets = script->resets;
     const std::size_t processed = script->next;
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QTest::keyClick(lab.canvas(), Qt::Key_Escape);
     lab.pump();
@@ -2924,6 +2925,7 @@ TEST(LabWindow, EnterSkipsTheChipEscScansAgain) {
     EXPECT_FALSE(banner(lab)->isHidden()); // the banner is back
     lab.pump(2);                           // the old scan once more, then Good, then the new scan
     ASSERT_TRUE(scannedShown(lab));
+    lab.advance(400ms);
 
     QTest::keyClick(lab.canvas(), Qt::Key_Return);
 
@@ -2955,6 +2957,7 @@ TEST(LabWindow, HandledScanDoesNotComeBack) {
     lab.replay(framesOf(test_support::cardFrame(), 6));
     lab.pump();
     ASSERT_TRUE(scannedShown(lab));
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QTest::keyClick(lab.canvas(), Qt::Key_Escape);
     lab.pump(3);
@@ -3509,6 +3512,7 @@ TEST(LabWindow, HeldEnterDoesNotSave) {
     lab.replay(framesOf(test_support::cardFrame(), 5));
     lab.pump();
     ASSERT_TRUE(scannedShown(lab));
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(lab.canvas(), &press);
@@ -3585,6 +3589,7 @@ TEST(LabWindow, ScanGoneBackFromIsFreed) {
     lab.pump();
     ASSERT_TRUE(scannedShown(lab));
     ASSERT_FALSE(watch.expired());
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QTest::keyClick(lab.canvas(), Qt::Key_Escape);
     lab.pump(3);
@@ -3906,6 +3911,104 @@ TEST(LabWindow, FrontClipThatFailsKeepsTheBack) {
     EXPECT_TRUE(lab.status().contains(QStringLiteral("no such clip"))) << lab.status().toStdString();
     turnOverButton(lab, "skipFrontButton")->click();
     EXPECT_TRUE(scannedShown(lab));
+}
+
+// Spec §6.5: a state entered without a key (TurnOver on the accept, Scanned when the front is kept) ignores
+// Enter and Esc for 300 ms, so a press meant for the step before never lands on the next.
+TEST(LabWindow, KeyJustAfterAStateChangeIsIgnored) {
+    const auto script =
+        td1Script({turnOverOf(nullptr, lab_core::FrontStage::Looking),
+                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf())});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    EXPECT_TRUE(turnOverShown(lab)); // too soon after the accept
+    cameraFrames(lab, 2);
+    ASSERT_TRUE(scannedShown(lab)); // the front kept, just now
+
+    lab.advance(100ms);
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    EXPECT_TRUE(scannedShown(lab));
+    lab.advance(300ms);
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    EXPECT_FALSE(scannedShown(lab)); // on to Review
+}
+
+// Like the Document processor: the scan on every result from its accept until reset(), the front on every
+// result from its keeping until reset() or the stage's end; the front kept on the first frame after a reset
+// while the stage is on. Both watched by the test.
+class CarriesTheScan : public lab_core::FrameProcessor {
+public:
+    CarriesTheScan(std::weak_ptr<const lab_core::MrzScan>& scan,
+                   std::weak_ptr<const lab_core::FrontShot>& front)
+        : m_watchScan(scan), m_watchFront(front) {}
+    lab_core::ProcessorResult process(const frame_io::Frame&) override {
+        if (!m_accepted) {
+            m_accepted = true;
+            m_scan = idScanOf(kTd1Card);
+            m_watchScan = m_scan;
+            return acceptOf(m_scan);
+        }
+        if (m_stage && m_turned && !m_front) {
+            m_front = frontOf();
+            m_watchFront = m_front;
+        }
+        return turnOverOf(m_scan,
+                          m_turned ? lab_core::FrontStage::Looking : lab_core::FrontStage::AwaitingTurn,
+                          Hint::Good, m_front);
+    }
+    void reset() override {
+        m_scan.reset();
+        m_front.reset();
+        m_turned = true;
+    }
+    void setFrontStage(bool on) override {
+        m_stage = on;
+        m_turned = false;
+        m_front.reset();
+    }
+
+private:
+    std::weak_ptr<const lab_core::MrzScan>& m_watchScan;
+    std::weak_ptr<const lab_core::FrontShot>& m_watchFront;
+    bool m_accepted = false;
+    bool m_stage = false;
+    bool m_turned = false;
+    std::shared_ptr<const lab_core::MrzScan> m_scan;
+    std::shared_ptr<const lab_core::FrontShot> m_front;
+};
+
+// Spec §6.9: a front gone back from leaves no card frame in memory, also on a replay that has ended, where no
+// newer result replaces the ones that carried it.
+TEST(LabWindow, FrontGoneBackFromIsFreedOnAnEndedReplay) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab([&](LabDependencies& dependencies) {
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        dependencies.makeProcessor =
+            [&](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+            if (kind != lab_core::ProcessorKind::Document) {
+                return lab_core::makeProcessor(kind);
+            }
+            return std::make_unique<CarriesTheScan>(scan, front);
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3)); // the back
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    lab.replay(framesOf(test_support::cardFrame(), 1)); // the front, one frame: it ends there
+    lab.pump(3);
+    ASSERT_TRUE(scannedShown(lab));
+    ASSERT_FALSE(front.expired());
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+
+    panelButton(lab, "discardButton")->click();
+    lab.pump(3);
+
+    EXPECT_TRUE(scan.expired());
+    EXPECT_TRUE(front.expired());
 }
 
 TEST(LabWindow, CameraFailureInTurnOverKeepsTheBack) {

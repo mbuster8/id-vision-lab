@@ -172,6 +172,9 @@ private:
     // front there; anywhere else it ends the run and its scan. Whether the turn-over carries on.
     bool endRunForNewSource();
     void carryTurnOverOn();
+    // The results the window still holds lose their scan and front, so a scan gone back from leaves no
+    // passport or card frame in memory, also on a replay that stays paused or has ended (A4.1, spec §6.9).
+    void forgetScanInResults();
     // Stop, another camera, format, source or processor end the scan as Discard does; `runContinues` plays a
     // replay the accept paused.
     void dropScan(bool runContinues);
@@ -355,8 +358,11 @@ private:
     // A4.1: a TD1 card's front, kept after its back; handled as the scan is.
     std::shared_ptr<const lab_core::FrontShot> m_front;
     std::weak_ptr<const lab_core::FrontShot> m_handledFront;
-    bool m_frontSource = false;      // in TurnOver, the run is a source opened for the front (D11)
-    bool m_frontSkipped = false;     // Skip the front was chosen
+    bool m_frontSource = false;  // in TurnOver, the run is a source opened for the front (D11)
+    bool m_frontSkipped = false; // Skip the front was chosen
+    // A state entered without a key (an accept, a front kept) takes Enter and Esc only from this time on, so
+    // a press meant for the step before never lands on the next (A4.1, spec §6.5).
+    std::optional<Clock::time_point> m_keysFrom;
     bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
     bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
     bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
