@@ -642,18 +642,19 @@ found. Connect one, or open a video, an image or a folder of images."
 
 ### The Document processor
 
-**Document** guides you to hold a passport's data page so that the next steps can read it. DocAligner LC100, a
-small page model run on ONNX Runtime, finds the page's four corners in each frame; six checks judge the page;
-and one hint at a time, in a banner at the top of the canvas, says what to change. It works on a camera and on
-every replay, so the checks can be tried on recorded clips. What it says speaks of the **document**, since an ID
-card has no page; until the MRZ is read (A4), the lab cannot tell a passport from a card, and its checks measure
-the passport's data page (TD3).
+**Document** guides you to hold a passport's data page or an ID card so that the next steps can read it.
+DocAligner LC100, a small page model run on ONNX Runtime, finds the page's four corners in each frame; six checks
+judge the page; and one hint at a time, in a banner at the top of the canvas, says what to change. It works on a
+camera and on every replay, so the checks can be tried on recorded clips. What it says speaks of the
+**document**, since an ID card has no page; until the MRZ is read, the lab cannot tell a passport from a card,
+and its checks are those of a passport's data page (TD3): a card, being smaller, must be held closer to pass
+**Size**.
 
 - **The banner** shows the first hint that applies, checked from the top:
 
   | # | When | Banner |
   |---|---|---|
-  | 1 | No page found | Show the document · the side with the photo, all of it in view |
+  | 1 | No page found | Show the document · the side with the lines at the bottom, all of it in view |
   | 2 | The page is cut by the frame's edge | ✗ Move back · the whole document must be in view |
   | 2b | Cut by the edge, but small enough to fit | ✗ Move the document to the middle · the whole document must be in view |
   | 3 | Too far: its longer side under 40% of the frame's | ✗ Move closer |
@@ -696,11 +697,12 @@ work as before.
 
 ### Reading the MRZ
 
-Once every check passes, the Document processor reads the **MRZ**, the two lines of letters, digits and `<` at
-the bottom of a passport's data page, on a thread of its own, with DocsaidLab's MRZScanner (two small models on
-ONNX Runtime). A read counts when every check digit passes; the scan is **accepted** when the same whole MRZ has
-been read on 3 of the last 10 frames read, never pieced together character by character. Only passports (TD3,
-document code `P`) are read for now; ID cards follow.
+Once every check passes, the Document processor reads the **MRZ**, the lines of letters, digits and `<` at the
+bottom of a passport's data page (two) or of an ID card (three on the back of a TD1 card, two on a TD2 document's
+front), on a thread of its own, with DocsaidLab's MRZScanner (two small models on ONNX Runtime). A read counts
+when every check digit passes; the scan is **accepted** when the same whole MRZ has been read on 3 of the last 10
+frames read, never pieced together character by character. Passports (TD3, document code `P`) and ID cards (TD1
+and TD2, a code starting `I`, `A` or `C`) are accepted; a visa, or a code that does not fit its format, never is.
 
 - **Hold still:** while the MRZ is read the banner reads ✓ **Good: hold still** with **Reading the lines at the
   bottom · 2 of 3** and a three-part bar, and the band is outlined dashed green on the canvas (not while the lab's
@@ -711,24 +713,46 @@ document code `P`) are read for now; ID cards follow.
 
   | # | When | Banner |
   |---|---|---|
-  | 12 | Every check passes, but nothing accepted after 5 s | ✗ Can't read the lines at the bottom · check for glare or fingers; only passports are read for now |
-  | 11 | The last read found no band | ✗ Keep your fingers off the two lines at the bottom |
+  | 12 | Every check passes, but nothing accepted after 5 s | ✗ Can't read the lines at the bottom · check for glare or fingers |
+  | 11 | The last read found no band | ✗ Keep your fingers off the lines at the bottom |
 
-- **Scanned:** on the accept the frame read best is kept and a card shows over it: **Passport scanned**, and to
-  place the passport on the chip reader, which comes in A5 (until then the card says **Chip reading arrives in
-  A5**). The camera is paused meanwhile, its session left open so going on is instant; a playing replay pauses.
-  **Skip the chip** (Enter) opens Review; **Scan again** (Esc) drops the frame and goes back to the hints. While
-  the card or Review shows, the replay controls, focusing, Capture and Send Frame are off.
+- **A TD1 card's front:** a TD1 card's MRZ is on its back, so its accept leads to the **turn-over** first. The
+  camera keeps running, and a bar above the canvas says **✓ Back scanned**, with **Skip the front** (Enter) and
+  **Scan again** (Esc). The banner says **Turn the card over · take it out of view, then show the side with the
+  photo**; once the card has been out of view for a third of a second, the hints guide you again, hint 1 asking
+  for **the side with the photo**, and the first frame on which **Good: hold still** shows and every check
+  passes is kept as the front. Nothing is read from it. On a replay the clip pauses with its controls off and the
+  bar says **✓ Back scanned · open the front's clip**: open the clip of the front (or start a camera) and the
+  turn-over goes on there, with that clip's controls on. If the camera stops, the back is kept and the banner says
+  **The camera stopped · start it again, open the front's clip, or skip the front**. Capture and Send Frame are
+  off meanwhile, and the status bar says `State: turn over`. A TD2 document's MRZ is on its front: it goes
+  straight to Scanned.
+- **Scanned:** on the accept (a TD1 card: once its front is kept or skipped) the frame read best is kept and a
+  card shows over it: **Passport scanned** or **ID card scanned**, and to place the passport, or the card, on the
+  chip reader, which comes in A5 (until then the card says **Chip reading arrives in A5**). The camera is paused
+  meanwhile, its session left open so going on is instant; a playing replay pauses. **Skip the chip** (Enter)
+  opens Review; **Scan again** (Esc) drops the frame and goes back to the hints. While the card or Review shows,
+  the replay controls, focusing, Capture and Send Frame are off. Enter and Esc wait 0.3 s after a step you did not
+  take (an accept, a front kept), so a press meant for the step before never lands on the next.
 - **Review:** the captured frame with a bar above it to show the document outline, the MRZ band (dashed amber),
   the corner numbers (1 is the page's top left as read) and the gate values; the panel beside it lists the MRZ's
   fields with ✓ for each check digit, dates as `12 Aug 1974`, and a warning when the document has expired (the
-  scan itself still succeeded). It shows whatever **View ▸ Results** says, at least 330 px wide. **Save to
-  captures** (Enter) keeps the frame with every overlay, whatever the check boxes, and the MRZ in the capture's
-  `mrz` section; **Send to the viewer** sends it as `lab passport frame N` with the overlays as checked, asking
-  first for another computer; **Discard** and **Scan another** go back to the hints. Esc does nothing in Review:
-  it needs a choice. Closing the lab with a scan on screen does not ask: nothing is kept unless you save it.
-- **The status bar** says `State: reading` while it reads, then `Camera paused` (a replay: `Paused`) with
-  `State: scanned, waiting for the chip` or `State: review`. If the reader's models cannot be opened, the banner's
+  scan itself still succeeded). An ID card's last row is **Optional data**, where a passport's is **Personal
+  no.**. It shows whatever **View ▸ Results** says, at least 330 px wide. **Save to captures** (Enter) keeps the
+  frame with every overlay, whatever the check boxes, and the MRZ in the capture's `mrz` section; **Send to the
+  viewer** sends it as `lab passport frame N` (a TD2 document: `lab ID card frame N`) with the overlays as
+  checked, asking first for another computer; **Discard** and **Scan another** go back to the hints. Esc does
+  nothing in Review: it needs a choice. Closing the lab with a scan on screen does not ask: nothing is kept unless
+  you save it.
+- **Review of a TD1 card** with its front: a **Back | Front** switch in the bar shows either side, the front with
+  its outline, corners and gate values (the band has no meaning there). **Save** writes both sides under one time:
+  `<time> back frame N` with the `mrz` section and `<time> front frame M` without it, each JSON with a `card`
+  section saying its `side`. A side that could not be written is named (**Could not save the front: …**), and
+  Save again writes only it, under the same time. **Send** sends the side on screen, as `lab ID card back frame N`
+  or `lab ID card front frame M`, each side with its own outcome. With the front skipped, the pill says so and
+  Save writes the back alone.
+- **The status bar** says `State: reading` while it reads, `State: turn over` during a TD1 card's turn-over, then
+  `Camera paused` (a replay: `Paused`) with `State: scanned, waiting for the chip` or `State: review`. If the reader's models cannot be opened, the banner's
   small line says **The MRZ reader could not be opened · reinstall the Document Lab**, the status bar adds
   `MRZ reader: model missing` (or `ONNX Runtime refused it`), and the hints work as before.
 - **An image file** is one frame, and three reads of one picture are no evidence: the banner says **MRZ reading
@@ -818,12 +842,13 @@ recording replays through **Open Folder…**.
 
 **Capture** keeps the frame on the canvas at full resolution as a PNG, with a JSON beside it (the source, the
 frame's number, its time, its tags, the processor's findings and its overlays: where it found what it found), in
-the `Captures` folder. The JSON's keys come in that order; Review's Save adds an `mrz` section after them.
+the `Captures` folder. The JSON's keys come in that order; Review's Save adds an `mrz` section after them (and, for a TD1 card's
+sides, a `card` section).
 
 The lab's folder is the app's local data folder (`~/Library/Application Support/Document Lab` on a Mac,
 `%LOCALAPPDATA%\Document Lab` on Windows, `~/.local/share/Document Lab` on Linux), which iCloud and OneDrive do
 not sync. **Open Lab Folder** shows it; **Choose Folder…** picks another, with a reminder that recordings may
-show real passports and should stay out of synced or shared folders.
+show real passports or ID cards and should stay out of synced or shared folders.
 
 ### The viewer
 
@@ -837,7 +862,7 @@ The **Viewer** row holds the viewer's address, a mark and a word saying whether 
   cross and **not available** or **invalid address**; **checking…** until the first answer; **no address** with
   the field empty, which also disables the stream and Send Frame.
 - **Another computer.** An address that is not this computer's gets nothing, not even a ping, until you agree,
-  once per address and session, that frames may show real passports and travel there unencrypted; until then
+  once per address and session, that frames may show real passports or ID cards and travel there unencrypted; until then
   the row says **another computer: not checked**, and ▶ or Send Frame asks first. While streaming there, the
   status bar names the host.
 - **▶ Stream** sends each result as it is processed: the frame as the live channel `lab`, with the processor's

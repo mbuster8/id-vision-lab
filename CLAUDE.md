@@ -74,12 +74,13 @@ image folders, recordings and captures; YUV conversion; no Qt) · `libs/doc_visi
 page geometry, quality gates, hint timers, the MRZ's parsing, agreement and reader; no Qt) · `libs/lab_core` (the
 Document Lab's engine, processors, the Document processor and its MRZ worker, the focus controller, and sender; no
 Qt) · `apps/viewer` · `apps/example_sender` · `apps/document_lab` (the window; A4's scan flow, Scanned card and
-Review in `scan_flow`, `scanned_card`, `review_view`) · `apps/qt_common`
+Review in `scan_flow`, `scanned_card`, `review_view`; A4.1's turn-over bar in `turn_over_bar`) · `apps/qt_common`
 (what the apps share, the canvas among it: `ImageView`, `LiveConverter`, `live_drawing`, `overlay_painter`) ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
 `tests/{visual_debug,viewer_core,frame_io,doc_vision,lab_core,qt_common,viewer,example_sender,document_lab,examples}`
-(`tests/doc_vision` also holds `doc_vision_eval`, the evaluation run by hand, and `procedural_page.h`;
+(`tests/doc_vision` also holds `doc_vision_eval`, the evaluation run by hand, its truth in `mrz_truth.h`, and
+`procedural_page.h`;
 `tests/document_lab` holds `document_lab_picture`, which makes the README's picture by hand)
 (`tests/qt_common` also holds the shared Qt test `main()` and helpers) · `tests/wire/header_cases.json` (golden
 headers both senders must write) · `cmake/` (warnings, sanitizers, coverage, app icons: macOS `.icns`, Windows `.ico` via `make_ico.cpp`; Windows UTF-8
@@ -140,9 +141,11 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   processor's `MrzWorker` thread: a job (the page and its frame's record) waits in a slot of one, a newer replaces
   it, and its read is collected at the next `process()`; the reader opens its two models lazily there; the
   worker's destructor cancels a read in progress (`RunOptions::SetTerminate`) and joins. `Engine::resetProcessor()`
-  forgets the scan without a new generation (Scan again, Discard). While Scanned or Review shows, the window hands
-  the engine no camera frames (the session stays open) and pauses a replay it found playing; results that still
-  arrive are taken and change nothing. Processor tests run the worker `Manual` with `pumpReaderForTests()` and a
+  forgets the scan and the front without a new generation (Scan again, Discard), and `Engine::setFrontStage()`
+  turns the Document processor's front stage (A4.1, a TD1 card's turn-over) on or off the same way, on the
+  processing thread; `reset()` keeps the stage. While Scanned or Review shows, the window hands the engine no
+  camera frames (the session stays open) and pauses a replay it found playing; results that still arrive are taken
+  and change nothing. TurnOver hands them on: the front needs frames. Processor tests run the worker `Manual` with `pumpReaderForTests()` and a
   scripted reader. The `ViewerLink` numbers its stills, and says when each ended, so Review's Send never waits
   for ever.
 - **Wire-format changes:** a new optional header field keeps `version` 2, and so does a new message `type` (an
