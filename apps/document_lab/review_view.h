@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scan_flow.h"
 #include "scan_style.h"
 
 #include <doc_vision/mrz.h>
@@ -37,12 +38,17 @@ class ReviewBar : public QWidget {
 public:
     explicit ReviewBar(QWidget* parent = nullptr);
 
+    // On the front, the band has no meaning: off, its box disabled.
     ReviewOverlays overlays() const;
-    // Back to the defaults, with one overlaysChanged: each Review starts from them.
+    // Back to the defaults (and the back), with one overlaysChanged: each Review starts from them.
     void reset();
+    // A4.1, spec §6.7: a TD1 card's Back | Front switch, shown only with a front.
+    void setHasFront(bool hasFront);
+    CardSide side() const { return m_side; }
 
 signals:
     void overlaysChanged(document_lab::ReviewOverlays overlays);
+    void sideChanged(document_lab::CardSide side);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -50,8 +56,12 @@ protected:
 
 private:
     void applyColours();
+    void showSide(CardSide side);
 
     ReviewColours m_colours;
+    CardSide m_side = CardSide::Back;
+    QPushButton* m_backSide = nullptr;
+    QPushButton* m_frontSide = nullptr;
     QLabel* m_title = nullptr;
     QLabel* m_lead = nullptr;
     QCheckBox* m_outline = nullptr;
@@ -78,6 +88,8 @@ public:
     // again.
     void setSaveOutcome(Outcome outcome, const QString& failure = {});
     void setSendOutcome(Outcome outcome, const QString& failure = {});
+    // A4.1: Send off while the other side's still is on its way; the next setSendOutcome sets it again.
+    void setSendAvailable(bool available);
 
 signals:
     void save();

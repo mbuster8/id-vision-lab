@@ -15,9 +15,11 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <string_view>
 
 namespace document_lab {
 
@@ -107,6 +109,21 @@ ReviewBar::ReviewBar(QWidget* parent) : QWidget(parent) {
     m_title->setObjectName(QStringLiteral("reviewBarTitle"));
     m_title->setFont(pixelFont(base, kBarPixels, QFont::Bold));
     row->addWidget(m_title);
+    // A4.1: a TD1 card's two sides, one on the canvas at a time.
+    const auto sideButton = [&](const char* name, const QString& text, CardSide side) {
+        auto* made = new QPushButton(text, this);
+        made->setObjectName(QString::fromLatin1(name));
+        made->setFont(pixelFont(base, kBarPixels));
+        made->setCheckable(true);
+        made->setAutoDefault(false);
+        made->hide();
+        row->addWidget(made);
+        connect(made, &QPushButton::clicked, this, [this, side] { showSide(side); });
+        return made;
+    };
+    m_backSide = sideButton("backSideButton", tr("Back"), CardSide::Back);
+    m_frontSide = sideButton("frontSideButton", tr("Front"), CardSide::Front);
+    m_backSide->setChecked(true);
     m_lead = new QLabel(tr("Show over it:"), this);
     m_lead->setObjectName(QStringLiteral("reviewBarLead"));
     m_lead->setFont(pixelFont(base, kBarPixels));
@@ -133,12 +150,33 @@ ReviewBar::ReviewBar(QWidget* parent) : QWidget(parent) {
 
 ReviewOverlays ReviewBar::overlays() const {
     return {.outline = m_outline->isChecked(),
-            .band = m_band->isChecked(),
+            .band = m_band->isChecked() && m_side == CardSide::Back,
             .corners = m_corners->isChecked(),
             .gates = m_gates->isChecked()};
 }
 
+void ReviewBar::setHasFront(bool hasFront) {
+    m_backSide->setVisible(hasFront);
+    m_frontSide->setVisible(hasFront);
+}
+
+void ReviewBar::showSide(CardSide side) {
+    m_backSide->setChecked(side == CardSide::Back);
+    m_frontSide->setChecked(side == CardSide::Front);
+    m_band->setEnabled(side == CardSide::Back);
+    if (side == m_side) {
+        return;
+    }
+    m_side = side;
+    emit sideChanged(side);
+    emit overlaysChanged(overlays());
+}
+
 void ReviewBar::reset() {
+    {
+        const QSignalBlocker blocker(this);
+        showSide(CardSide::Back);
+    }
     const ReviewOverlays defaults;
     for (auto [box, checked] : {std::pair{m_outline, defaults.outline}, std::pair{m_band, defaults.band},
                                 std::pair{m_corners, defaults.corners}, std::pair{m_gates, defaults.gates}}) {
@@ -289,6 +327,11 @@ void ReviewPanel::setScan(const lab_core::MrzScan& scan, doc_vision::MrzDate tod
         mrzDate(mrz.expiryDate, expiry), fieldText(mrz.optionalData),   tr("check digit")};
     for (std::size_t i = 0; i < m_rows.size(); ++i) {
         Row& row = m_rows[i];
+        // A4.1: TD1 and TD2 have optional data where TD3 has a personal number, with no check digit over it.
+        if (std::string_view(kRowSpecs[i].key) == "personalNumber") {
+            row.label->setText(mrz.format == doc_vision::MrzFormat::Td3 ? tr("Personal no.")
+                                                                        : tr("Optional data"));
+        }
         row.value->setText(values[i]);
         const auto check = kRowSpecs[i].check;
         const std::optional<bool> result = check ? passed(mrz, *check) : std::nullopt;
@@ -334,6 +377,12 @@ void ReviewPanel::setSaveOutcome(Outcome outcome, const QString& failure) {
 void ReviewPanel::setSendOutcome(Outcome outcome, const QString& failure) {
     applyOutcome(m_send, m_sendFailure, outcome, failure, tr("Send to the viewer"), tr("Sending…"),
                  tr("Sent to the viewer ✓"));
+}
+
+void ReviewPanel::setSendAvailable(bool available) {
+    if (!available) {
+        m_send->setEnabled(false);
+    }
 }
 
 void ReviewPanel::applyColours() {
@@ -394,6 +443,9 @@ void GateValuesBox::setRows(const std::vector<lab_core::Finding>& rows) {
                                   : bannerColours(doc_vision::Tone::Neutral).big;
         setTextColour(label, colour);
         m_layout->addWidget(label);
+        // A4.1's side switch replaces the rows while the box shows: a child added then is shown only by a
+        // queued call, and adjustSize() would size the box without it.
+        label->show();
         m_labels.push_back(label);
     }
     adjustSize();

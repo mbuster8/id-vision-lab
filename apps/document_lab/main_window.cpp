@@ -773,6 +773,7 @@ void LabWindow::buildUi() {
         m_gateValues->setVisible(overlays.gates);
         display(ImageView::KeepView::IfSameSize);
     });
+    connect(m_reviewBar, &ReviewBar::sideChanged, this, [this](CardSide side) { showReviewSide(side); });
     connect(m_reviewPanel, &ReviewPanel::save, this, &LabWindow::saveScan);
     connect(m_reviewPanel, &ReviewPanel::send, this, &LabWindow::sendScan);
     connect(m_reviewPanel, &ReviewPanel::discard, this, [this] { applyScanEvent(ScanEvent::Discard); });
@@ -1244,6 +1245,7 @@ void LabWindow::display(ImageView::KeepView keep) {
         }
         image = &m_scan->frame.image;
         if (m_scanState == ScanState::Review) {
+            image = &reviewFrame(m_reviewSide).image; // A4.1: the side the switch shows
             tags = reviewTags();
         } else {
             visual_debug::ImageDescription description = m_scan->frame.tags; // its range, its transfer
@@ -1791,8 +1793,14 @@ void LabWindow::showReview(bool shown) {
         m_scanSaving = false;
         m_sendingStill.reset();
         m_reviewPanel->setScan(*m_scan, today());
-        m_reviewPill->setText(reviewPill(lab_core::documentKind(m_scan->mrz), false));
+        m_reviewPill->setText(reviewPill(lab_core::documentKind(m_scan->mrz), m_frontSkipped));
         m_gateValues->setRows(m_scan->gates);
+        // A4.1: the back first; Send's outcome per side, from nothing.
+        m_reviewSide = CardSide::Back;
+        m_sendOutcomes.fill(static_cast<int>(ReviewPanel::Outcome::Idle));
+        m_sendFailures.fill(QString());
+        m_sendingSide.reset();
+        m_reviewBar->setHasFront(m_front != nullptr);
         m_reviewBar->reset(); // each Review starts from the defaults
         m_gateValues->setVisible(m_reviewBar->overlays().gates);
         m_sizesBeforeReview = m_splitter->sizes();
@@ -1814,21 +1822,23 @@ void LabWindow::showReview(bool shown) {
     m_reviewMarks->setVisible(shown);
 }
 
-std::vector<visual_debug::Overlay> LabWindow::reviewOverlays(bool everything) const {
+std::vector<visual_debug::Overlay> LabWindow::reviewOverlays(bool everything, CardSide side) const {
     std::vector<visual_debug::Overlay> overlays;
     if (!m_scan) {
         return overlays;
     }
+    const bool front = side == CardSide::Front && m_front;
     const ReviewOverlays wanted =
         everything ? ReviewOverlays{.outline = true, .band = true, .corners = true} : m_reviewBar->overlays();
     const auto points = [](const doc_vision::Quad& quad) {
         return std::vector<cv::Point2d>(quad.begin(), quad.end());
     };
+    const doc_vision::Quad& quad = front ? m_front->quad : m_scan->quad;
     if (wanted.outline) {
         overlays.push_back(visual_debug::Polygon{
-            .points = points(m_scan->quad), .label = "Document", .colour = visual_debug::kOverlayGreen});
+            .points = points(quad), .label = "Document", .colour = visual_debug::kOverlayGreen});
     }
-    if (wanted.band) {
+    if (wanted.band && !front) {
         overlays.push_back(visual_debug::Polygon{.points = points(m_scan->band),
                                                  .label = "MRZ band",
                                                  .colour = {static_cast<std::uint8_t>(kBandAmber.red()),
@@ -1837,20 +1847,42 @@ std::vector<visual_debug::Overlay> LabWindow::reviewOverlays(bool everything) co
     }
     // 1 is the page's top left as read, after any turn (spec §3.4).
     if (wanted.corners) {
-        for (std::size_t i = 0; i < m_scan->quad.size(); ++i) {
-            overlays.push_back(visual_debug::Point{.at = m_scan->quad[i],
-                                                   .label = std::to_string(i + 1),
-                                                   .colour = visual_debug::kOverlayGreen});
+        for (std::size_t i = 0; i < quad.size(); ++i) {
+            overlays.push_back(visual_debug::Point{
+                .at = quad[i], .label = std::to_string(i + 1), .colour = visual_debug::kOverlayGreen});
         }
     }
     return overlays;
 }
 
+const frame_io::Frame& LabWindow::reviewFrame(CardSide side) const {
+    return side == CardSide::Front && m_front ? m_front->frame : m_scan->frame;
+}
+
+void LabWindow::showReviewSide(CardSide side) {
+    if (!m_scan) {
+        return;
+    }
+    m_reviewSide = side == CardSide::Front && m_front ? CardSide::Front : CardSide::Back;
+    m_gateValues->setRows(m_reviewSide == CardSide::Front ? m_front->gates : m_scan->gates);
+    applySendOutcome();
+    viewChanged();
+    display(ImageView::KeepView::No);
+}
+
+// The side on screen's outcome; its Send off while the other side's still is on its way.
+void LabWindow::applySendOutcome() {
+    const auto index = static_cast<std::size_t>(m_reviewSide);
+    m_reviewPanel->setSendOutcome(static_cast<ReviewPanel::Outcome>(m_sendOutcomes[index]),
+                                  m_sendFailures[index]);
+    m_reviewPanel->setSendAvailable(!m_sendingSide || *m_sendingSide == m_reviewSide);
+}
+
 viewer_core::ImageTags LabWindow::reviewTags() const {
     // The frame's own tags (a 10-bit frame's value range, an HDR transfer), as Send sends them.
     visual_debug::ImageDescription description =
-        m_scan ? m_scan->frame.tags : visual_debug::ImageDescription{};
-    description.overlays = reviewOverlays(false);
+        m_scan ? reviewFrame(m_reviewSide).tags : visual_debug::ImageDescription{};
+    description.overlays = reviewOverlays(false, m_reviewSide);
     viewer_core::ImageTags tags = toImageTags(description);
     std::vector<viewer_core::Overlay> overlays = tags.overlayList();
     for (viewer_core::Overlay& overlay : overlays) {
@@ -1949,23 +1981,28 @@ void LabWindow::sendScan() {
     if (!m_scan || !m_reviewShown || m_sendingStill) {
         return;
     }
+    const CardSide shown = m_reviewSide;
+    const auto index = static_cast<std::size_t>(shown);
     if (!confirmFor(endpointText())) {
-        m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Idle);
+        m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Idle);
+        applySendOutcome();
         refreshStatus();
         return;
     }
-    visual_debug::ImageDescription description = m_scan->frame.tags;
-    const std::vector<visual_debug::Overlay> overlays = reviewOverlays(false);
+    // A4.1: the side on screen (spec §6.7), its own overlays; a TD1 card's still names its side.
+    const frame_io::Frame& frame = reviewFrame(shown);
+    visual_debug::ImageDescription description = frame.tags;
+    const std::vector<visual_debug::Overlay> overlays = reviewOverlays(false, shown);
     description.overlays.insert(description.overlays.end(), overlays.begin(), overlays.end());
-    // A TD1 card's frame here is its back (A4.1); a passport's and a TD2's have one side.
-    const std::optional<CardSide> side = m_scan->mrz.format == doc_vision::MrzFormat::Td1
-                                             ? std::optional<CardSide>(CardSide::Back)
-                                             : std::nullopt;
+    const std::optional<CardSide> side =
+        m_scan->mrz.format == doc_vision::MrzFormat::Td1 ? std::optional<CardSide>(shown) : std::nullopt;
     m_sendingStill = m_link->sendStill(
-        m_scan->frame.image,
-        stillName(lab_core::documentKind(m_scan->mrz), side, m_scan->frame.number).toStdString(),
+        frame.image, stillName(lab_core::documentKind(m_scan->mrz), side, frame.number).toStdString(),
         std::move(description));
-    m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Busy);
+    m_sendingSide = shown;
+    m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Busy);
+    m_sendFailures[index].clear();
+    applySendOutcome();
     refreshStatus(); // a still refused at once ends here
 }
 
@@ -1975,13 +2012,16 @@ void LabWindow::updateSend(const lab_core::ViewerLink::State& link) {
         return;
     }
     m_sendingStill.reset();
+    const auto index = static_cast<std::size_t>(m_sendingSide.value_or(m_reviewSide));
+    m_sendingSide.reset();
     if (link.lastStill == visual_debug::SendResult::Delivered) {
-        m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Done);
-        return;
+        m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Done);
+    } else {
+        m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Failed);
+        m_sendFailures[index] = link.lastStill ? qtString(visual_debug::toString(*link.lastStill))
+                                               : QString::fromStdString(link.lastStillReason);
     }
-    m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Failed,
-                                  link.lastStill ? qtString(visual_debug::toString(*link.lastStill))
-                                                 : QString::fromStdString(link.lastStillReason));
+    applySendOutcome();
 }
 
 doc_vision::MrzDate LabWindow::today() const {

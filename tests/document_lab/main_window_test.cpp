@@ -4011,6 +4011,69 @@ TEST(LabWindow, FrontGoneBackFromIsFreedOnAnEndedReplay) {
     EXPECT_TRUE(front.expired());
 }
 
+// A camera run that keeps a TD1 card's back, then its front, and is in Review.
+void intoTwoSidedReview(Lab& lab) {
+    startDocumentCamera(lab);
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+}
+
+std::function<void(LabDependencies&)> twoSides() {
+    return [](LabDependencies& dependencies) {
+        camerasAndDocument(td1Script(
+            {turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf())}))(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+    };
+}
+
+// Spec §6.7: Review shows one side at a time, the front with its own gate values; the pill names the card.
+TEST(LabWindow, ReviewShowsEachSide) {
+    Lab lab(twoSides());
+    intoTwoSidedReview(lab);
+    auto* front = reviewBar(lab)->findChild<QPushButton*>("frontSideButton");
+    ASSERT_TRUE(front && front->isVisibleTo(lab.window.get()));
+    EXPECT_EQ(lab.window->findChild<QLabel*>("reviewPill")->text(),
+              QStringLiteral("✓ ID card scanned · chip skipped"));
+    const auto gatesShown = [&lab](const QString& text) {
+        for (const QLabel* label : lab.window->findChildren<QLabel*>()) {
+            if (label->text() == text && label->isVisibleTo(lab.window.get())) {
+                return true;
+            }
+        }
+        return false;
+    };
+    reviewBar(lab)->findChild<QCheckBox*>("gatesBox")->click(); // the gate values box shows
+    EXPECT_TRUE(gatesShown(QStringLiteral("Fill: 62 %")));      // the back's
+
+    front->click();
+
+    EXPECT_TRUE(gatesShown(QStringLiteral("Fill: 58 %"))); // the front's
+    EXPECT_FALSE(gatesShown(QStringLiteral("Fill: 62 %")));
+}
+
+// Spec §6.7: Send sends the side on screen, each with its own outcome.
+TEST(LabWindow, SendPerSide) {
+    Lab lab(twoSides());
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_FALSE(panelButton(lab, "sendButton")->isEnabled()); // the back's Done
+    reviewBar(lab)->findChild<QPushButton*>("frontSideButton")->click();
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled()); // the front not sent yet
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_FALSE(panelButton(lab, "sendButton")->isEnabled());
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    ASSERT_GE(calls.size(), 2U);
+    EXPECT_EQ(calls[calls.size() - 2].name, "lab ID card back frame 8");
+    EXPECT_EQ(calls.back().name, "lab ID card front frame 10");
+}
+
 TEST(LabWindow, CameraFailureInTurnOverKeepsTheBack) {
     Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
     startDocumentCamera(lab);

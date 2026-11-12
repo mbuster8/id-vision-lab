@@ -24,6 +24,7 @@
 #include <QSet>
 #include <QString>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -175,6 +176,10 @@ private:
     // The results the window still holds lose their scan and front, so a scan gone back from leaves no
     // passport or card frame in memory, also on a replay that stays paused or has ended (A4.1, spec §6.9).
     void forgetScanInResults();
+    // A4.1's two-sided Review: the side's frame (the back's when no front), showing a side, Send's outcome.
+    const frame_io::Frame& reviewFrame(CardSide side) const;
+    void showReviewSide(CardSide side);
+    void applySendOutcome();
     // Stop, another camera, format, source or processor end the scan as Discard does; `runContinues` plays a
     // replay the accept paused.
     void dropScan(bool runContinues);
@@ -184,7 +189,8 @@ private:
     // Review (spec §3.4): its bar, its panel in the results' place, the pill and the gate values.
     void showReview(bool shown);
     // Review's overlays: as its check boxes say, or `everything` (a save keeps them all).
-    std::vector<visual_debug::Overlay> reviewOverlays(bool everything) const;
+    // A side's overlays: the front's outline and corners only, its band having no meaning (A4.1).
+    std::vector<visual_debug::Overlay> reviewOverlays(bool everything, CardSide side = CardSide::Back) const;
     viewer_core::ImageTags reviewTags() const; // the canvas's: the outline and the band as guides
     void saveScan();
     void savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error);
@@ -363,9 +369,14 @@ private:
     // A state entered without a key (an accept, a front kept) takes Enter and Esc only from this time on, so
     // a press meant for the step before never lands on the next (A4.1, spec §6.5).
     std::optional<Clock::time_point> m_keysFrom;
-    bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
-    bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
-    bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
+    // A4.1's two-sided Review (spec §6.7): the side on the canvas, and Send's outcome per side.
+    CardSide m_reviewSide = CardSide::Back;
+    std::array<int, 2> m_sendOutcomes{}; // ReviewPanel::Outcome per side, Back first
+    std::array<QString, 2> m_sendFailures;
+    std::optional<CardSide> m_sendingSide; // the side whose still is on its way
+    bool m_cameraPaused = false;           // frames are not handed to the engine; the session stays open
+    bool m_replayWasPlaying = false;       // the accept paused a playing replay: going on plays it again
+    bool m_cameraLost = false; // the camera failed while the scan showed: going on starts it again
     std::vector<lab_core::Finding> m_scanFindings; // the accept's rows (04's), which a save keeps
     bool m_reviewShown = false;
     QList<int> m_sizesBeforeReview;   // the splitter's, given back on leaving Review
