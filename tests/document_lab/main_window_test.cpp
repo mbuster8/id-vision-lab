@@ -1361,6 +1361,29 @@ TEST(LabWindow, CaptureWritesFindingsAsText) {
     EXPECT_EQ(json["findings"], nlohmann::json::array({"Sharpness: 41 (min 200)"})) << json.dump();
 }
 
+// A capture is written on another thread, where nothing would catch a throw (a full memory: a 4K 16-bit PNG
+// needs a large buffer): whatever its writing throws is its error.
+TEST(LabWindow, CaptureThatThrowsSaysSo) {
+    std::vector<std::function<void()>> held; // the captures started, written when the test says
+    Lab lab([&held](LabDependencies& dependencies) {
+        dependencies.immediateCapture = false;
+        dependencies.background = [&held](std::function<void()> job) { held.push_back(std::move(job)); };
+        dependencies.writeCapture = [](const std::filesystem::path&, const std::string&,
+                                       const frame_io::Frame&, const frame_io::CaptureInfo&,
+                                       std::string&) -> std::filesystem::path { throw std::bad_alloc(); };
+    });
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    button(lab, "captureButton")->click();
+    ASSERT_EQ(held.size(), 1U);
+    EXPECT_NO_THROW(held[0]());
+    QApplication::processEvents();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Could not capture the frame: not enough memory")))
+        << lab.status().toStdString();
+}
+
 TEST(LabWindow, CapturesFolderIsPrivate) {
     Lab lab;
     lab.replay(framesOf(test_support::cardFrame()));
@@ -3399,6 +3422,29 @@ TEST(LabWindow, EnterWhileSavingSavesOnce) {
     QApplication::processEvents();
     EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
     EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+// Review's Save is written on another thread too: whatever its writing throws is its error.
+TEST(LabWindow, SaveThatThrowsSaysSo) {
+    std::vector<std::function<void()>> held;
+    Lab lab(scanning([&held](LabDependencies& dependencies) {
+        dependencies.immediateCapture = false;
+        dependencies.background = [&held](std::function<void()> job) { held.push_back(std::move(job)); };
+        dependencies.writeCapture = [](const std::filesystem::path&, const std::string&,
+                                       const frame_io::Frame&, const frame_io::CaptureInfo&,
+                                       std::string&) -> std::filesystem::path {
+            throw std::runtime_error("disk gone");
+        };
+    }));
+    intoReview(lab);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    ASSERT_EQ(held.size(), 1U);
+    EXPECT_NO_THROW(held[0]());
+    QApplication::processEvents();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Could not save the scan: disk gone")))
+        << lab.status().toStdString();
 }
 
 // F1: Enter held down in Scanned skips the chip once; its repeats save nothing in Review.

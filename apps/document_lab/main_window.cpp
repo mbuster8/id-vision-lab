@@ -270,6 +270,29 @@ QString stateText(lab_core::EngineState state) {
     return {};
 }
 
+// Capture's and Review's Save's writing, the PNG's path or empty with the error. It runs on a pool's thread,
+// where nothing would catch a throw (QThreadPool does not: std::terminate), so whatever it throws (a full
+// memory, a filesystem error) is its error.
+using CaptureWriter = decltype(LabDependencies::writeCapture);
+std::pair<std::filesystem::path, std::string> writeCaptureFile(const CaptureWriter& writer,
+                                                               const std::filesystem::path& folder,
+                                                               const std::string& baseName,
+                                                               const frame_io::Frame& frame,
+                                                               const frame_io::CaptureInfo& info) {
+    try {
+        std::string error;
+        std::filesystem::path written = writer ? writer(folder, baseName, frame, info, error)
+                                               : frame_io::writeCapture(folder, baseName, frame, info, error);
+        return {std::move(written), std::move(error)};
+    } catch (const std::bad_alloc&) {
+        return {{}, "not enough memory"};
+    } catch (const std::exception& exception) {
+        return {{}, exception.what()};
+    } catch (...) {
+        return {{}, "unknown error"};
+    }
+}
+
 } // namespace
 
 QString formatPosition(std::chrono::nanoseconds at, std::chrono::nanoseconds length) {
@@ -1729,10 +1752,8 @@ void LabWindow::saveScan() {
     const frame_io::Frame frame = m_scan->frame; // shares the pixels, which nothing changes
     const std::string baseName = timeStamp().toStdString();
     const std::filesystem::path path = toPath(folder);
-    auto write = [path, baseName, frame, info]() -> std::pair<std::filesystem::path, std::string> {
-        std::string error;
-        std::filesystem::path written = frame_io::writeCapture(path, baseName, frame, info, error);
-        return {std::move(written), std::move(error)};
+    auto write = [writer = m_dependencies.writeCapture, path, baseName, frame, info] {
+        return writeCaptureFile(writer, path, baseName, frame, info);
     };
     m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Busy);
     m_scanSaving = true;
@@ -2078,17 +2099,15 @@ void LabWindow::capture() {
                                      .overlays = m_onScreen->processed.overlays};
     const std::string baseName = timeStamp().toStdString();
     const std::filesystem::path path = toPath(folder);
-    auto write = [path, baseName, frame, info]() -> std::pair<std::filesystem::path, std::string> {
-        std::string error;
-        std::filesystem::path written = frame_io::writeCapture(path, baseName, frame, info, error);
-        return {std::move(written), std::move(error)};
+    auto write = [writer = m_dependencies.writeCapture, path, baseName, frame, info] {
+        return writeCaptureFile(writer, path, baseName, frame, info);
     };
     if (m_dependencies.immediateCapture) {
         const auto [written, error] = write();
         captured(written, error);
         return;
     }
-    QThreadPool::globalInstance()->start([write, window = QPointer<LabWindow>(this)] {
+    std::function<void()> job = [write, window = QPointer<LabWindow>(this)] {
         auto [written, error] = write();
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
@@ -2098,7 +2117,12 @@ void LabWindow::capture() {
                 }
             },
             Qt::QueuedConnection);
-    });
+    };
+    if (m_dependencies.background) {
+        m_dependencies.background(std::move(job));
+    } else {
+        QThreadPool::globalInstance()->start(std::move(job));
+    }
 }
 
 void LabWindow::captured(const std::filesystem::path& file, const std::string& error) {

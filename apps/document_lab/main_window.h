@@ -9,6 +9,7 @@
 #include "scan_flow.h"
 #include "scan_words.h"
 
+#include <frame_io/capture.h>
 #include <frame_io/recording.h>
 #include <lab_core/engine.h>
 #include <lab_core/processors.h>
@@ -80,6 +81,11 @@ struct LabDependencies {
     bool immediateCapture = false;
     // Where a capture or a save is written when not immediate; null: Qt's global thread pool.
     std::function<void(std::function<void()>)> background;
+    // Writes a capture or a save; null: frame_io::writeCapture. Tests throw here.
+    std::function<std::filesystem::path(const std::filesystem::path& folder, const std::string& baseName,
+                                        const frame_io::Frame& frame, const frame_io::CaptureInfo& info,
+                                        std::string& error)>
+        writeCapture;
     std::function<std::uintmax_t(const std::filesystem::path&)> freeSpace; // null: what the volume has
     std::function<bool(const QString& question)> confirm;                  // null: a QMessageBox
     std::function<QString()> chooseFile;
