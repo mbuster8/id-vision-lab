@@ -233,12 +233,13 @@ TEST(DocumentProcessorMrz, OlderResetsReadIsDropped) {
     EXPECT_EQ(result.guidance->reading->agreeing, 0);
 }
 
-TEST(DocumentProcessorMrz, OnlyPassportsCount) {
+// A4.1's D1: a passport or an ID card's MRZ is accepted; a visa's, valid as it is, is not.
+TEST(DocumentProcessorMrz, OnlySupportedDocumentsCount) {
     std::string visa = kLine1;
     visa[0] = 'V';
-    const std::vector<doc_vision::MrzReading> others{
-        readingOf("I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<", "D231458907UTO7408122F1204159<<<<<<<6"), // TD2
-        readingOf(visa, kLine2)};
+    std::vector<std::string> td1Visa = test_support::kTd1Specimen;
+    td1Visa[0][0] = 'V';
+    const std::vector<doc_vision::MrzReading> others{readingOf(visa, kLine2), readingOf(td1Visa)};
     for (const doc_vision::MrzReading& other : others) {
         Reading lab;
         lab.reader->last = other;
@@ -249,6 +250,33 @@ TEST(DocumentProcessorMrz, OnlyPassportsCount) {
         ASSERT_TRUE(result.guidance && result.guidance->reading);
         EXPECT_EQ(result.guidance->reading->agreeing, 0);
         EXPECT_FALSE(result.guidance->scan);
+    }
+}
+
+// ICAO's TD1 card (its back) and TD2 document are accepted as a passport is, and Screen 04's rows name them.
+TEST(DocumentProcessorMrz, AcceptsIdCards) {
+    struct Case {
+        doc_vision::MrzReading reading;
+        doc_vision::MrzFormat format;
+        std::string formatRow;
+    };
+    const std::vector<Case> cases{
+        {readingOf(test_support::kTd1Specimen), doc_vision::MrzFormat::Td1, "TD1 ID card"},
+        {readingOf("I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<", "D231458907UTO7408122F1204159<<<<<<<6"),
+         doc_vision::MrzFormat::Td2, "TD2 ID card"}};
+    for (const Case& c : cases) {
+        Reading lab;
+        lab.reader->last = c.reading;
+        for (int n = 0; n < 3; ++n) {
+            lab.step(frameAt(goodFrame(), n));
+        }
+        const ProcessorResult accepted = lab.step(frameAt(goodFrame(), 3));
+        ASSERT_TRUE(accepted.guidance && accepted.guidance->scan) << c.formatRow;
+        EXPECT_EQ(accepted.guidance->scan->mrz.format, c.format);
+        ASSERT_TRUE(findingNamed(accepted, "Format"));
+        EXPECT_EQ(findingNamed(accepted, "Format")->value, c.formatRow);
+        ASSERT_TRUE(findingNamed(accepted, "Check digits"));
+        EXPECT_EQ(findingNamed(accepted, "Check digits")->value, "4 of 4 pass");
     }
 }
 

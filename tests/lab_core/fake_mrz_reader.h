@@ -14,6 +14,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace test_support {
@@ -126,6 +127,17 @@ inline doc_vision::MrzReading readingOf(const std::string& line1, const std::str
     reading.recogniseTime = std::chrono::milliseconds(100);
     return reading;
 }
+
+// The same, with any number of lines: ICAO's TD1 card (three of 30), say.
+inline doc_vision::MrzReading readingOf(std::vector<std::string> lines) {
+    doc_vision::MrzReading reading = readingOf(std::string(), std::string());
+    reading.lines = std::move(lines);
+    return reading;
+}
+
+// ICAO Doc 9303's TD1 specimen (Part 5): the back of a Utopian identity card, no real person.
+inline const std::vector<std::string> kTd1Specimen{
+    "I<UTOD231458907<<<<<<<<<<<<<<<", "7408122F1204159UTO<<<<<<<<<<<6", "ERIKSSON<<ANNA<MARIA<<<<<<<<<<"};
 
 // A reading that found no band.
 inline doc_vision::MrzReading noBand() {

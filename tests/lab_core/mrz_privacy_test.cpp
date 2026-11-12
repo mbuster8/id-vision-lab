@@ -35,12 +35,15 @@ using test_support::scriptedReader;
 
 // The specimen's lines, and the fields a leak would most likely show.
 std::vector<std::string> secrets() {
-    return {test_support::kSpecimenLine1,
-            test_support::kSpecimenLine2,
-            "ERIKSSON",
-            "ANNA",
-            "L898902C3",
-            "ZE184226B"};
+    std::vector<std::string> all{test_support::kSpecimenLine1,
+                                 test_support::kSpecimenLine2,
+                                 "ERIKSSON",
+                                 "ANNA",
+                                 "L898902C3",
+                                 "ZE184226B",
+                                 "D23145890"}; // the TD1 card's document number (A4.1)
+    all.insert(all.end(), test_support::kTd1Specimen.begin(), test_support::kTd1Specimen.end());
+    return all;
 }
 
 // Whether `text` holds any of them; the one it holds, in `which`.
@@ -113,6 +116,19 @@ TEST(MrzPrivacy, ProcessorKeepsTheMrzOutOfFindingsAndLabels) {
     }
     EXPECT_TRUE(
         accepted); // the specimen was read, agreed on and accepted: the rows after it were checked too
+}
+
+// A4.1: the same for an ID card's MRZ, read and accepted.
+TEST(MrzPrivacy, ProcessorKeepsAnIdCardsMrzOut) {
+    Reading reading;
+    reading.reader->last = readingOf(test_support::kTd1Specimen);
+    bool accepted = false;
+    for (int n = 0; n < 15; ++n) {
+        const ProcessorResult result = reading.step(n);
+        expectNoMrzIn(result, "frame " + std::to_string(n));
+        accepted = accepted || (result.guidance && result.guidance->scan);
+    }
+    EXPECT_TRUE(accepted);
 }
 
 // Reads that fail (an error, a thrown read, lines that do not check) leave nothing of what was read either.

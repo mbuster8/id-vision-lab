@@ -136,6 +136,7 @@ id_vision_lab_copy_runtime_dlls(doc_vision_eval)
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
+        lab_core/document_kind_test.cpp
         lab_core/document_outline_test.cpp
         lab_core/document_processor_mrz_test.cpp
         lab_core/document_processor_test.cpp

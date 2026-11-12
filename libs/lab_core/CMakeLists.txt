@@ -4,6 +4,7 @@
 find_package(Threads REQUIRED)
 
 add_library(lab_core STATIC
+    include/lab_core/document_kind.h
     include/lab_core/document_outline.h
     include/lab_core/document_processor.h
     include/lab_core/engine.h

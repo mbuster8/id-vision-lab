@@ -94,6 +94,20 @@ std::vector<Finding> gateRows(const std::vector<Finding>& findings) {
 
 double seconds(std::chrono::nanoseconds time) { return std::chrono::duration<double>(time).count(); }
 
+// Screen 04's Format row: the MRZ's size and what it says the document is (A4.1, spec §6.2); only a passport
+// is accepted in TD3's size (Mrz::supported).
+std::string formatRow(const doc_vision::Mrz& mrz) {
+    switch (mrz.format) {
+    case doc_vision::MrzFormat::Td1:
+        return "TD1 ID card";
+    case doc_vision::MrzFormat::Td2:
+        return "TD2 ID card";
+    case doc_vision::MrzFormat::Td3:
+        break;
+    }
+    return "TD3 passport";
+}
+
 } // namespace
 
 DocumentProcessor::DocumentProcessor(MakeFinder makeFinder, doc_vision::Thresholds thresholds, Reader reader)
@@ -105,8 +119,8 @@ DocumentProcessor::DocumentProcessor(MakeFinder makeFinder, doc_vision::Threshol
 
 bool DocumentProcessor::pumpReaderForTests() { return m_worker && m_worker->pump(); }
 
-// The reads finished since the last frame: an older reset's dropped, an error only shown, a valid passport
-// read added to the agreement with its frame kept, an accept made into the scan.
+// The reads finished since the last frame: an older reset's dropped, an error only shown, a valid read of a
+// supported document added to the agreement with its frame kept, an accept made into the scan.
 void DocumentProcessor::collectReads() {
     for (MrzDone& done : m_worker->take()) {
         if (done.resetCount != m_resetCount || m_scan) {
@@ -129,7 +143,7 @@ void DocumentProcessor::collectReads() {
         m_turned = done.turned;
         const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(done.reading.lines);
         const std::uint64_t number = done.record.frame.number;
-        if (!mrz || !mrz->valid() || !mrz->passport() || m_agreement.holds(number)) {
+        if (!mrz || !mrz->valid() || !mrz->supported() || m_agreement.holds(number)) {
             continue;
         }
         std::string text = mrz->text();
@@ -213,7 +227,7 @@ std::vector<Finding> DocumentProcessor::scanFindings() const {
         passed += check.passed ? 1 : 0;
     }
     return {{"MRZ", "accepted, 3 of 3", Tone::Good},
-            {"Format", "TD3 passport", Tone::Plain},
+            {"Format", formatRow(m_scan->mrz), Tone::Plain},
             {"Check digits",
              wholeNumber(static_cast<double>(passed)) + " of " +
                  wholeNumber(static_cast<double>(m_scan->mrz.checks.size())) + " pass",

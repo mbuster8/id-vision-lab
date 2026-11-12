@@ -66,8 +66,8 @@ public:
     bool pumpReaderForTests();
 
 private:
-    // A valid passport read's frame, kept while its read is in the agreement's window: only the sharpest per
-    // MRZ text.
+    // A valid read's frame (of a supported document), kept while its read is in the agreement's window: only
+    // the sharpest per MRZ text.
     struct Kept {
         std::string text;
         MrzFrameRecord record;
