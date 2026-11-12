@@ -80,6 +80,9 @@ bool allFiller(std::string_view field) {
 bool lettersOrFiller(std::string_view field) {
     return std::all_of(field.begin(), field.end(), [](char c) { return isLetter(c) || c == kFiller; });
 }
+// ICAO 9303's sexes: F, M, X, or '<' when unspecified. No check digit covers the sex, so a misread letter is
+// caught here or not at all.
+bool isSex(char c) { return c == 'F' || c == 'M' || c == 'X' || c == kFiller; }
 
 // A birth date's six characters: the year's two digits, then the month and the day, each two digits or `<<`.
 bool birthWellFormed(std::string_view date) {
@@ -202,10 +205,9 @@ std::optional<Mrz> parseTd3(std::string line1, std::string line2) {
     addCheck(mrz, MrzCheck::Composite, checkPasses(composite, l2[43]));
 
     mrz.wellFormed = lettersOrFiller(l1) && isDigit(l2[9]) && lettersOrFiller(l2.substr(10, 3)) &&
-                     birthWellFormed(l2.substr(13, 6)) && isDigit(l2[19]) &&
-                     lettersOrFiller(l2.substr(20, 1)) && allOf(l2.substr(21, 6), isDigit) &&
-                     isDigit(l2[27]) && (isDigit(l2[42]) || (l2[42] == kFiller && emptyPersonal)) &&
-                     isDigit(l2[43]);
+                     birthWellFormed(l2.substr(13, 6)) && isDigit(l2[19]) && isSex(l2[20]) &&
+                     allOf(l2.substr(21, 6), isDigit) && isDigit(l2[27]) &&
+                     (isDigit(l2[42]) || (l2[42] == kFiller && emptyPersonal)) && isDigit(l2[43]);
     mrz.lines = {std::move(line1), std::move(line2)};
     return mrz;
 }
@@ -242,9 +244,8 @@ std::optional<Mrz> parseTd2(std::string line1, std::string line2) {
     addCheck(mrz, MrzCheck::Composite, checkPasses(composite, l2[35]));
 
     mrz.wellFormed = lettersOrFiller(l1) && isDigit(number.check) && lettersOrFiller(l2.substr(10, 3)) &&
-                     birthWellFormed(l2.substr(13, 6)) && isDigit(l2[19]) &&
-                     lettersOrFiller(l2.substr(20, 1)) && allOf(l2.substr(21, 6), isDigit) &&
-                     isDigit(l2[27]) && isDigit(l2[35]);
+                     birthWellFormed(l2.substr(13, 6)) && isDigit(l2[19]) && isSex(l2[20]) &&
+                     allOf(l2.substr(21, 6), isDigit) && isDigit(l2[27]) && isDigit(l2[35]);
     mrz.lines = {std::move(line1), std::move(line2)};
     return mrz;
 }
@@ -285,7 +286,7 @@ std::optional<Mrz> parseTd1(std::string line1, std::string line2, std::string li
     addCheck(mrz, MrzCheck::Composite, checkPasses(composite, l2[29]));
 
     mrz.wellFormed = lettersOrFiller(l1.substr(0, 5)) && isDigit(number.check) &&
-                     birthWellFormed(l2.substr(0, 6)) && isDigit(l2[6]) && lettersOrFiller(l2.substr(7, 1)) &&
+                     birthWellFormed(l2.substr(0, 6)) && isDigit(l2[6]) && isSex(l2[7]) &&
                      allOf(l2.substr(8, 6), isDigit) && isDigit(l2[14]) &&
                      lettersOrFiller(l2.substr(15, 3)) && isDigit(l2[29]) && lettersOrFiller(l3);
     mrz.lines = {std::move(line1), std::move(line2), std::move(line3)};

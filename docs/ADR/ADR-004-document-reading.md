@@ -79,7 +79,8 @@ Options considered, by concern (measured figures are from that spike):
 7. **A4's reader is MRZScanner** on the flattened page, run on a cadence (a few reads a second, on frames that
    pass the gates). PP-OCRv6 small is the measured fallback.
 8. **The MRZ parser is ours** (ICAO Doc 9303's TD1, TD2 and TD3), with field-aware correction; a read counts only
-   when every check digit passes.
+   when every check digit passes. No check digit covers line 1, the nationality or the sex: the sex must be F, M,
+   X or `<`, and the rest is protected by agreement alone (A4).
 9. **Agreement is whole-MRZ, M of the last K frames** (3 of 10 to start), reset for a new document. No
    per-character combination, weights or estimated results. The reads that agree are of different frames: one
    read a frame (A4).

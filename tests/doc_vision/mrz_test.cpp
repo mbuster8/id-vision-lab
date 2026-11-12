@@ -294,6 +294,26 @@ TEST(MrzParse, MixedFieldBlindSpotIsValid) {
     EXPECT_TRUE(mrz->valid());
 }
 
+// Final review F3: no check digit covers the sex (nor the nationality), so a misread letter there would pass
+// every check. Only F, M, X or '<' is a sex: anything else is not well formed.
+TEST(MrzParse, SexOtherThanFmxIsNotWellFormed) {
+    for (const char sex : {'F', 'M', 'X', '<'}) {
+        std::string line2 = kTd3Line2;
+        line2[20] = sex;
+        const std::optional<Mrz> mrz = parseMrz({kTd3Line1, line2});
+        ASSERT_TRUE(mrz) << sex;
+        EXPECT_TRUE(mrz->valid()) << sex;
+    }
+    for (const char sex : {'E', 'N', 'A'}) {
+        std::string line2 = kTd3Line2;
+        line2[20] = sex;
+        const std::optional<Mrz> mrz = parseMrz({kTd3Line1, line2});
+        ASSERT_TRUE(mrz) << sex;
+        EXPECT_FALSE(mrz->wellFormed) << sex;
+        EXPECT_FALSE(mrz->valid()) << sex;
+    }
+}
+
 TEST(MrzParse, LongDocumentNumberTd1) {
     const std::string line1 = "I<UTOD23145890<7349<<<<<<<<<<<";
     ASSERT_EQ(line1.size(), 30u);
