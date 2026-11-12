@@ -163,12 +163,13 @@ void DocumentProcessor::accept(const doc_vision::Mrz& mrz, const MrzDone& accept
     const doc_vision::Quad bandOnPage =
         kept->turned ? doc_vision::unturned(kept->bandOnPage, doc_vision::kPageSize) : kept->bandOnPage;
     const doc_vision::Quad band = doc_vision::pageToFrame(bandOnPage, quad, doc_vision::kPageSize);
-    // The right way up: a page read turned has its top left at the flattened page's bottom right.
+    // The right way up: a page read turned has its top left at the flattened page's bottom right. The band is
+    // already in its order as read (the reader's corners on the page it read), and mapping keeps that order.
     const std::size_t shift = kept->turned ? 2 : 0;
     for (std::size_t i = 0; i < 4; ++i) {
         scan.quad[i] = quad[(i + shift) % 4];
-        scan.band[i] = band[(i + shift) % 4];
     }
+    scan.band = band;
     scan.gates = kept->record.gates;
     scan.mrz = mrz;
     scan.timeToScan = accepting.record.frame.at - accepting.record.firstPageAt;

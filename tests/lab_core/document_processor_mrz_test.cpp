@@ -497,6 +497,10 @@ TEST(DocumentProcessorMrz, ScanQuadIsUpright) {
     // The band, turned back, lies along the page's bottom as read: next to corners 3 and 4 (the frame's top).
     const doc_vision::Quad& band = result.guidance->scan->band;
     EXPECT_LT((band[0].y + band[1].y + band[2].y + band[3].y) / 4, (kQuad[0].y + kQuad[3].y) / 2);
+    // Final review F4: its corner 1 is its top left as read, as the quad's is. The page is upside down in the
+    // frame, so going right along the band as read goes left in the frame, and going down goes up.
+    EXPECT_GT(band[0].x, band[1].x);
+    EXPECT_GT(band[0].y, band[3].y);
 }
 
 } // namespace
