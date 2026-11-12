@@ -56,6 +56,7 @@ public:
     struct Calls {
         std::vector<std::uint64_t> processed;
         int resets = 0;
+        std::vector<bool> frontStages;
     };
 
     explicit CountingProcessor(Calls& calls, std::string name = "counting")
@@ -73,6 +74,7 @@ public:
         return {.overlays = {}, .images = {}, .findings = {lab_core::Finding{m_name, ""}}};
     }
     void reset() override { ++m_calls.resets; }
+    void setFrontStage(bool on) override { m_calls.frontStages.push_back(on); }
 
     std::optional<std::uint64_t> throwAt;
     bool writeInput = false;
@@ -1522,6 +1524,78 @@ TEST(Engine, ResetProcessorKeepsTheRun) {
     EXPECT_EQ(h.engine.status().generation, generation);
     EXPECT_TRUE(h.engine.status().recording);
     EXPECT_EQ(h.engine.status().state, EngineState::Paused);
+}
+
+// A4.1: the window turns the Document processor's front stage on and off; on the processing thread, with no
+// new generation, as resetProcessor.
+TEST(Engine, SetFrontStageReachesTheProcessor) {
+    Harness h;
+    CountingProcessor::Calls calls;
+    h.engine.setProcessor(std::make_unique<CountingProcessor>(calls));
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    pausedAt(h, 2);
+    const std::uint64_t generation = h.engine.status().generation;
+
+    h.engine.setFrontStage(true);
+    h.engine.setFrontStage(false);
+    h.engine.pump();
+
+    EXPECT_EQ(calls.frontStages, (std::vector<bool>{true, false}));
+    EXPECT_EQ(h.engine.status().generation, generation);
+}
+
+// Like the Document processor, its results carry the scan and the front on every result until reset(): both
+// made on its first frame (the engine resets a processor it is given), and watched by the test.
+class CarryingProcessor : public lab_core::FrameProcessor {
+public:
+    CarryingProcessor(std::weak_ptr<const lab_core::MrzScan>& scan,
+                      std::weak_ptr<const lab_core::FrontShot>& front)
+        : m_watchScan(scan), m_watchFront(front) {}
+    lab_core::ProcessorResult process(const frame_io::Frame&) override {
+        if (!m_made) {
+            m_made = true;
+            m_scan = std::make_shared<const lab_core::MrzScan>();
+            m_front = std::make_shared<const lab_core::FrontShot>();
+            m_watchScan = m_scan;
+            m_watchFront = m_front;
+        }
+        lab_core::Guidance guidance;
+        guidance.scan = m_scan;
+        guidance.front = m_front;
+        return {.overlays = {}, .images = {}, .findings = {}, .guidance = guidance};
+    }
+    void reset() override {
+        m_scan.reset();
+        m_front.reset();
+    }
+
+private:
+    std::weak_ptr<const lab_core::MrzScan>& m_watchScan;
+    std::weak_ptr<const lab_core::FrontShot>& m_watchFront;
+    bool m_made = false;
+    std::shared_ptr<const lab_core::MrzScan> m_scan;
+    std::shared_ptr<const lab_core::FrontShot> m_front;
+};
+
+// A4.1, spec §6.9: after Scan again or Discard on a replay that stays paused, no newer result replaces the
+// last one, which a sender set later is given; it must not keep the passport's or the card's frames.
+TEST(Engine, ResetProcessorDropsTheScanFromTheLastResult) {
+    Harness h;
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    h.engine.setProcessor(std::make_unique<CarryingProcessor>(scan, front));
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    pausedAt(h, 2);
+    h.engine.step();
+    h.engine.pump(); // frame 3's result waits in the slot, untaken
+    ASSERT_FALSE(scan.expired());
+    ASSERT_FALSE(front.expired());
+
+    h.engine.resetProcessor();
+    h.engine.pump();
+
+    EXPECT_TRUE(scan.expired());
+    EXPECT_TRUE(front.expired());
 }
 
 // The plan review: a processor swap while its MRZ reader is busy cancels the read, so the next command is
