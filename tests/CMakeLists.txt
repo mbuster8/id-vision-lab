@@ -140,9 +140,11 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/document_processor_test.cpp
         lab_core/engine_test.cpp
         lab_core/fake_focus_control.h
+        lab_core/fake_mrz_reader.h
         lab_core/focus_controller_test.cpp
         lab_core/fake_sender.h
         lab_core/list_source.h
+        lab_core/mrz_worker_test.cpp
         lab_core/processors_test.cpp
         lab_core/result_sender_test.cpp
         lab_core/viewer_link_test.cpp
