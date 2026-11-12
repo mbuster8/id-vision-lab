@@ -105,7 +105,7 @@ Verdicts GateJudge::judge(const Measures& measures) {
     Verdicts v;
     const bool cut = lowFails(m_edgeMargin, t.edgeMargin, measures.edgeMargin);
     v.passed[index(Gate::InView)] = !cut;
-    v.cutButWouldFit = cut && measures.longerSide < t.fitsWithin;
+    v.cutButWouldFit = cut && !highFails(m_fits, t.fitsWithin, measures.longerSide);
 
     v.tooFar = lowFails(m_longerSide, t.longerSide, measures.longerSide);
     v.tooClose = highFails(m_extent, t.extent, measures.extent);
@@ -126,8 +126,8 @@ Verdicts GateJudge::judge(const Measures& measures) {
 }
 
 void GateJudge::reset() {
-    for (State* state :
-         {&m_edgeMargin, &m_longerSide, &m_extent, &m_tilt, &m_sharpness, &m_glare, &m_dark, &m_bright}) {
+    for (State* state : {&m_edgeMargin, &m_longerSide, &m_extent, &m_tilt, &m_sharpness, &m_glare, &m_dark,
+                         &m_bright, &m_fits}) {
         state->failing.reset();
     }
 }

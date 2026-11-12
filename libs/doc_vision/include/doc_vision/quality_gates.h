@@ -53,8 +53,9 @@ struct Thresholds {
     Band dark{70.0, 75.0};         // median luma; fails under
     Band bright{215.0, 210.0};     // median luma; fails over
     double clippedBright = 0.25;   // a share at 250 or more over this is too bright too
-    // A cut page whose longer side is under this would fit: "Move the page to the middle".
-    double fitsWithin = 0.70;
+    // A cut page whose longer side is not over this would fit: "Move the document to the middle". Too large
+    // to fit, it fits again only under the band's second value, so hint 2 and 2b do not flip at the edge.
+    Band fitsWithin{0.70, 0.67}; // fails over: too large to fit
 };
 
 struct Verdicts {
@@ -88,7 +89,7 @@ private:
     bool highFails(State& state, const Band& band, double value); // failing when too high
 
     Thresholds m_thresholds;
-    State m_edgeMargin, m_longerSide, m_extent, m_tilt, m_sharpness, m_glare, m_dark, m_bright;
+    State m_edgeMargin, m_longerSide, m_extent, m_tilt, m_sharpness, m_glare, m_dark, m_bright, m_fits;
 };
 
 } // namespace doc_vision

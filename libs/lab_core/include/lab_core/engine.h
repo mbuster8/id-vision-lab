@@ -71,6 +71,7 @@ struct EngineHooks {
     std::function<void()> resultReady;      // a result entered the empty slot
     std::function<void()> statusChanged;    // the state, the message or the recording changed
     std::function<Clock::time_point()> now; // null: Clock::now
+    std::function<void()> retiringSender;   // tests throw here, as a full memory would while a sender retires
 };
 
 // Moves frames from a source through the processor to the window, the recorder and the sender, on one
@@ -173,10 +174,13 @@ private:
         std::uint64_t notSent = 0;
     };
     // The seek the window asked for and the processing thread has not done yet: an absolute frame, steps from
-    // it (or from the frame on screen), or both.
+    // it (or from the frame on screen), or both. Its number is the one its doSeek command carries: a request
+    // made after another source, a stop or a restart is posted behind that command, so an older doSeek still
+    // in the mailbox ahead of it must leave it alone.
     struct SeekRequest {
         std::optional<std::uint64_t> absolute;
         std::int64_t relative = 0;
+        std::uint64_t number = 0;
     };
     // What one turn of the processing loop found to wait for.
     struct Turn {
@@ -210,7 +214,7 @@ private:
     void doPlay();
     void doPause();
     void doStep();
-    void doSeek();
+    void doSeek(std::uint64_t number);
     void doRestart();
     void doSetLoop(bool on);
     void doSetAsFastAsPossible(bool on);
@@ -223,6 +227,7 @@ private:
 
     void newGeneration();
     void clearSeeking();
+    void showRunningSeek();
     void stopFailedRecording();
     void stopAfterThrow(const std::string& what);
     void stopRecordingNow(const std::string& message = {});
@@ -276,6 +281,7 @@ private:
     std::deque<std::function<void()>> m_commands;
     std::optional<Pending> m_pending;
     std::optional<SeekRequest> m_seekRequest; // a doSeek command is in the mailbox while there is one
+    std::uint64_t m_seekRequests = 0;         // seek requests made, which numbers them
     std::optional<std::pair<double, double>> m_focusRequest; // the newest click, for doFocusAt
     bool m_acceptLive = false;
     std::uint64_t m_offered = 0;

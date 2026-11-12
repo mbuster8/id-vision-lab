@@ -257,11 +257,31 @@ void RecordingWriter::completeIfDone() {
     if (!m_finishing || m_finished || !m_jobs.empty() || m_writing > 0) {
         return;
     }
+    leaveOutFramesAfterAGap();
     std::string error;
     if (!writeJson(true, error) && m_failure.empty()) {
         m_failure = error;
     }
     m_finished = true;
+}
+
+// A replay numbers frames by their place in the list, so the list stops at the first frame not written. With
+// several writer threads, frames after a failed one may already have been being written when it failed: they
+// are removed and counted as not recorded, so the folder holds what the list says.
+void RecordingWriter::leaveOutFramesAfterAGap() {
+    const auto gap =
+        std::find_if(m_entries.begin(), m_entries.end(), [](const Entry& entry) { return !entry.written; });
+    for (auto entry = gap; entry != m_entries.end(); ++entry) {
+        if (!entry->written) {
+            continue;
+        }
+        std::error_code
+            ignored; // a file left behind is not replayed: a complete recording plays its list only
+        std::filesystem::remove(m_folder / entry->file, ignored);
+        entry->written = false;
+        --m_written;
+        ++m_notRecorded;
+    }
 }
 
 bool RecordingWriter::writeJson(bool complete, std::string& error) const {
@@ -270,7 +290,7 @@ bool RecordingWriter::writeJson(bool complete, std::string& error) const {
         m_entries.empty() ? visual_debug::ImageDescription{} : m_entries.front().tags;
     for (const Entry& entry : m_entries) {
         if (!entry.written) {
-            continue;
+            break;
         }
         nlohmann::json frame{{"file", entry.file}, {"at", entry.at.count()}};
         if (entry.tags != first) {
@@ -289,7 +309,9 @@ bool RecordingWriter::writeJson(bool complete, std::string& error) const {
                          {{"droppedBeforeProcessing", m_counts.droppedBeforeProcessing},
                           {"notDrawn", m_counts.notDrawn},
                           {"notSent", m_counts.notSent},
-                          {"notRecorded", m_counts.notRecorded}}}};
+                          // The caller's count was taken from progress() before the finish, and the
+                          // writer's own only grows, so the larger is the later.
+                          {"notRecorded", std::max(m_counts.notRecorded, m_notRecorded)}}}};
     if (!m_failure.empty()) {
         json["failure"] = m_failure;
     }

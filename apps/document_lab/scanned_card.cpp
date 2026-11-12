@@ -146,11 +146,9 @@ ScannedCard::ScannedCard(QWidget* parent) : QWidget(parent) {
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->setAttribute(Qt::WA_TranslucentBackground);
     m_scroll->viewport()->setAutoFillBackground(false);
-    m_scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
     outer->addWidget(m_scroll);
 
     auto* holder = new QWidget;
-    holder->setAutoFillBackground(false);
     auto* column = new QVBoxLayout(holder);
     column->setContentsMargins(0, 0, 0, 0);
     auto* row = new QHBoxLayout;
@@ -180,23 +178,32 @@ ScannedCard::ScannedCard(QWidget* parent) : QWidget(parent) {
     m_check = new CheckCircle(m_body);
     items->addWidget(m_check, 0, Qt::AlignHCenter);
 
+    // Centred by their own alignment, not the layout's: a word-wrapped label the layout aligns gets its size
+    // hint's height, not the height its width needs, and its last lines are cut off on a narrow canvas.
     const auto label = [&](const char* name, const QString& text, int pixels, QFont::Weight weight) {
         auto* made = new QLabel(text, m_body);
         made->setObjectName(QString::fromLatin1(name));
         made->setFont(pixelFont(base, pixels, weight));
         made->setAlignment(Qt::AlignHCenter);
         made->setWordWrap(true);
-        items->addWidget(made, 0, Qt::AlignHCenter);
         return made;
     };
     m_title = label("scannedTitle", tr("Passport scanned"), 34, QFont::ExtraBold);
+    items->addWidget(m_title);
     m_headline = label("scannedHeadline", tr("Now place the passport on the chip reader"), 22, QFont::Bold);
+    items->addWidget(m_headline);
     m_explanation =
         label("scannedExplanation",
               tr("Close it and lay the cover flat on the reader. For most passports the chip is in "
                  "the cover or the data page."),
               16, QFont::Normal);
     m_explanation->setMaximumWidth(kExplanationWidth);
+    // Narrower than the card: centred between stretches, which keep its height for its width.
+    auto* explanationRow = new QHBoxLayout;
+    explanationRow->addStretch(1);
+    explanationRow->addWidget(m_explanation, 100);
+    explanationRow->addStretch(1);
+    items->addLayout(explanationRow);
 
     m_illustration = new ReaderIllustration(m_body);
     items->addWidget(m_illustration, 0, Qt::AlignHCenter);
@@ -237,8 +244,12 @@ ScannedCard::ScannedCard(QWidget* parent) : QWidget(parent) {
         "scannedNote",
         tr("The captured frame is kept until you choose: save, send or discard it after the chip step."), 13,
         QFont::Normal);
+    items->addWidget(m_note);
 
     m_scroll->setWidget(holder);
+    // After setWidget, which turns it on: the holder would paint a flat fill over the dimmed frame around the
+    // card.
+    holder->setAutoFillBackground(false);
     applyColours();
 }
 

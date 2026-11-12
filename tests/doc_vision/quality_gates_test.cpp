@@ -222,4 +222,22 @@ TEST(QualityGates, CutButWouldFit) {
     EXPECT_FALSE(large.judge(m).cutButWouldFit);
 }
 
+// A3.1's deferred item: a cut page whose size hovers at the 70% cut-off kept flipping between "Move back" and
+// "Move the document to the middle". Too large to fit over 0.70, it fits again only under 0.67.
+TEST(QualityGates, CutButWouldFitHasHysteresis) {
+    doc_vision::GateJudge judge;
+    Measures m = goodMeasures();
+    m.edgeMargin = 0.005;
+    const auto fitsAt = [&](double longerSide) {
+        m.longerSide = longerSide;
+        return judge.judge(m).cutButWouldFit;
+    };
+    EXPECT_TRUE(fitsAt(0.69));
+    EXPECT_FALSE(fitsAt(0.71));
+    EXPECT_FALSE(fitsAt(0.69)); // still too large: within the band
+    EXPECT_FALSE(fitsAt(0.68));
+    EXPECT_TRUE(fitsAt(0.66));
+    EXPECT_TRUE(fitsAt(0.69)); // fits until over 0.70 again
+}
+
 } // namespace

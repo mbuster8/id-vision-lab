@@ -1311,6 +1311,55 @@ TEST(LabWindow, CaptureKeepsTheFrameOnScreen) {
     EXPECT_EQ(cv::norm(cv::imread(pngs[0].string()), first, cv::NORM_INF), 0.0);
 }
 
+// A2's F19: when the canvas lags two results or more, the picture drawn is of neither the newest result nor
+// the one before it; Capture still keeps the frame whose picture is on screen, not an older one.
+TEST(LabWindow, CaptureKeepsTheFrameOnScreenWhenTheCanvasLags) {
+    test_support::Latch second;
+    test_support::Latch fourth;
+    Lab lab([&](LabDependencies& dependencies) {
+        dependencies.conversionMode = LiveConverter::Mode::Threaded;
+        dependencies.conversion = [&](const LiveJob& job) {
+            if (job.frameNumber == 2) {
+                second.hold();
+            } else if (job.frameNumber == 4) {
+                fourth.hold();
+            }
+            return convertLiveFrame(job);
+        };
+    });
+    std::vector<frame_io::ReadResult> frames;
+    for (int index = 0; index < 4; ++index) {
+        frames.push_back(
+            {.status = frame_io::ReadStatus::Frame,
+             .frame = test_support::listFrame(static_cast<std::uint64_t>(index), 0ms,
+                                              cv::Mat(48, 64, CV_8UC3, cv::Scalar::all(10 * (index + 1)))),
+             .error = {}});
+    }
+    lab.replay(frames);
+    lab.pump();
+    ASSERT_TRUE(waitForPictures(*lab.window, 1));
+    lab.pump(); // the second's picture is held converting
+    ASSERT_TRUE(second.waitUntilEntered());
+    lab.pump(); // the third's waits
+    lab.pump(); // the fourth's replaces it
+    second.release();
+    ASSERT_TRUE(waitForPictures(*lab.window, 2)); // the second's is on screen
+    ASSERT_TRUE(fourth.waitUntilEntered());
+
+    button(lab, "captureButton")->click();
+    fourth.release();
+
+    std::vector<std::filesystem::path> pngs;
+    for (const auto& entry : std::filesystem::directory_iterator(lab.folder.path() / "Captures")) {
+        if (entry.path().extension() == ".png") {
+            pngs.push_back(entry.path());
+        }
+    }
+    ASSERT_EQ(pngs.size(), 1U);
+    EXPECT_TRUE(pngs[0].filename().string().ends_with(" frame 2.png")) << pngs[0];
+    EXPECT_EQ(cv::imread(pngs[0].string()).at<cv::Vec3b>(0, 0)[0], 20);
+}
+
 // A capture keeps where the processor found what it found, not only its findings.
 TEST(LabWindow, CaptureKeepsTheOverlays) {
     Lab lab;
@@ -1359,6 +1408,29 @@ TEST(LabWindow, CaptureWritesFindingsAsText) {
     std::ifstream stream(jsons[0]);
     const nlohmann::json json = nlohmann::json::parse(stream);
     EXPECT_EQ(json["findings"], nlohmann::json::array({"Sharpness: 41 (min 200)"})) << json.dump();
+}
+
+// A capture is written on another thread, where nothing would catch a throw (a full memory: a 4K 16-bit PNG
+// needs a large buffer): whatever its writing throws is its error.
+TEST(LabWindow, CaptureThatThrowsSaysSo) {
+    std::vector<std::function<void()>> held; // the captures started, written when the test says
+    Lab lab([&held](LabDependencies& dependencies) {
+        dependencies.immediateCapture = false;
+        dependencies.background = [&held](std::function<void()> job) { held.push_back(std::move(job)); };
+        dependencies.writeCapture = [](const std::filesystem::path&, const std::string&,
+                                       const frame_io::Frame&, const frame_io::CaptureInfo&,
+                                       std::string&) -> std::filesystem::path { throw std::bad_alloc(); };
+    });
+    lab.replay(framesOf(test_support::cardFrame()));
+    lab.pump();
+
+    button(lab, "captureButton")->click();
+    ASSERT_EQ(held.size(), 1U);
+    EXPECT_NO_THROW(held[0]());
+    QApplication::processEvents();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Could not capture the frame: not enough memory")))
+        << lab.status().toStdString();
 }
 
 TEST(LabWindow, CapturesFolderIsPrivate) {
@@ -3399,6 +3471,29 @@ TEST(LabWindow, EnterWhileSavingSavesOnce) {
     QApplication::processEvents();
     EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
     EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+// Review's Save is written on another thread too: whatever its writing throws is its error.
+TEST(LabWindow, SaveThatThrowsSaysSo) {
+    std::vector<std::function<void()>> held;
+    Lab lab(scanning([&held](LabDependencies& dependencies) {
+        dependencies.immediateCapture = false;
+        dependencies.background = [&held](std::function<void()> job) { held.push_back(std::move(job)); };
+        dependencies.writeCapture = [](const std::filesystem::path&, const std::string&,
+                                       const frame_io::Frame&, const frame_io::CaptureInfo&,
+                                       std::string&) -> std::filesystem::path {
+            throw std::runtime_error("disk gone");
+        };
+    }));
+    intoReview(lab);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    ASSERT_EQ(held.size(), 1U);
+    EXPECT_NO_THROW(held[0]());
+    QApplication::processEvents();
+
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("Could not save the scan: disk gone")))
+        << lab.status().toStdString();
 }
 
 // F1: Enter held down in Scanned skips the chip once; its repeats save nothing in Review.

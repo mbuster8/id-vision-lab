@@ -185,10 +185,8 @@ ReviewPanel::ReviewPanel(QWidget* parent) : QWidget(parent) {
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->viewport()->setAutoFillBackground(false);
-    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
     outer->addWidget(scroll);
     auto* content = new QWidget;
-    content->setAutoFillBackground(false);
     auto* column = new QVBoxLayout(content);
     column->setContentsMargins(kPanelPadding, kPanelPadding, kPanelPadding, kPanelPadding);
     column->setSpacing(12);
@@ -275,6 +273,9 @@ ReviewPanel::ReviewPanel(QWidget* parent) : QWidget(parent) {
     m_note->setWordWrap(true);
     column->addWidget(m_note);
     scroll->setWidget(content);
+    // After setWidget, which turns it on: the content would paint the palette it started with over the
+    // panel's card colour, so an appearance switch left it dark under light-mode text.
+    content->setAutoFillBackground(false);
     applyColours();
 }
 

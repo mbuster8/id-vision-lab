@@ -30,6 +30,16 @@ std::size_t bytesOf(const frame_io::Frame& frame) { return frame.image.total() *
 
 std::uint64_t since(std::uint64_t now, std::uint64_t then) { return now > then ? now - then : 0; }
 
+// Steps from a frame, in signed arithmetic, so a step back from frame 0 stays there rather than wrapping
+// round to the last frame; and no further than the last.
+std::uint64_t seekTargetOf(std::uint64_t from, std::int64_t steps, std::optional<std::uint64_t> count) {
+    std::int64_t wanted = std::max<std::int64_t>(0, static_cast<std::int64_t>(from) + steps);
+    if (count && *count > 0) {
+        wanted = std::min(wanted, static_cast<std::int64_t>(*count - 1));
+    }
+    return static_cast<std::uint64_t>(wanted);
+}
+
 #if !defined(NDEBUG)
 bool samePixels(const cv::Mat& before, const cv::Mat& after) {
     if (before.empty() || after.empty()) {
@@ -180,29 +190,33 @@ void Engine::step() {
 }
 
 void Engine::seek(std::uint64_t index) {
-    bool first = false;
+    std::optional<std::uint64_t> first; // the new request's number, when there was none waiting
     {
         const std::lock_guard lock(m_mutex);
-        first = !m_seekRequest;
-        m_seekRequest = SeekRequest{.absolute = index, .relative = 0};
+        if (!m_seekRequest) {
+            m_seekRequest = SeekRequest{.number = ++m_seekRequests};
+            first = m_seekRequest->number;
+        }
+        m_seekRequest->absolute = index;
+        m_seekRequest->relative = 0;
     }
     if (first) {
-        post([this] { doSeek(); });
+        post([this, number = *first] { doSeek(number); });
     }
 }
 
 void Engine::seekBy(std::int64_t frames) {
-    bool first = false;
+    std::optional<std::uint64_t> first;
     {
         const std::lock_guard lock(m_mutex);
-        first = !m_seekRequest;
-        if (first) {
-            m_seekRequest = SeekRequest{};
+        if (!m_seekRequest) {
+            m_seekRequest = SeekRequest{.number = ++m_seekRequests};
+            first = m_seekRequest->number;
         }
         m_seekRequest->relative += frames;
     }
     if (first) {
-        post([this] { doSeek(); });
+        post([this, number = *first] { doSeek(number); });
     }
 }
 
@@ -279,6 +293,14 @@ std::optional<LabResult> Engine::takeResult() {
 EngineStatus Engine::status() const {
     const std::lock_guard lock(m_mutex);
     EngineStatus status = m_status;
+    // An absolute seek whose command has not run yet is shown at once, so a refresh meanwhile leaves the
+    // slider's handle where the user let it go; doSeek shows it on when it takes the request. A request
+    // dropped before then (another source, a stop, a restart) is no longer shown.
+    if (m_seekRequest && m_seekRequest->absolute) {
+        status.seeking = true;
+        status.seekTarget =
+            seekTargetOf(*m_seekRequest->absolute, m_seekRequest->relative, m_status.frameCount);
+    }
     if (m_recorder) {
         status.recordingProgress = m_recorder->progress();
     } else if (!m_finishing.empty()) {
@@ -420,12 +442,16 @@ void Engine::stopAfterThrow(const std::string& what) {
         const std::lock_guard lock(m_mutex);
         m_status.busyFrame.reset();
         m_status.busySince.reset();
+        // doSeek may have shown a target before the throw, with no seek running for clearSeeking() to end.
+        m_status.seeking = false;
+        m_status.seekTarget.reset();
         m_seekRequest.reset();
         m_focusRequest.reset();
         pending = std::move(m_pending);
         m_pending.reset();
         m_acceptLive = false;
     }
+    m_seekTarget.reset();
     m_held.reset();
     m_waitingToRecord.reset();
     try {
@@ -868,39 +894,50 @@ void Engine::doStep() {
     }
 }
 
-// Steps count from the seek still running, else from the frame on screen; in signed arithmetic, so a step
-// back from frame 0 stays there rather than wrapping round to the last frame.
-void Engine::doSeek() {
+// Steps count from the seek still running, else from the frame on screen.
+void Engine::doSeek(std::uint64_t number) {
     std::optional<SeekRequest> request;
     {
         const std::lock_guard lock(m_mutex);
-        request.swap(m_seekRequest);
+        if (m_seekRequest && m_seekRequest->number == number) {
+            request.swap(m_seekRequest); // else a newer one, whose own command is behind this one
+            if (request->absolute) {
+                // status() showed it while it waited: shown on until it is done or found not needed.
+                m_status.seeking = true;
+                m_status.seekTarget =
+                    seekTargetOf(*request->absolute, request->relative, m_status.frameCount);
+            }
+        }
     }
-    if (!request || m_live || !m_source || !m_source->canSeek()) {
+    if (!request) {
+        return;
+    }
+    if (m_live || !m_source || !m_source->canSeek()) {
+        showRunningSeek();
         return;
     }
     const std::uint64_t from = request->absolute ? *request->absolute
                                : m_seekTarget    ? *m_seekTarget
                                : m_onScreen      ? m_onScreen->number
                                                  : m_nextIndex;
-    std::int64_t wanted = std::max<std::int64_t>(0, static_cast<std::int64_t>(from) + request->relative);
-    const std::optional<std::uint64_t> count = m_source->frameCount();
-    if (count && *count > 0) {
-        wanted = std::min(wanted, static_cast<std::int64_t>(*count - 1));
-    }
-    const auto target = static_cast<std::uint64_t>(wanted);
+    const std::uint64_t target = seekTargetOf(from, request->relative, m_source->frameCount());
     // A seek already running to that frame goes on: a slider click asks on its press and its release, and ←
     // held at the first frame keeps asking for frame 0.
     if (m_seekTarget == target) {
+        showRunningSeek();
         return;
     }
     // A step back at the first frame, paused: nothing to do, and no reason to end a recording.
     if (m_state == EngineState::Paused && !m_seekTarget && m_onScreen && m_onScreen->number == target) {
+        showRunningSeek();
         return;
     }
     const bool playing = m_state == EngineState::Playing;
     setMessage({});
     stopRecordingNow(kReplayMoved);
+    // So newGeneration() leaves the status saying "seeking": the new target replaces the old one below, and a
+    // refresh in between never puts the handle back on the frame on screen.
+    m_seekTarget.reset();
     newGeneration();
     m_source->seek(target);
     m_nextIndex = target;
@@ -1000,11 +1037,21 @@ void Engine::doPauseSending(bool paused) {
 }
 
 void Engine::doStopSending(bool endChannels) {
-    retireSender(endChannels);
-    if (endChannels) {
-        const std::lock_guard lock(m_mutex);
-        --m_endsAsked; // the retiree, if there was one, now says whether it is ending
+    const auto answered = [this, endChannels] {
+        if (endChannels) {
+            const std::lock_guard lock(m_mutex);
+            --m_endsAsked; // the retiree, if there was one, now says whether it is ending
+        }
+    };
+    try {
+        retireSender(endChannels);
+    } catch (...) {
+        // A throw (memory exhausted) stops the run, and still answers the call: else ▶ stays disabled and
+        // shutDown() never says the window may close.
+        answered();
+        throw;
     }
+    answered();
 }
 
 // The sender goes on a thread of its own, after ending its channels when asked, so a send in progress to a
@@ -1020,6 +1067,9 @@ void Engine::retireSender(bool endChannels) {
     }
     if (!old) {
         return;
+    }
+    if (m_hooks.retiringSender) {
+        m_hooks.retiringSender();
     }
     try {
         std::future<void> retiring =
@@ -1055,6 +1105,17 @@ void Engine::newGeneration() {
     m_stepWanted = false;
     m_pacer.restart();
     clearSeeking();
+}
+
+// The status as the processing thread knows it: the seek running, if any. doSeek uses it to take back the
+// target it showed for a request that needed no seek.
+void Engine::showRunningSeek() {
+    {
+        const std::lock_guard lock(m_mutex);
+        m_status.seeking = m_seekTarget.has_value();
+        m_status.seekTarget = m_seekTarget;
+    }
+    m_notifyStatus = true;
 }
 
 // The seek's frame was shown, or will never be: the end, an error, a new run.

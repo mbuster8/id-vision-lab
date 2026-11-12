@@ -66,7 +66,18 @@ FocusStatus FocusController::next(const frame_io::Frame& frame, const std::optio
     try {
         step(frame, page);
     } catch (...) {
-        // Nothing leaves the processing thread: the status stays as it was.
+        // Nothing leaves the processing thread. A throw part-way through a step (memory exhausted) may have
+        // left a search half-begun or the camera's autofocus off, so the lab gives up as when a call fails:
+        // the camera's focus is put back, and the lab leaves it alone for the rest of the run.
+        try {
+            giveUp();
+        } catch (...) {
+            m_search.reset();
+            m_reachable = false;
+            m_status.state = FocusStatus::State::Camera;
+            m_status.position.reset();
+            m_status.countingFrom = 0;
+        }
     }
     m_status.controllable = canFocus();
     m_status.blurredFirstSince = m_blurredSince;
@@ -373,6 +384,7 @@ bool FocusController::moveTo(int position, const frame_io::Frame& frame) {
     m_changed = true;
     const int units = std::abs(position - search.lensFrom);
     search.lensFrom = position;
+    search.movedAt = frame.at;
     search.settle = kSettleBase + kSettlePerUnit * std::max(0, units - kSettleFreeUnits);
     search.waitFrom = m_nextOffer ? m_nextOffer() : frame.number + 1;
     search.firstCountingAt.reset();
@@ -386,9 +398,11 @@ void FocusController::searchFrame(const frame_io::Frame& frame, const std::optio
     Search& search = *m_search;
     const nanoseconds at = frame.at;
     const bool pageSearch = search.kind == FocusStatus::Kind::Page;
+    // Past the limit only a search still measuring steps goes on: slow frames make each step longer.
+    const bool tooLong = at - search.startedAt >= kSearchLimit && at - search.movedAt >= kStepLimit;
     if ((pageSearch && (lost(at) || (page && (sizeChanged(page->longerSide, search.side) ||
                                               !passes(*page, doc_vision::Gate::Light))))) ||
-        at - search.startedAt >= kSearchLimit) {
+        tooLong) {
         abortSearch(frame);
         return;
     }

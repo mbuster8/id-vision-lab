@@ -98,7 +98,7 @@ private:
         std::string file;
         std::chrono::nanoseconds at{};
         visual_debug::ImageDescription tags;
-        bool written = false; // only written frames go in recording.json
+        bool written = false; // only written frames before the first one not written go in recording.json
     };
     struct Job {
         std::uint64_t index = 0;
@@ -114,6 +114,7 @@ private:
     bool dropAfterFailure(const Job& job);                   // with it: whether the job is not to be written
     bool writeJson(bool complete, std::string& error) const; // with it
     void completeIfDone();                                   // with it
+    void leaveOutFramesAfterAGap();                          // with it
 
     std::filesystem::path m_folder;
     RecordingInfo m_info;

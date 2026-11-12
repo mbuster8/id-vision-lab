@@ -87,10 +87,17 @@ struct Harness {
     Clock::time_point now = Clock::time_point{} + 1000s;
     int resultsReady = 0;
     int statusChanges = 0;
+    std::function<void()> retiringSender;
     Engine engine{Engine::Mode::Immediate,
                   {.resultReady = [this] { ++resultsReady; },
                    .statusChanged = [this] { ++statusChanges; },
-                   .now = [this] { return now; }}};
+                   .now = [this] { return now; },
+                   .retiringSender =
+                       [this] {
+                           if (retiringSender) {
+                               retiringSender();
+                           }
+                       }}};
 
     // Pumps once and takes the result, if any.
     std::optional<lab_core::LabResult> next() {
@@ -449,6 +456,35 @@ TEST(Engine, SeekingUntilTheFrameArrives) {
     EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
 }
 
+// The status says a seek is on its way from the moment it is asked for, so a refresh before its command runs
+// leaves the slider's handle where the user let it go rather than put it back on the frame on screen; a seek
+// dropped before it runs, or found unneeded, is no longer shown.
+TEST(Engine, SeekShowsItsTargetBeforeItsCommandRuns) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    pausedAt(h, 2);
+
+    h.engine.seek(7);
+    EXPECT_TRUE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(7));
+    h.engine.seekBy(+1);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(8));
+    h.engine.seek(100);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(9)); // the last frame
+    EXPECT_EQ(pumpUntilAResult(h), 9U);
+    EXPECT_FALSE(h.engine.status().seeking);
+
+    h.engine.seek(9); // the frame on screen, paused
+    EXPECT_TRUE(h.engine.status().seeking);
+    h.engine.pump();
+    EXPECT_FALSE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
+
+    h.engine.seek(3);
+    h.engine.restart();
+    EXPECT_FALSE(h.engine.status().seeking);
+}
+
 // A click on the slider seeks on the press and again on the release, and holding ← at the first frame keeps
 // asking for frame 0: a seek already running to that frame goes on rather than start again.
 TEST(Engine, SameTargetDoesNotRestartTheSeek) {
@@ -517,6 +553,39 @@ TEST(Engine, PendingSeekDiesWithTheSource) {
     EXPECT_EQ(pumpUntilAResult(h), 0U);
     EXPECT_EQ(first.seeks, 0);
     EXPECT_EQ(second.seeks, 0);
+}
+
+// A step asked for once another source is opening is for the new one, though the command of a step asked for
+// before it is still in the mailbox, ahead of the opening.
+TEST(Engine, StepAfterAnotherSourceIsForIt) {
+    Harness h;
+    ListSource::Counters first;
+    ListSource::Counters second;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &first));
+    pausedAt(h, 4);
+
+    h.engine.seekBy(-1);
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &second));
+    h.engine.seekBy(+3);
+
+    EXPECT_EQ(pumpUntilAResult(h), 3U);
+    EXPECT_EQ(first.seeks, 0);
+    EXPECT_EQ(second.seeks, 1);
+}
+
+// The same with a restart: a seek asked for after it goes to its frame once the restart has run.
+TEST(Engine, SeekAfterARestartIsForIt) {
+    Harness h;
+    ListSource::Counters counters;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &counters));
+    pausedAt(h, 4);
+
+    h.engine.seekBy(-1);
+    h.engine.restart();
+    h.engine.seek(7);
+
+    EXPECT_EQ(pumpUntilAResult(h), 7U);
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(7));
 }
 
 TEST(Engine, StatusHasRateAndSeek) {
@@ -978,6 +1047,25 @@ TEST(Engine, EndingChannelsFromTheCall) {
     latch.release();
 
     EXPECT_TRUE(pumpUntil(h, [&] { return !h.engine.status().endingChannels; }));
+}
+
+// Memory exhausted while ■ retires the sender stops the run, as any throw does, and still answers the call:
+// ▶ is not left disabled, and the window can close.
+TEST(Engine, ThrowWhileRetiringASenderStillLetsTheWindowClose) {
+    Harness h;
+    KeptSender kept;
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    h.engine.pump();
+    h.retiringSender = [] { throw std::bad_alloc(); };
+
+    h.engine.stopSending(true);
+    h.engine.pump();
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+    EXPECT_FALSE(h.engine.status().endingChannels);
+    EXPECT_TRUE(h.engine.shutDown());
 }
 
 // ▶ on a paused replay sends the frame on screen at once rather than nothing until the next frame.

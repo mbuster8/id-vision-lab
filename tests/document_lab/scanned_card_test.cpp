@@ -80,6 +80,24 @@ TEST(ScannedCard, NarrowCanvasKeepsTheButtonsReachable) {
     EXPECT_TRUE(button(card, "skipChipButton")->isVisibleTo(&card));
 }
 
+// The owner's camera check (A4): on a narrow canvas the wrapped texts were cut off. A word-wrapped label
+// added with an alignment gets its size hint's height, not the height its width needs; each gets the latter,
+// and the explanation, narrower than the card, stays centred.
+TEST(ScannedCard, WrappedTextsGetTheirWholeHeight) {
+    ScannedCard card;
+    showAt(card, {500, 400});
+    const auto* body = card.findChild<QWidget*>("scannedCardBody");
+    ASSERT_TRUE(body);
+    for (const char* name : {"scannedTitle", "scannedHeadline", "scannedExplanation", "scannedNote"}) {
+        const auto* label = card.findChild<QLabel*>(name);
+        ASSERT_TRUE(label) << name;
+        EXPECT_GE(label->height(), label->heightForWidth(label->width())) << name;
+    }
+    const auto* explanation = card.findChild<QLabel*>("scannedExplanation");
+    EXPECT_LE(explanation->width(), 470);
+    EXPECT_NEAR(explanation->mapTo(body, explanation->rect().center()).x(), body->rect().center().x(), 1);
+}
+
 TEST(ScannedCard, DarkColours) {
     const test_support::PaletteGuard guard;
     ScannedCard card;
@@ -88,6 +106,22 @@ TEST(ScannedCard, DarkColours) {
     EXPECT_EQ(title->palette().color(QPalette::WindowText), QColor(0x1E, 0x7D, 0x45));
     test_support::applyPalette(test_support::paletteWith(QColor(0x1E, 0x1E, 0x1E), QColor(0xF0, 0xF0, 0xF0)));
     EXPECT_EQ(title->palette().color(QPalette::WindowText), QColor(0x3D, 0xDC, 0x84));
+}
+
+// The owner's camera check (A4): around the card, inside its scroll area, the frame showed through dimmed
+// only at the edges; the rest was a flat fill. QScrollArea::setWidget turns its widget's autoFillBackground
+// on.
+TEST(ScannedCard, DimsTheCanvasAroundTheCardToo) {
+    ScannedCard card;
+    showAt(card, {1000, 760});
+    QImage image(card.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    card.render(&image, QPoint(), QRegion(), QWidget::DrawChildren);
+    const QColor expected = document_lab::over(document_lab::kScannedDim, Qt::white);
+    const QColor beside = image.pixelColor(100, 380); // inside the scroll area, left of the 620 px card
+    EXPECT_NEAR(beside.red(), expected.red(), 1);
+    EXPECT_NEAR(beside.green(), expected.green(), 1);
+    EXPECT_NEAR(beside.blue(), expected.blue(), 1);
 }
 
 TEST(ScannedCard, DimsTheCanvas) {
