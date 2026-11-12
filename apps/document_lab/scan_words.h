@@ -1,8 +1,11 @@
 #pragma once
 
+#include "scan_flow.h"
+
 #include <doc_vision/guidance.h>
 #include <doc_vision/mrz.h>
 #include <doc_vision/quality_gates.h>
+#include <lab_core/document_kind.h>
 
 #include <QString>
 
@@ -34,6 +37,13 @@ BannerContent bannerFor(doc_vision::Hint hint);
 enum class FocusBanner { Focusing, CannotFocusThisClose, CannotMakeSharp };
 BannerContent bannerFor(FocusBanner banner);
 
+// A4.1, spec §6.3: the turn-over's own banners. Awaiting the turn, whatever the hint (the back still in view
+// is Good, and "Good: hold still" would say the opposite); the camera stopped while the back is held.
+enum class TurnOverBanner { AwaitingTurn, CameraStopped };
+BannerContent bannerFor(TurnOverBanner banner);
+// Looking for the front: the hints as when guiding, hint 1 asking for the photo's side.
+BannerContent frontBannerFor(doc_vision::Hint hint);
+
 // A window state's banner. `detail` is CameraStopped's small line, the failure's reason; ignored otherwise.
 // AccessOff's small line is the running platform's.
 BannerContent bannerFor(WindowState state, const QString& detail = {});
@@ -49,8 +59,12 @@ QString readerUnavailableLine();
 QString mrzDate(const std::string& yymmdd, const std::optional<doc_vision::MrzDate>& date);
 // "Expired on 15 Apr 2012. A5 and later steps flag this; the scan itself still succeeded."
 QString expiredWarning(const doc_vision::MrzDate& expiry);
-// The still Review sends: fixed words and the frame's number as the user sees it, never MRZ text.
-QString stillName(std::uint64_t frameNumber);
+// The still Review sends: fixed words, the document as its MRZ names it, a TD1 card's side, and the frame's
+// number as the user sees it; never MRZ text.
+QString stillName(lab_core::DocumentKind kind, std::optional<CardSide> side, std::uint64_t frameNumber);
+// Review's pill: "✓ Passport scanned · chip skipped", or an ID card's, with the front too when it was
+// skipped.
+QString reviewPill(lab_core::DocumentKind kind, bool frontSkipped);
 
 // A gate's chip: "In view", "Size", "Flat", "Sharp", "No glare", "Light".
 QString chipLabel(doc_vision::Gate gate);

@@ -1453,7 +1453,7 @@ TEST(LabWindow, OtherFolderShowsTheReminder) {
     button(lab, "chooseLabFolderButton")->click();
 
     EXPECT_TRUE(lab.status().contains(
-        QStringLiteral("Recordings may show real passports; avoid synced or shared folders.")))
+        QStringLiteral("Recordings may show real passports or ID cards; avoid synced or shared folders.")))
         << lab.status().toStdString();
     lab.replay(framesOf(test_support::cardFrame()));
     lab.pump();
@@ -1707,7 +1707,7 @@ TEST(LabWindow, AnotherComputerIsNotPingedUntilConfirmed) {
 
     ASSERT_EQ(questions.size(), 1);
     EXPECT_TRUE(questions[0].contains(QStringLiteral("192.0.2.1")));
-    EXPECT_TRUE(questions[0].contains(QStringLiteral("real passports")));
+    EXPECT_TRUE(questions[0].contains(QStringLiteral("real passports or ID cards"))); // A4.1
     EXPECT_EQ(lab.linkEndpoints.back(), remote.toStdString());
     EXPECT_EQ(viewerState(lab), QStringLiteral("available"));
     EXPECT_TRUE(lab.status().contains(QStringLiteral("sending to 192.0.2.1"))) << lab.status().toStdString();
@@ -2689,7 +2689,7 @@ TEST(LabWindow, HintTwelveOverEleven) {
     lab.pump();
 
     EXPECT_EQ(bannerLine(lab), QStringLiteral("Can't read the lines at the bottom"));
-    EXPECT_EQ(smallLine(lab), QStringLiteral("check for glare or fingers; only passports are read for now"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("check for glare or fingers"));
     EXPECT_EQ(banner(lab)->progress(), std::nullopt);
     EXPECT_NE(dashedOn(lab), nullptr);
     EXPECT_TRUE(lab.status().contains(QStringLiteral("State: reading"))) << lab.status().toStdString();

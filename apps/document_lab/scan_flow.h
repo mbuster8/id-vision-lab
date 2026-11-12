@@ -13,6 +13,9 @@ enum class ScanEvent { Accepted, SkipChip, ScanAgain, Discard, ScanAnother, RunE
 
 enum class ScanKey { Enter, Escape };
 
+// A4.1: a TD1 card's two sides, its back (the MRZ) and its front (the photo).
+enum class CardSide { Back, Front };
+
 struct ScanStep {
     ScanState to = ScanState::Guiding;
     bool resume = false;  // reset the processor and let frames come again

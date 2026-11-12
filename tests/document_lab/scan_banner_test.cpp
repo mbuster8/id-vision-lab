@@ -57,7 +57,7 @@ TEST(ScanWords, WordsAreTheSpecs) {
     };
     const Row rows[] = {
         {Hint::NoPage, Tone::Neutral, true, "Show the document",
-         "the side with the photo, all of it in view"},
+         "the side with the lines at the bottom, all of it in view"}, // A4.1's D3
         {Hint::CutByEdge, Tone::Bad, false, "Move back", "the whole document must be in view"},
         {Hint::MoveToMiddle, Tone::Bad, false, "Move the document to the middle",
          "the whole document must be in view"},
@@ -92,15 +92,15 @@ TEST(ScanWords, FocusWords) {
                              QStringLiteral("Try more light, or another camera")}));
 }
 
-// A4: hints 11 and 12 (ADR-004's table; hint 12's small line as the owner chose, D2).
+// A4: hints 11 and 12 (ADR-004's table). A4.1: a TD1 card has three lines, not two; hint 12's small line as
+// the owner chose (D4 B).
 TEST(ScanWords, MrzHints) {
-    EXPECT_EQ(
-        document_lab::bannerFor(Hint::NoMrzBand),
-        (BannerContent{Tone::Bad, false, QStringLiteral("Keep your fingers off the two lines at the bottom"),
-                       QString()}));
+    EXPECT_EQ(document_lab::bannerFor(Hint::NoMrzBand),
+              (BannerContent{Tone::Bad, false,
+                             QStringLiteral("Keep your fingers off the lines at the bottom"), QString()}));
     EXPECT_EQ(document_lab::bannerFor(Hint::CannotReadMrz),
               (BannerContent{Tone::Bad, false, QStringLiteral("Can't read the lines at the bottom"),
-                             QStringLiteral("check for glare or fingers; only passports are read for now")}));
+                             QStringLiteral("check for glare or fingers")}));
     EXPECT_EQ(document_lab::stateWord(Hint::NoMrzBand), "reading");
     EXPECT_EQ(document_lab::stateWord(Hint::CannotReadMrz), "reading");
 }
@@ -133,8 +133,45 @@ TEST(ScanWords, Expired) {
               "Expired on 15 Apr 2012. A5 and later steps flag this; the scan itself still succeeded.");
 }
 
-// A still's name is fixed words and the frame's number as the user sees it: never MRZ text.
-TEST(ScanWords, StillNameHasNoMrz) { EXPECT_EQ(document_lab::stillName(1342), "lab passport frame 1343"); }
+// A still's name is fixed words and the frame's number as the user sees it: never MRZ text. A4.1: the
+// document it is, and a TD1 card's side.
+TEST(ScanWords, StillNameHasNoMrz) {
+    using document_lab::CardSide;
+    using lab_core::DocumentKind;
+    EXPECT_EQ(document_lab::stillName(DocumentKind::Passport, std::nullopt, 1342), "lab passport frame 1343");
+    EXPECT_EQ(document_lab::stillName(DocumentKind::IdCard, std::nullopt, 1342), "lab ID card frame 1343");
+    EXPECT_EQ(document_lab::stillName(DocumentKind::IdCard, CardSide::Back, 1342),
+              "lab ID card back frame 1343");
+    EXPECT_EQ(document_lab::stillName(DocumentKind::IdCard, CardSide::Front, 1342),
+              "lab ID card front frame 1343");
+}
+
+// A4.1, spec §6.3: while the card is turned over, the banner asks for the turn whatever the hint, then gives
+// the hints as when guiding, hint 1 asking for the photo's side.
+TEST(ScanWords, TurnOverWords) {
+    using document_lab::TurnOverBanner;
+    EXPECT_EQ(document_lab::bannerFor(TurnOverBanner::AwaitingTurn),
+              (BannerContent{Tone::Neutral, true, QStringLiteral("Turn the card over"),
+                             QStringLiteral("take it out of view, then show the side with the photo")}));
+    EXPECT_EQ(document_lab::bannerFor(TurnOverBanner::CameraStopped),
+              (BannerContent{Tone::Bad, false, QStringLiteral("The camera stopped"),
+                             QStringLiteral("start it again, open the front's clip, or skip the front")}));
+    EXPECT_EQ(document_lab::frontBannerFor(Hint::NoPage),
+              (BannerContent{Tone::Neutral, true, QStringLiteral("Show the document"),
+                             QStringLiteral("the side with the photo, all of it in view")}));
+    EXPECT_EQ(document_lab::frontBannerFor(Hint::Good),
+              (BannerContent{Tone::Good, false, QStringLiteral("Good: hold still"), QString()}));
+    EXPECT_EQ(document_lab::frontBannerFor(Hint::Blurred), document_lab::bannerFor(Hint::Blurred));
+}
+
+// A4.1, spec §6.2: Review's pill names the document by its MRZ, and says what was skipped.
+TEST(ScanWords, ReviewPill) {
+    using lab_core::DocumentKind;
+    EXPECT_EQ(document_lab::reviewPill(DocumentKind::Passport, false), "✓ Passport scanned · chip skipped");
+    EXPECT_EQ(document_lab::reviewPill(DocumentKind::IdCard, false), "✓ ID card scanned · chip skipped");
+    EXPECT_EQ(document_lab::reviewPill(DocumentKind::IdCard, true),
+              "✓ ID card scanned · front and chip skipped");
+}
 
 TEST(ScanWords, WindowStates) {
     EXPECT_EQ(document_lab::bannerFor(WindowState::NoCamera),

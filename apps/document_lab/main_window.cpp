@@ -623,7 +623,7 @@ void LabWindow::buildUi() {
     auto* marksLayout = new QVBoxLayout(m_reviewMarks);
     marksLayout->setContentsMargins(20, 20, 20, 20);
     marksLayout->setSpacing(10);
-    m_reviewPill = new QLabel(tr("✓ Passport scanned · chip skipped"), m_reviewMarks);
+    m_reviewPill = new QLabel(reviewPill(lab_core::DocumentKind::Passport, false), m_reviewMarks);
     m_reviewPill->setObjectName(QStringLiteral("reviewPill"));
     QFont pillFont = m_reviewPill->font();
     pillFont.setPixelSize(18);
@@ -1651,6 +1651,7 @@ void LabWindow::showReview(bool shown) {
         m_scanSaving = false;
         m_sendingStill.reset();
         m_reviewPanel->setScan(*m_scan, today());
+        m_reviewPill->setText(reviewPill(lab_core::documentKind(m_scan->mrz), false));
         m_gateValues->setRows(m_scan->gates);
         m_reviewBar->reset(); // each Review starts from the defaults
         m_gateValues->setVisible(m_reviewBar->overlays().gates);
@@ -1816,8 +1817,14 @@ void LabWindow::sendScan() {
     visual_debug::ImageDescription description = m_scan->frame.tags;
     const std::vector<visual_debug::Overlay> overlays = reviewOverlays(false);
     description.overlays.insert(description.overlays.end(), overlays.begin(), overlays.end());
-    m_sendingStill = m_link->sendStill(m_scan->frame.image, stillName(m_scan->frame.number).toStdString(),
-                                       std::move(description));
+    // A TD1 card's frame here is its back (A4.1); a passport's and a TD2's have one side.
+    const std::optional<CardSide> side = m_scan->mrz.format == doc_vision::MrzFormat::Td1
+                                             ? std::optional<CardSide>(CardSide::Back)
+                                             : std::nullopt;
+    m_sendingStill = m_link->sendStill(
+        m_scan->frame.image,
+        stillName(lab_core::documentKind(m_scan->mrz), side, m_scan->frame.number).toStdString(),
+        std::move(description));
     m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Busy);
     refreshStatus(); // a still refused at once ends here
 }
@@ -2144,7 +2151,7 @@ void LabWindow::chooseLabFolder() {
         return;
     }
     m_settings.setLabFolder(folder);
-    m_message = tr("Recordings may show real passports; avoid synced or shared folders.");
+    m_message = tr("Recordings may show real passports or ID cards; avoid synced or shared folders.");
     refreshStatus();
 }
 
@@ -2252,8 +2259,8 @@ bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
 
 QString LabWindow::endpointText() const { return m_endpoint->text().trimmed(); }
 
-// Another computer gets frames that may show real passports, unencrypted: it is not even pinged until the
-// user has said yes to that endpoint, once per session.
+// Another computer gets frames that may show real passports or ID cards, unencrypted: it is not even pinged
+// until the user has said yes to that endpoint, once per session.
 bool LabWindow::mayAsk(const QString& endpoint) const {
     return visual_debug::isLoopbackEndpoint(endpoint.toStdString()) ||
            m_confirmedEndpoints.contains(endpoint);
@@ -2267,7 +2274,8 @@ bool LabWindow::confirmFor(const QString& endpoint) {
         return true;
     }
     const QString question =
-        tr("Frames may show real passports and travel unencrypted to %1. Send them?").arg(hostOf(endpoint));
+        tr("Frames may show real passports or ID cards and travel unencrypted to %1. Send them?")
+            .arg(hostOf(endpoint));
     const bool yes = m_dependencies.confirm ? m_dependencies.confirm(question)
                                             : QMessageBox::question(this, tr("Send to Another Computer"),
                                                                     question) == QMessageBox::Yes;
