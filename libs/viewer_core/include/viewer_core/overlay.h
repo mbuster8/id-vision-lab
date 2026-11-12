@@ -25,7 +25,9 @@ inline constexpr Colour kOverlayGreen{0x78, 0xE6, 0x78};
 struct Polygon {
     // Standard: a see-through fill, an edge and a label tab, as every overlay. Guide: the Document Lab's page
     // outline, a thick line on a dark halo with no fill and no tab, which reads over any picture.
-    enum class Style { Standard, Guide };
+    // GuideDashed: the lab's MRZ band, a dashed line a few pixels outside the shape. Only the lab's window
+    // sets a style; it is never sent.
+    enum class Style { Standard, Guide, GuideDashed };
 
     std::vector<cv::Point2d> points{};
     std::string label{};

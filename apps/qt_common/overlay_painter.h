@@ -27,6 +27,13 @@ inline constexpr double kOverlayPointDiameter = 6.0;
 inline constexpr double kGuideWidth = 4.0;
 inline constexpr double kGuideHaloWidth = 6.0;
 inline constexpr int kGuideHaloAlpha = 140;
+// A GuideDashed polygon (A4's MRZ band, screen 03): this far outside the shape, a line this wide in dashes
+// this long with gaps this long, on a halo of the same dashes this wide, so the gaps show the picture.
+inline constexpr double kDashedGuideOffset = 5.0;
+inline constexpr double kDashedGuideWidth = 3.0;
+inline constexpr double kDashedGuideHaloWidth = 5.0;
+inline constexpr double kDashedGuideDash = 8.0;
+inline constexpr double kDashedGuideGap = 6.0;
 
 // Draws overlays given in image pixels; imageToWidget (a scale and a translation) maps them to the painter's
 // coordinates. Shapes scale with it; edges, dots and label tabs keep their size on screen. Shapes entirely
