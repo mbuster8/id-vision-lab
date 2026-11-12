@@ -80,6 +80,24 @@ TEST(ScannedCard, NarrowCanvasKeepsTheButtonsReachable) {
     EXPECT_TRUE(button(card, "skipChipButton")->isVisibleTo(&card));
 }
 
+// The owner's camera check (A4): on a narrow canvas the wrapped texts were cut off. A word-wrapped label
+// added with an alignment gets its size hint's height, not the height its width needs; each gets the latter,
+// and the explanation, narrower than the card, stays centred.
+TEST(ScannedCard, WrappedTextsGetTheirWholeHeight) {
+    ScannedCard card;
+    showAt(card, {500, 400});
+    const auto* body = card.findChild<QWidget*>("scannedCardBody");
+    ASSERT_TRUE(body);
+    for (const char* name : {"scannedTitle", "scannedHeadline", "scannedExplanation", "scannedNote"}) {
+        const auto* label = card.findChild<QLabel*>(name);
+        ASSERT_TRUE(label) << name;
+        EXPECT_GE(label->height(), label->heightForWidth(label->width())) << name;
+    }
+    const auto* explanation = card.findChild<QLabel*>("scannedExplanation");
+    EXPECT_LE(explanation->width(), 470);
+    EXPECT_NEAR(explanation->mapTo(body, explanation->rect().center()).x(), body->rect().center().x(), 1);
+}
+
 TEST(ScannedCard, DarkColours) {
     const test_support::PaletteGuard guard;
     ScannedCard card;
