@@ -235,6 +235,40 @@ TEST(Recording, JobsAfterAFailureAreDropped) {
     EXPECT_FALSE(std::filesystem::exists(folder.path() / "000003.png"));
 }
 
+// With several writer threads, a frame after the failed one may already be being written when it fails. It is
+// written, but a replay numbers frames by their place in the list, so listing it would play frame 2 as frame
+// 1: the list stops at the failed frame, and a frame written after it is removed and counted as not recorded.
+TEST(Recording, FrameWrittenAfterAFailureIsNotListed) {
+    const ScratchFolder folder;
+    test_support::Latch second;
+    RecordingWriter::Options options = threaded();
+    options.threads = 2;
+    options.beforeWrite = [&second](std::uint64_t index) {
+        if (index == 1) {
+            ASSERT_TRUE(second.waitUntilEntered()); // frame 2 is being written on the other thread
+            second.release();
+            throw std::runtime_error("disk gone");
+        }
+        if (index == 2) {
+            second.hold();
+        }
+    };
+    auto writer = startIn(folder.path(), options);
+    for (std::uint64_t i = 0; i < 3; ++i) {
+        ASSERT_EQ(writer->push(grey(10, i, 40ms * i)), RecordingWriter::Push::Queued) << i;
+    }
+
+    writer->finish();
+
+    EXPECT_EQ(writer->progress().written, 1U);
+    EXPECT_EQ(writer->progress().notRecorded, 1U);
+    const nlohmann::json json = jsonIn(folder.path());
+    ASSERT_EQ(json["frames"].size(), 1U);
+    EXPECT_EQ(json["frames"][0]["file"], "000000.png");
+    EXPECT_EQ(json["counts"]["notRecorded"], 1);
+    EXPECT_FALSE(std::filesystem::exists(folder.path() / "000002.png"));
+}
+
 TEST(Recording, ThrowingWriteIsAFailure) {
     const ScratchFolder folder;
     RecordingWriter::Options options = immediate();

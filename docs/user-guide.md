@@ -812,7 +812,8 @@ lab's folder, readable by you only; **Record** again, **Stop**, **Restart**, a s
 moved` in the status bar. Stopping, or closing the lab, waits until every frame is written, with the progress in
 the status bar. A camera's frame that finds the queue full is left out and counted; a replay waits instead.
 Recording stops when the disk has less than 5 GB free, and when a frame cannot be written (a disk unplugged, a
-file in the way), with the reason in the status bar; `recording.json` then lists only the frames written. A
+file in the way), with the reason in the status bar; `recording.json` then lists only the frames written before
+it, and a later frame another writer thread had already written is removed and counted as not recorded. A
 recording replays through **Open Folder…**.
 
 **Capture** keeps the frame on the canvas at full resolution as a PNG, with a JSON beside it (the source, the
