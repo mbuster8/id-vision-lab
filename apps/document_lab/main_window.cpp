@@ -13,6 +13,7 @@
 #include "scan_style.h"
 #include "scanned_card.h"
 #include "shades.h"
+#include "turn_over_bar.h"
 
 #include <doc_vision/guidance.h>
 #include <frame_io/capture.h>
@@ -586,6 +587,12 @@ void LabWindow::buildUi() {
     m_reviewBar->setObjectName(QStringLiteral("reviewBar"));
     m_reviewBar->hide();
     canvasColumnLayout->addWidget(m_reviewBar);
+    // A4.1's turn-over, in the same place while a TD1 card's front is looked for.
+    m_turnOverBar = new TurnOverBar(canvasColumn);
+    m_turnOverBar->hide();
+    canvasColumnLayout->addWidget(m_turnOverBar);
+    connect(m_turnOverBar, &TurnOverBar::skipFront, this, [this] { applyScanEvent(ScanEvent::SkipFront); });
+    connect(m_turnOverBar, &TurnOverBar::scanAgain, this, [this] { applyScanEvent(ScanEvent::ScanAgain); });
     auto* canvasArea = new QWidget(canvasColumn);
     canvasColumnLayout->addWidget(canvasArea, 1);
     auto* canvasLayout = new QGridLayout(canvasArea);
@@ -790,9 +797,12 @@ void LabWindow::startReplay(lab_core::ReplayOpener open) {
     if (m_closing) {
         return; // the window would wait for this run too
     }
-    stop(); // a camera running stops first
+    const bool carryOn = endRunForNewSource(); // a camera running stops first
     beginRun();
     m_engine->startReplay(std::move(open));
+    if (carryOn) {
+        carryTurnOverOn();
+    }
 }
 
 // Results of an earlier run are dropped from here on: a new run's generation is at least one more.
@@ -917,8 +927,9 @@ void LabWindow::chooseCamera(int index) {
     fillFormats();
     if (m_cameraRunning) {
         restartCamera();
-    } else {
-        dropScan(false); // a scan kept after its camera failed ends too (spec §3.1)
+    } else if (m_scanState !=
+               ScanState::TurnOver) { // in TurnOver the back stays for the camera's next run (D11)
+        dropScan(false);              // a scan kept after its camera failed ends too (spec §3.1)
     }
 }
 
@@ -930,7 +941,7 @@ void LabWindow::chooseFormat(int index) {
     m_settings.setFormatFor(camera->id, m_formatCombo->itemText(index));
     if (m_cameraRunning) {
         restartCamera();
-    } else {
+    } else if (m_scanState != ScanState::TurnOver) {
         dropScan(false);
     }
 }
@@ -979,7 +990,7 @@ void LabWindow::startCameraGranted() {
     }
     // A camera that lists no formats starts in its own default: no format matches an empty one.
     const std::optional<CameraFormat> format = currentFormat();
-    stop(); // a replay running stops first
+    const bool carryOn = endRunForNewSource(); // a replay running stops first
     beginRun();
     m_cameraRunning = true;
     m_focusAction->setEnabled(true);
@@ -989,12 +1000,20 @@ void LabWindow::startCameraGranted() {
         (format ? camera->name + QStringLiteral(" · ") + format->label() : camera->name).toStdString(),
         m_dependencies.makeFocusControl ? m_dependencies.makeFocusControl(camera->id) : nullptr);
     m_session = m_dependencies.cameras->start(camera->id, format.value_or(CameraFormat{}));
+    if (carryOn) {
+        carryTurnOverOn();
+    }
     refreshStatus();
 }
 
-// Another camera or format: a new run, and a new recording if one is wanted.
+// Another camera or format: a new run, and a new recording if one is wanted. In TurnOver the back stays held
+// for the camera's next run (D11).
 void LabWindow::restartCamera() {
-    stop();
+    if (m_scanState == ScanState::TurnOver) {
+        endRun(true);
+    } else {
+        stop();
+    }
     startCamera();
 }
 
@@ -1064,8 +1083,8 @@ void LabWindow::cameraFailed(const QString& reason) {
         return;
     }
     // Spec §3.1: the card and Review work without a camera, so a scan showing stays; going on starts it
-    // again.
-    const bool keepScan = scanShowing();
+    // again. A4.1's D11: in TurnOver the back stays too, for a camera started again or a clip.
+    const bool keepScan = scanHeld();
     endRun(keepScan);
     m_cameraLost = keepScan;
     m_message = reason;
@@ -1128,6 +1147,12 @@ void LabWindow::takeResult() {
         documentChosen() && m_resultSequence >= m_scanFrom && guidance && guidance->scan &&
         (m_handledScan.owner_before(guidance->scan) || guidance->scan.owner_before(m_handledScan))) {
         accept(guidance->scan);
+    }
+    // A4.1: a TD1 card's front kept, likewise carried on every result from its keeping.
+    if (const std::optional<lab_core::Guidance>& guidance = m_current->processed.guidance;
+        m_scanState == ScanState::TurnOver && m_resultSequence >= m_scanFrom && guidance && guidance->front &&
+        (m_handledFront.owner_before(guidance->front) || guidance->front.owner_before(m_handledFront))) {
+        frontKept(guidance->front);
     }
     updateShowEntries(*m_current);
     showResults(*m_current);
@@ -1344,9 +1369,10 @@ void LabWindow::refreshStatus() {
     // A camera paused for a scan says so; a replay's own word is the engine's, "Paused" (spec §3.1).
     QStringList parts{scanShowing() && m_cameraRunning ? tr("Camera paused") : stateText(status.state)};
     // The news next, before the source and the counters: a window narrower than the whole line cuts its end.
-    if (documentChosen() && scanShowing()) {
-        parts << (m_scanState == ScanState::Scanned ? tr("State: scanned, waiting for the chip")
-                                                    : tr("State: review"));
+    if (documentChosen() && scanHeld()) {
+        parts << (m_scanState == ScanState::TurnOver  ? tr("State: turn over")
+                  : m_scanState == ScanState::Scanned ? tr("State: scanned, waiting for the chip")
+                                                      : tr("State: review"));
     } else if (documentChosen() && m_running) {
         const lab_core::Guidance* guidance = drawnGuidance();
         if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
@@ -1493,6 +1519,13 @@ void LabWindow::updateScan() {
         m_chips->setStates({});
         return;
     }
+    const bool turnOver = m_scanState == ScanState::TurnOver;
+    if (turnOver && m_cameraLost) { // the back is held; the camera, a clip or Skip carries on (D11)
+        m_banner->setContent(bannerFor(TurnOverBanner::CameraStopped));
+        m_banner->setProgress(std::nullopt);
+        m_chips->setStates({});
+        return;
+    }
     std::optional<BannerContent> content;
     std::optional<int> progress;
     doc_vision::ChipStates chips{};
@@ -1514,6 +1547,12 @@ void LabWindow::updateScan() {
                        guidance->shownHint == doc_vision::Hint::Blurred) {
                 content = bannerFor(focus->afterSearch ? FocusBanner::CannotFocusThisClose
                                                        : FocusBanner::CannotMakeSharp);
+            } else if (turnOver) {
+                // A4.1, spec §6.3: the turn first, whatever the hint (the back still in view is Good); then
+                // the front's hints. Nothing is read.
+                content = guidance->frontStage == lab_core::FrontStage::Looking
+                              ? frontBannerFor(guidance->shownHint)
+                              : bannerFor(TurnOverBanner::AwaitingTurn);
             } else {
                 content = bannerFor(guidance->shownHint);
                 // A4's Reading (spec §3.2): hint 10 with the count and its bar, or why nothing is read.
@@ -1531,7 +1570,7 @@ void LabWindow::updateScan() {
             }
         }
     } else if (m_running) {
-        content = bannerFor(doc_vision::Hint::NoPage);
+        content = turnOver ? bannerFor(TurnOverBanner::AwaitingTurn) : bannerFor(doc_vision::Hint::NoPage);
     } else if (m_windowState) {
         content = bannerFor(*m_windowState, m_windowStateDetail);
     } else {
@@ -1547,28 +1586,39 @@ bool LabWindow::oneFrameSource() const { return m_engine->status().frameCount ==
 // --- A4: the scan
 // ------------------------------------------------------------------------------------------------
 
-bool LabWindow::scanShowing() const { return m_scanState != ScanState::Guiding; }
+bool LabWindow::scanShowing() const {
+    return m_scanState == ScanState::Scanned || m_scanState == ScanState::Review;
+}
 
-// The accept pauses what feeds the engine and shows the card over the scan's frame (spec §3.1, D3): a
-// camera's frames stop being handed over, its session open; a playing replay pauses.
+bool LabWindow::scanHeld() const { return m_scanState != ScanState::Guiding; }
+
+// The accept shows the card over the scan's frame and pauses what feeds the engine (spec §3.1, D3); a TD1
+// card's back goes to TurnOver instead, its camera's frames still handed on for the front (A4.1).
 void LabWindow::accept(std::shared_ptr<const lab_core::MrzScan> scan) {
-    const std::optional<ScanStep> step = next(m_scanState, ScanEvent::Accepted);
+    const ScanEvent event =
+        scan->mrz.format == doc_vision::MrzFormat::Td1 ? ScanEvent::AcceptedTd1 : ScanEvent::Accepted;
+    const std::optional<ScanStep> step = next(m_scanState, event);
     if (!step) {
         return;
     }
     m_handledScan = scan;
     m_scan = std::move(scan);
+    m_front.reset();
+    m_frontSource = false;
+    m_frontSkipped = false;
     m_scanFindings = m_current ? m_current->processed.findings : std::vector<lab_core::Finding>{};
-    m_scanState = step->to;
-    if (m_cameraRunning) {
-        m_cameraPaused = true;
-    } else {
-        m_replayWasPlaying = m_engine->status().state == lab_core::EngineState::Playing;
-        if (m_replayWasPlaying) {
-            m_engine->pause();
-        }
+    m_scannedCard->setKind(lab_core::documentKind(m_scan->mrz));
+    applyStep(*step);
+}
+
+void LabWindow::frontKept(std::shared_ptr<const lab_core::FrontShot> front) {
+    const std::optional<ScanStep> step = next(m_scanState, ScanEvent::FrontKept);
+    if (!step) {
+        return;
     }
-    showScanState();
+    m_handledFront = front;
+    m_front = std::move(front);
+    applyStep(*step);
 }
 
 void LabWindow::applyScanEvent(ScanEvent event) {
@@ -1576,14 +1626,72 @@ void LabWindow::applyScanEvent(ScanEvent event) {
     if (!step) {
         return;
     }
-    m_scanState = step->to;
-    if (!step->keepScan) {
-        m_scan.reset();
+    if (event == ScanEvent::SkipFront) {
+        m_frontSkipped = true;
     }
-    if (step->resume) {
+    applyStep(*step);
+}
+
+void LabWindow::applyStep(const ScanStep& step) {
+    const bool fromTurnOver = m_scanState == ScanState::TurnOver;
+    m_scanState = step.to;
+    if (!step.keepScan) {
+        m_scan.reset();
+        m_front.reset();
+        m_frontSource = false;
+    }
+    pauseFor(step.pause);
+    // Before a resume's reset: a processor's front stage outlives reset() (spec §6.4).
+    if (step.frontStage) {
+        m_engine->setFrontStage(*step.frontStage);
+    }
+    if (step.resume) {
+        // Esc from TurnOver: no result of the front stage is shown after it, whatever the source (spec §6.5).
+        if (fromTurnOver) {
+            m_scanFrom = m_resultSequence + 1;
+        }
         resumeScanning();
     }
     showScanState();
+}
+
+// A camera's frames are no longer handed on only for `All`; a playing replay pauses for either, and plays
+// again when the scan is gone back from.
+void LabWindow::pauseFor(Pause pause) {
+    if (pause == Pause::None) {
+        return;
+    }
+    if (m_cameraRunning) {
+        if (pause == Pause::All) {
+            m_cameraPaused = true;
+        }
+        return;
+    }
+    if (m_running && m_engine->status().state == lab_core::EngineState::Playing) {
+        m_replayWasPlaying = true;
+        m_engine->pause();
+    }
+}
+
+bool LabWindow::endRunForNewSource() {
+    if (m_scanState != ScanState::TurnOver) {
+        stop();
+        return false;
+    }
+    endRun(true);
+    return true;
+}
+
+// The new run's processor keeps its front stage through the reset its start makes, which counts as the turn
+// (spec §6.4); the back stays held.
+void LabWindow::carryTurnOverOn() {
+    m_cameraLost = false;
+    m_cameraPaused = false;
+    m_replayWasPlaying = false;
+    m_frontSource = true;
+    if (const std::optional<ScanStep> step = next(m_scanState, ScanEvent::SourceChanged)) {
+        applyStep(*step);
+    }
 }
 
 void LabWindow::resumeScanning() {
@@ -1608,17 +1716,22 @@ void LabWindow::resumeScanning() {
 }
 
 void LabWindow::dropScan(bool runContinues) {
-    if (!scanShowing()) {
+    if (!scanHeld()) {
         return;
     }
+    m_engine->setFrontStage(false); // the stage outlives the processor's reset (spec §6.4)
     m_scanState = ScanState::Guiding;
     m_scan.reset();
+    m_front.reset();
+    m_frontSource = false;
+    m_frontSkipped = false;
     m_cameraPaused = false;
     if (runContinues && m_replayWasPlaying) {
         m_engine->play();
     }
     m_replayWasPlaying = false;
     m_scannedCard->hide();
+    m_turnOverBar->hide();
     showReview(false);
     if (m_cameraLost || !m_running) { // its camera failed: nothing runs to draw over it
         m_cameraLost = false;
@@ -1631,6 +1744,8 @@ void LabWindow::dropScan(bool runContinues) {
 
 void LabWindow::showScanState() {
     m_scannedCard->setVisible(m_scanState == ScanState::Scanned);
+    m_turnOverBar->setBackOnReplay(!m_cameraRunning && !m_cameraLost && !m_frontSource);
+    m_turnOverBar->setVisible(m_scanState == ScanState::TurnOver);
     showReview(m_scanState == ScanState::Review);
     viewChanged();
     display(ImageView::KeepView::IfSameSize);
@@ -1997,7 +2112,9 @@ void LabWindow::updatePosition(const lab_core::EngineStatus& status) {
 // While a scan shows, nothing moves the replay or focuses the camera, and Capture gives way to Review's Save
 // (spec §3.1); this runs with every refresh, so nothing else may enable them meanwhile.
 void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
-    const bool scan = scanShowing();
+    // In TurnOver, the back's replay stays paused with its controls off: it cannot show the other side (D11);
+    // a source opened for the front plays as any other.
+    const bool scan = scanShowing() || (m_scanState == ScanState::TurnOver && !m_frontSource);
     const bool replay = m_running && !m_cameraRunning && !scan;
     const bool jumps = replay && status.canSeek && status.frameRate.has_value();
     m_back10->setEnabled(jumps);
@@ -2022,9 +2139,9 @@ void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
     m_loop->setEnabled(!scan);
     m_asFast->setEnabled(!scan);
     m_slider->setEnabled(!scan);
-    m_focusAction->setEnabled(m_cameraRunning && !scan);
+    m_focusAction->setEnabled(m_cameraRunning && !scanShowing());
     m_record->setEnabled(m_running || m_record->isChecked());
-    m_capture->setEnabled(m_onScreen.has_value() && !scan);
+    m_capture->setEnabled(m_onScreen.has_value() && !scanHeld()); // the card's MRZ was just accepted (A4.1)
 }
 
 // --- Recording and capture
@@ -2206,7 +2323,7 @@ bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
     // A4's keys while a scan shows (spec §3.4's table): in Scanned, Enter skips the chip and Esc scans again.
     // Not while a text field has the focus (its Enter finishes its editing; a key it ignores reaches its
     // parents here too), nor while a list's popup is open.
-    if (event->type() == QEvent::KeyPress && scanShowing()) {
+    if (event->type() == QEvent::KeyPress && scanHeld()) {
         const auto* key = static_cast<QKeyEvent*>(event);
         const auto* widget = qobject_cast<QWidget*>(watched);
         const bool enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
@@ -2450,7 +2567,7 @@ void LabWindow::updateViewerRow(const lab_core::EngineStatus& status) {
     m_streamButton->setEnabled(!m_closing && hasAddress && m_stream != Stream::On && !status.endingChannels);
     m_pauseStream->setEnabled(m_stream == Stream::On);
     m_stopStream->setEnabled(m_stream != Stream::Off);
-    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value() && !scanShowing());
+    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value() && !scanHeld());
 }
 
 } // namespace document_lab

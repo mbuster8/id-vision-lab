@@ -1893,6 +1893,7 @@ struct GuidanceScript {
     std::size_t next = 0;
     int made = 0;
     int resets = 0;
+    std::vector<bool> frontStages; // A4.1: setFrontStage's calls, in order
 };
 
 class ScriptedDocumentProcessor : public lab_core::FrameProcessor {
@@ -1907,6 +1908,7 @@ public:
         return script.results[std::min(script.next++, script.results.size() - 1)];
     }
     void reset() override { ++m_script->resets; }
+    void setFrontStage(bool on) override { m_script->frontStages.push_back(on); }
 
 private:
     std::shared_ptr<GuidanceScript> m_script;
@@ -1937,6 +1939,8 @@ struct Guided {
     bool readerAvailable = true; // false: "model missing"
     bool band = false;           // the MRZ band among the overlays, after the outline
     std::shared_ptr<const lab_core::MrzScan> scan{};
+    std::optional<lab_core::FrontStage> frontStage{}; // A4.1
+    std::shared_ptr<const lab_core::FrontShot> front{};
 };
 
 // A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
@@ -1995,6 +1999,8 @@ lab_core::ProcessorResult guided(const Guided& wanted) {
                                   .colour = visual_debug::kOverlayGreen});
     }
     guidance.scan = wanted.scan;
+    guidance.frontStage = wanted.frontStage;
+    guidance.front = wanted.front;
     result.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
     result.guidance = guidance;
     return result;
@@ -3677,6 +3683,243 @@ TEST(LabWindow, PrivacyStatusAndStills) {
     json.erase("mrz");
     EXPECT_EQ(mrzIn(json.dump()), "") << json.dump();
     EXPECT_EQ(mrzIn(capturesOf(lab, ".png").at(0).filename().string()), "") << "the picture's name";
+}
+
+// --- A4.1: ID cards, and a TD1 card's turn-over
+// ------------------------------------------------------------------------------------------------
+
+// ICAO's TD1 card (its back) and TD2 document, as scanOf makes a passport's scan.
+std::shared_ptr<const lab_core::MrzScan> idScanOf(const std::vector<std::string>& lines,
+                                                  int frameNumber = 7) {
+    auto scan = std::make_shared<lab_core::MrzScan>(*scanOf(frameNumber));
+    const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(lines);
+    EXPECT_TRUE(mrz && mrz->valid());
+    if (mrz) {
+        scan->mrz = *mrz;
+    }
+    return scan;
+}
+const std::vector<std::string> kTd1Card{"I<UTOD231458907<<<<<<<<<<<<<<<", "7408122F1204159UTO<<<<<<<<<<<6",
+                                        "ERIKSSON<<ANNA<MARIA<<<<<<<<<<"};
+const std::vector<std::string> kTd2Card{"I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<",
+                                        "D231458907UTO7408122F1204159<<<<<<<6"};
+
+std::shared_ptr<const lab_core::FrontShot> frontOf(int frameNumber = 9) {
+    auto front = std::make_shared<lab_core::FrontShot>();
+    front->frame = test_support::listFrame(static_cast<std::uint64_t>(frameNumber), 0ms,
+                                           cv::Mat(300, 400, CV_8UC3, cv::Scalar(160, 90, 40)));
+    front->quad = {{{30, 40}, {370, 40}, {370, 250}, {30, 250}}};
+    front->gates = {{"Fill", "58 %", lab_core::Finding::Tone::Good},
+                    {"Sharpness", "380 (min 200)", lab_core::Finding::Tone::Good}};
+    return front;
+}
+
+// A result in the front stage, as the Document processor gives it after a TD1 card's back was accepted.
+lab_core::ProcessorResult turnOverOf(std::shared_ptr<const lab_core::MrzScan> scan,
+                                     lab_core::FrontStage stage, Hint shown = Hint::Good,
+                                     std::shared_ptr<const lab_core::FrontShot> front = nullptr) {
+    return guided({.shown = shown, .scan = std::move(scan), .frontStage = stage, .front = std::move(front)});
+}
+
+QWidget* turnOverBar(const Lab& lab) { return lab.window->findChild<QWidget*>("turnOverBar"); }
+bool turnOverShown(const Lab& lab) {
+    const QWidget* bar = turnOverBar(lab);
+    return bar != nullptr && bar->isVisibleTo(lab.window.get());
+}
+QPushButton* turnOverButton(const Lab& lab, const char* name) {
+    return turnOverBar(lab) != nullptr ? turnOverBar(lab)->findChild<QPushButton*>(name) : nullptr;
+}
+QString scannedTitle(const Lab& lab) {
+    const auto* title =
+        scannedCard(lab) != nullptr ? scannedCard(lab)->findChild<QLabel*>("scannedTitle") : nullptr;
+    return title != nullptr ? title->text() : QString();
+}
+
+// A camera run whose first frame accepts a TD1 card's back, the next ones as `then` says.
+std::shared_ptr<GuidanceScript> td1Script(std::vector<lab_core::ProcessorResult> then) {
+    std::vector<lab_core::ProcessorResult> results{acceptOf(idScanOf(kTd1Card))};
+    results.insert(results.end(), then.begin(), then.end());
+    return scriptOf(std::move(results));
+}
+
+void startDocumentCamera(Lab& lab) {
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+}
+
+// Spec §6.5, §6.6: a TD1 card's back goes to TurnOver, not Scanned. The camera's frames keep coming and are
+// drawn, the processor's front stage is turned on, and Capture and Send Frame are off.
+TEST(LabWindow, Td1AcceptGoesToTurnOver) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+    const std::uint64_t before = lab.window->canvasCountsForTests().received;
+    cameraFrames(lab, 2);
+    EXPECT_GT(lab.window->canvasCountsForTests().received, before);
+    EXPECT_EQ(script->frontStages,
+              std::vector<bool>{true}); // posted with the accept, run by the engine since
+    EXPECT_FALSE(button(lab, "captureButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "sendFrameButton")->isEnabled());
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: turn over"))) << lab.status().toStdString();
+}
+
+// Spec §6.3: "Turn the card over" while the stage awaits the turn, whatever the hint; then the front's hints.
+TEST(LabWindow, TurnOverBannerWaitsForTheTurn) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn, Hint::Good),
+                                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::NoPage),
+                                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    cameraFrames(lab, 1);
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Turn the card over"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("take it out of view, then show the side with the photo"));
+    cameraFrames(lab, 1);
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Show the document"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("the side with the photo, all of it in view"));
+    cameraFrames(lab, 1);
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+    EXPECT_EQ(smallLine(lab), QString());
+}
+
+TEST(LabWindow, FrontKeptGoesToScanned) {
+    const auto script =
+        td1Script({turnOverOf(nullptr, lab_core::FrontStage::Looking),
+                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf())});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    cameraFrames(lab, 2);
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_EQ(scannedTitle(lab), QStringLiteral("ID card scanned"));
+    const std::uint64_t before = lab.window->canvasCountsForTests().received;
+    cameraFrames(lab, 2); // the camera is paused, as for a passport
+    EXPECT_EQ(lab.window->canvasCountsForTests().received, before);
+}
+
+TEST(LabWindow, SkipFrontGoesToScanned) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    turnOverButton(lab, "skipFrontButton")->click();
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_EQ(scannedTitle(lab), QStringLiteral("ID card scanned"));
+}
+
+TEST(LabWindow, EscInTurnOverScansAgain) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    const int resets = script->resets;
+    lab.advance(400ms); // past the key guard (Task 9)
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+    lab.pump();
+    EXPECT_EQ(script->frontStages, (std::vector<bool>{true, false}));
+    EXPECT_GT(script->resets, resets);
+}
+
+TEST(LabWindow, StopInTurnOverFreesTheBack) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    startStop(lab)->click();
+    lab.pump();
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("turn over"))) << lab.status().toStdString();
+    EXPECT_EQ(script->frontStages.back(), false);
+}
+
+TEST(LabWindow, AnotherProcessorInTurnOverEndsIt) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+}
+
+// A TD2 document's MRZ is on its front: no turn-over.
+TEST(LabWindow, Td2GoesStraightToScanned) {
+    const auto script = scriptOf({acceptOf(idScanOf(kTd2Card))});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_EQ(scannedTitle(lab), QStringLiteral("ID card scanned"));
+    EXPECT_TRUE(script->frontStages.empty());
+}
+
+// D11: a back accepted on a replay pauses it with its controls off; another clip opened then carries the
+// turn-over on, its controls on.
+TEST(LabWindow, FrontClipCarriesTheTurnOverOn) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    EXPECT_EQ(lab.window->findChild<QSlider*>("positionSlider")->isEnabled(), false);
+    EXPECT_FALSE(button(lab, "playPauseButton")->isEnabled());
+
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_TRUE(button(lab, "playPauseButton")->isEnabled());
+    EXPECT_EQ(script->frontStages, std::vector<bool>{true}); // never turned off
+    turnOverButton(lab, "skipFrontButton")->click();
+    EXPECT_TRUE(scannedShown(lab)); // the back is still held
+}
+
+TEST(LabWindow, FrontClipThatFailsKeepsTheBack) {
+    Lab lab(documentIs(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.window->startReplay([](std::string& error) -> std::unique_ptr<frame_io::ReplaySource> {
+        error = "no such clip";
+        return nullptr;
+    });
+    lab.pump();
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("no such clip"))) << lab.status().toStdString();
+    turnOverButton(lab, "skipFrontButton")->click();
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+TEST(LabWindow, CameraFailureInTurnOverKeepsTheBack) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.backend->fail(QStringLiteral("unplugged"));
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("The camera stopped"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("start it again, open the front's clip, or skip the front"));
+    turnOverButton(lab, "skipFrontButton")->click();
+    EXPECT_TRUE(scannedShown(lab));
 }
 
 } // namespace

@@ -54,6 +54,7 @@ class GateValuesBox;
 class ReviewBar;
 class ReviewPanel;
 class ScannedCard;
+class TurnOverBar;
 
 using Clock = std::chrono::steady_clock;
 
@@ -159,9 +160,18 @@ private:
 
     // A4's scan (spec §3.1): Scanned or Review shows the kept scan, and the camera or the replay is paused.
     bool scanShowing() const;
+    // A4.1: a scan is held in TurnOver too, while the card's front is looked for on live frames.
+    bool scanHeld() const;
     void accept(std::shared_ptr<const lab_core::MrzScan> scan);
+    void frontKept(std::shared_ptr<const lab_core::FrontShot> front);
     void applyScanEvent(ScanEvent event); // the user's: Skip the chip, Scan again, Discard, Scan another
-    void resumeScanning();                // frames come again, to a processor that has forgotten the scan
+    void applyStep(const ScanStep& step); // the step's state, scan, pause, front stage and resume
+    void pauseFor(Pause pause);
+    void resumeScanning(); // frames come again, to a processor that has forgotten the scan
+    // A4.1's D11: another source opened, or a camera started, in TurnOver keeps the back and looks for the
+    // front there; anywhere else it ends the run and its scan. Whether the turn-over carries on.
+    bool endRunForNewSource();
+    void carryTurnOverOn();
     // Stop, another camera, format, source or processor end the scan as Discard does; `runContinues` plays a
     // replay the accept paused.
     void dropScan(bool runContinues);
@@ -284,7 +294,8 @@ private:
     GateChips* m_chips = nullptr;
     ScannedCard* m_scannedCard = nullptr;
     ReviewBar* m_reviewBar = nullptr;
-    QWidget* m_reviewMarks = nullptr; // the pill and the gate values, top left over the canvas
+    TurnOverBar* m_turnOverBar = nullptr; // A4.1
+    QWidget* m_reviewMarks = nullptr;     // the pill and the gate values, top left over the canvas
     QLabel* m_reviewPill = nullptr;
     GateValuesBox* m_gateValues = nullptr;
     QStackedWidget* m_sidePanel = nullptr; // the results, or Review's panel
@@ -341,6 +352,11 @@ private:
     // reset) never bring it back. Weak, so a scan gone back from leaves no passport frame in memory; compared
     // by owner, which an expired pointer keeps.
     std::weak_ptr<const lab_core::MrzScan> m_handledScan;
+    // A4.1: a TD1 card's front, kept after its back; handled as the scan is.
+    std::shared_ptr<const lab_core::FrontShot> m_front;
+    std::weak_ptr<const lab_core::FrontShot> m_handledFront;
+    bool m_frontSource = false;      // in TurnOver, the run is a source opened for the front (D11)
+    bool m_frontSkipped = false;     // Skip the front was chosen
     bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
     bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
     bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
