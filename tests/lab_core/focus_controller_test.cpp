@@ -73,6 +73,7 @@ public:
     bool sharpFlicker = false;    // the next frame alone passes Sharp, as a noisy one may
     std::uint64_t offerAhead = 1; // nextOffer answers this frame's number plus this: 2 when one frame waits
     bool offerThrows = false;     // nextOffer throws, as a full memory might part-way through a step
+    std::chrono::nanoseconds frameTime = kFrameTime; // between processed frames: 30 a second
     std::uint64_t number = 0;
     std::chrono::nanoseconds at{};
     int searches = 0; // transitions into Searching
@@ -144,7 +145,7 @@ public:
             ++searches;
         }
         ++number;
-        at += kFrameTime;
+        at += frameTime;
         return last;
     }
 
@@ -552,6 +553,19 @@ TEST(FocusController, SearchStopsAtTwelveSecondsHoldsAPassingBest) {
     run.framesFor(12s);
     EXPECT_EQ(run.last.state, State::Holding);
     EXPECT_EQ(run.last.position, 30);
+}
+
+// A3.3's F6: at 8 processed frames a second, with a frame waiting at each move, a step takes about 625 ms, so
+// a sweep from the far end to the peak at 30 needs about 15 s. A search that is still measuring steps goes
+// on past 12 s; one whose step has had no counting frame for 2 s ends (above).
+TEST(FocusController, SlowFramesStillFinishTheSweep) {
+    CameraRun run;
+    run.frameTime = 125ms;
+    run.offerAhead = 2;
+    run.log->position = 180; // where the camera's autofocus left the lens: the sweep starts at 250
+    ASSERT_EQ(run.searchToTheEnd(40s), State::Holding);
+    EXPECT_EQ(run.last.position, 30);
+    EXPECT_TRUE(run.visited(250));
 }
 
 TEST(FocusController, HoldingLetsGoWhenTheSizeChanges) {

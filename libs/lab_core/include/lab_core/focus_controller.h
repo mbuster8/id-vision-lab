@@ -53,8 +53,12 @@ inline constexpr double kEarlyStopShare = 0.30;
 inline constexpr int kEarlyStopSteps = 3;
 // A search again while holding first tries this many coarse steps either side of the held position.
 inline constexpr int kLocalSteps = 2;
-// Any search ends after this long.
+// Any search ends after kSearchLimit, unless it is still measuring steps: past it, a search ends once its
+// step has gone kStepLimit since its move without being measured. At 30 processed frames a second a full scan
+// takes about 7.5 s; at 8, with a frame waiting at each move, a step takes about 625 ms and a sweep from the
+// far end about 15 s, which a plain 12 s would cut short (A3.3's F6; from the rules, not measured).
 inline constexpr std::chrono::nanoseconds kSearchLimit = std::chrono::seconds{12};
+inline constexpr std::chrono::nanoseconds kStepLimit = std::chrono::seconds{2};
 // Click-to-focus: a square of this share of the frame's shorter side; success when the best is at least
 // kClickFactor × the median of the steps and at least kClickFloor (the region's scale is not the page's).
 inline constexpr double kClickRegionShare = 0.20;
@@ -126,10 +130,11 @@ private:
         std::vector<int> positions{};
         std::size_t index = 0;
         std::chrono::nanoseconds startedAt{};
-        double side = 0.0;   // the page's longer side when it started
-        cv::Rect region{};   // a click's
-        double before = 0.0; // a click's region before any move
-        int lensFrom = 0;    // where the lens was before the last move
+        double side = 0.0;                  // the page's longer side when it started
+        cv::Rect region{};                  // a click's
+        double before = 0.0;                // a click's region before any move
+        int lensFrom = 0;                   // where the lens was before the last move
+        std::chrono::nanoseconds movedAt{}; // the last move's frame's `at`
         std::uint64_t waitFrom = 0;
         std::optional<std::chrono::nanoseconds> firstCountingAt{};
         std::chrono::nanoseconds settle{};
