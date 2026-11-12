@@ -47,8 +47,11 @@ struct Mrz {
     // whose value equals the digit modulo 10 (C = 12 for 2).
     bool wellFormed = false;
 
-    bool valid() const;       // well-formed, and every check passed
-    bool passport() const;    // TD3 with a document code starting with 'P'
+    bool valid() const;    // well-formed, and every check passed
+    bool passport() const; // TD3 with a document code starting with 'P'
+    // What the lab reads (A4.1's D1): a passport, or a TD1 or TD2 identity document (a code starting with
+    // 'I', 'A' or 'C'). Not visas ('V'), nor any other pairing of format and code.
+    bool supported() const;
     std::string text() const; // the lines joined by '\n': what agreement compares
 };
 

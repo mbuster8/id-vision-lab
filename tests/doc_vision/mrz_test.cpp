@@ -170,6 +170,31 @@ TEST(MrzParse, VisaIsNotAPassport) {
     EXPECT_FALSE(mrz->passport());
 }
 
+// A specimen with another document code: no check digit covers the code, so it stays valid.
+std::vector<std::string> withCode(std::vector<std::string> lines, std::string_view code) {
+    lines[0].replace(0, 2, code);
+    return lines;
+}
+
+// A4.1's D1: passports (TD3 `P`) and identity documents (TD1, TD2 `I`, `A`, `C`) are read; visas and every
+// other pairing are not. Each refused read is valid, so the refusal is the code's, never an invalid read's.
+TEST(MrzParse, SupportedDocuments) {
+    const std::vector<std::string> td3{kTd3Line1, kTd3Line2};
+    const std::vector<std::string> td2{kTd2Line1, kTd2Line2};
+    const std::vector<std::string> td1{kTd1Line1, kTd1Line2, kTd1Line3};
+    for (const auto& lines : {td3, td2, td1, withCode(td1, "AC"), withCode(td1, "C<"), withCode(td2, "A<")}) {
+        const std::optional<Mrz> mrz = parseMrz(lines);
+        ASSERT_TRUE(mrz && mrz->valid()) << lines[0];
+        EXPECT_TRUE(mrz->supported()) << lines[0];
+    }
+    for (const auto& lines : {withCode(td3, "V<"), withCode(td2, "V<"), withCode(td1, "P<"),
+                              withCode(td3, "I<"), withCode(td1, "V<")}) {
+        const std::optional<Mrz> mrz = parseMrz(lines);
+        ASSERT_TRUE(mrz && mrz->valid()) << lines[0];
+        EXPECT_FALSE(mrz->supported()) << lines[0];
+    }
+}
+
 TEST(MrzParse, EachCheckFails) {
     struct Case {
         std::size_t at;

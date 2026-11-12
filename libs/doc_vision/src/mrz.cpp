@@ -323,6 +323,15 @@ bool Mrz::passport() const {
     return format == MrzFormat::Td3 && !documentCode.empty() && documentCode[0] == 'P';
 }
 
+bool Mrz::supported() const {
+    if (passport()) {
+        return true;
+    }
+    const bool identityFormat = format == MrzFormat::Td1 || format == MrzFormat::Td2;
+    return identityFormat && !documentCode.empty() &&
+           (documentCode[0] == 'I' || documentCode[0] == 'A' || documentCode[0] == 'C');
+}
+
 std::string Mrz::text() const {
     std::string out;
     for (const std::string& line : lines) {
