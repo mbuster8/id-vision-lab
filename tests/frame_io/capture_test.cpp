@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -103,6 +104,73 @@ TEST(Capture, InvalidUtf8FindingIsReplaced) {
 
     ASSERT_FALSE(png.empty()) << error;
     EXPECT_EQ(captureJson(png)["findings"][0], "a\xEF\xBF\xBD");
+}
+
+// A4: what the caller adds, such as the MRZ a user chose to save, as named objects in the order given.
+TEST(Capture, SectionsAreWrittenInOrder) {
+    const ScratchFolder folder;
+    std::string error;
+    frame_io::CaptureInfo info;
+    info.sections = {
+        {.name = "mrz", .values = {{"line 1", "P<UTO"}, {"surname", "ERIKSSON"}, {"born", "740812"}}},
+        {.name = "second", .values = {{"z", "1"}, {"a", "2"}}}};
+
+    const std::filesystem::path png =
+        frame_io::writeCapture(folder.path(), "c", frameNumberSix(), info, error);
+
+    ASSERT_FALSE(png.empty()) << error;
+    std::filesystem::path json = png;
+    json.replace_extension(".json");
+    std::ifstream stream(json);
+    const nlohmann::ordered_json read = nlohmann::ordered_json::parse(stream);
+    ASSERT_TRUE(read.contains("mrz"));
+    std::vector<std::string> keys;
+    for (const auto& [key, value] : read["mrz"].items()) {
+        keys.push_back(key);
+    }
+    EXPECT_EQ(keys, (std::vector<std::string>{"line 1", "surname", "born"}));
+    EXPECT_EQ(read["mrz"]["surname"], "ERIKSSON");
+    std::vector<std::string> second;
+    for (const auto& [key, value] : read["second"].items()) {
+        second.push_back(key);
+    }
+    EXPECT_EQ(second, (std::vector<std::string>{"z", "a"}));
+}
+
+TEST(Capture, NoSectionsNoKeys) {
+    const ScratchFolder folder;
+    std::string error;
+    const std::filesystem::path png = frame_io::writeCapture(folder.path(), "c", frameNumberSix(), {}, error);
+    ASSERT_FALSE(png.empty()) << error;
+    const nlohmann::json json = captureJson(png);
+    EXPECT_EQ(json.size(), 5U); // source, frame, at, tags, findings
+}
+
+TEST(Capture, SectionValuesAreUtf8) {
+    const ScratchFolder folder;
+    std::string error;
+    frame_io::CaptureInfo info;
+    info.sections = {{.name = "mrz", .values = {{"surname", "ÖSTERGÅRD"}, {"bad", "a\xff"}}}};
+    const std::filesystem::path png =
+        frame_io::writeCapture(folder.path(), "c", frameNumberSix(), info, error);
+    ASSERT_FALSE(png.empty()) << error;
+    const nlohmann::json json = captureJson(png);
+    EXPECT_EQ(json["mrz"]["surname"], "ÖSTERGÅRD");
+    EXPECT_EQ(json["mrz"]["bad"], "a\xEF\xBF\xBD");
+}
+
+// A section may not overwrite what the capture already says.
+TEST(Capture, ReservedSectionNameIsRefused) {
+    const ScratchFolder folder;
+    std::string error;
+    frame_io::CaptureInfo info;
+    info.findings = {"document: found"};
+    info.sections = {{.name = "findings", .values = {{"x", "y"}}}};
+    const std::filesystem::path png =
+        frame_io::writeCapture(folder.path(), "c", frameNumberSix(), info, error);
+    EXPECT_TRUE(png.empty());
+    EXPECT_FALSE(error.empty());
+    EXPECT_TRUE(std::filesystem::is_empty(folder.path()));
 }
 
 } // namespace
