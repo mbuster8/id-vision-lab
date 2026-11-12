@@ -7,6 +7,7 @@
 #include <onnxruntime/onnxruntime_cxx_api.h>
 #endif
 
+#include <atomic>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -74,6 +75,9 @@ struct OnnxModel::Impl {
     Ort::Session session{nullptr};
     std::vector<std::string> inputNames;
     std::vector<std::string> outputNames;
+    // Every run uses these options, so cancel() can end one in progress from another thread.
+    Ort::RunOptions runOptions;
+    std::atomic<bool> cancelled{false};
 };
 
 OnnxModel::OnnxModel(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
@@ -142,6 +146,10 @@ std::vector<Tensor> OnnxModel::run(const std::vector<float>& input, const std::v
                 std::to_string(expected);
         return {};
     }
+    if (m_impl->cancelled.load()) {
+        error = "cancelled";
+        return {};
+    }
     try {
         const Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         // Run never writes to its input; the C API takes a non-const pointer all the same.
@@ -152,7 +160,7 @@ std::vector<Tensor> OnnxModel::run(const std::vector<float>& input, const std::v
         for (const std::string& name : m_impl->outputNames) {
             outputNames.push_back(name.c_str());
         }
-        std::vector<Ort::Value> values = m_impl->session.Run(Ort::RunOptions{nullptr}, &inputName, &tensor, 1,
+        std::vector<Ort::Value> values = m_impl->session.Run(m_impl->runOptions, &inputName, &tensor, 1,
                                                              outputNames.data(), outputNames.size());
         std::vector<Tensor> outputs;
         for (std::size_t i = 0; i < values.size(); ++i) {
@@ -177,6 +185,15 @@ std::vector<Tensor> OnnxModel::run(const std::vector<float>& input, const std::v
     } catch (...) {
         error = "the model could not run";
         return {};
+    }
+}
+
+void OnnxModel::cancel() {
+    m_impl->cancelled.store(true);
+    try {
+        m_impl->runOptions.SetTerminate(); // documented as safe from another thread
+    } catch (...) {
+        // The flag alone still stops every later run.
     }
 }
 

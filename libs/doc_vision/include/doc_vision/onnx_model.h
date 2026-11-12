@@ -44,6 +44,9 @@ public:
     // failure.
     std::vector<Tensor> run(const std::vector<float>& input, const std::vector<std::int64_t>& shape,
                             std::string& error);
+    // From any thread: a run in progress ends as soon as ONNX Runtime can stop it (RunOptions::SetTerminate),
+    // and every later run fails at once with "cancelled".
+    void cancel();
 
 private:
     struct Impl;
