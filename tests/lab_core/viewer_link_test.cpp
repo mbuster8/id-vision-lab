@@ -31,12 +31,16 @@ constexpr char kThird[] = "tcp://127.0.0.1:7203";
 struct Factory {
     std::vector<std::string> endpoints;
     std::function<ViewerState()> pingAnswer = [] { return ViewerState::Listening; };
+    std::function<SendResult(std::string_view)> sendAnswer = [](std::string_view) {
+        return SendResult::Delivered;
+    };
     test_support::SendLog log;
 
     ViewerLink::MakeSender make() {
         return [this](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
             endpoints.push_back(endpoint);
-            auto sender = std::make_unique<RecordingSender>();
+            auto sender =
+                std::make_unique<RecordingSender>([this](std::string_view name) { return sendAnswer(name); });
             sender->pingAnswer = [this] { return pingAnswer(); };
             sender->log = &log;
             return sender;
@@ -205,6 +209,84 @@ TEST(ViewerLink, ChangedHookWithNoLockHeld) {
 
     EXPECT_EQ(h.changes, 1);
     EXPECT_EQ(seen, ViewerState::Listening);
+}
+
+// A4: a still's number tells its answer from another's, so a window waiting for one never takes an earlier
+// one's answer for it.
+TEST(ViewerLink, StillNumbersCountUp) {
+    Harness h;
+    h.link.setEndpoint(kFirst);
+    h.factory.sendAnswer = [](std::string_view name) {
+        return name == "a" ? SendResult::ViewerUnavailable : SendResult::Delivered;
+    };
+
+    EXPECT_EQ(h.link.sendStill(still(), "a", {}), 1U);
+    EXPECT_EQ(h.link.sendStill(still(), "b", {}), 2U);
+    EXPECT_TRUE(h.link.pump());
+    EXPECT_EQ(h.link.state().lastStillNumber, 1U);
+    EXPECT_EQ(h.link.state().lastStill, SendResult::ViewerUnavailable);
+
+    EXPECT_TRUE(h.link.pump());
+
+    EXPECT_EQ(h.link.state().lastStillNumber, 2U);
+    EXPECT_EQ(h.link.state().lastStill, SendResult::Delivered);
+    EXPECT_EQ(h.link.state().lastStillReason, "");
+}
+
+// A still waiting, or in progress, when the viewer changes is reported, not left waiting for ever.
+TEST(ViewerLink, DroppedStillIsReported) {
+    Harness h;
+    h.link.setEndpoint(kFirst);
+    const std::uint64_t waiting = h.link.sendStill(still(), "a", {});
+
+    h.link.setEndpoint(kSecond);
+
+    EXPECT_EQ(h.link.state().lastStillNumber, waiting);
+    EXPECT_EQ(h.link.state().lastStill, std::nullopt);
+    EXPECT_EQ(h.link.state().lastStillReason, "the viewer changed");
+
+    std::uint64_t inProgress = 0;
+    h.factory.sendAnswer = [&](std::string_view) {
+        h.link.setEndpoint(kThird); // while the still to the second is in progress
+        return SendResult::Delivered;
+    };
+    inProgress = h.link.sendStill(still(), "b", {});
+    EXPECT_TRUE(h.link.pump());
+
+    EXPECT_EQ(h.link.state().lastStillNumber, inProgress);
+    EXPECT_EQ(h.link.state().lastStill, std::nullopt);
+    EXPECT_EQ(h.link.state().lastStillReason, "the viewer changed");
+}
+
+TEST(ViewerLink, StopReportsTheStillsItDrops) {
+    Harness h;
+    h.link.setEndpoint(kFirst);
+    const std::uint64_t waiting = h.link.sendStill(still(), "a", {});
+
+    h.link.stop();
+
+    EXPECT_EQ(h.link.state().lastStillNumber, waiting);
+    EXPECT_EQ(h.link.state().lastStillReason, "the viewer changed");
+}
+
+TEST(ViewerLink, RefusedStillIsReported) {
+    Harness h;
+    h.link.setEndpoint(kFirst);
+    for (int i = 0; i < 4; ++i) {
+        h.link.sendStill(still(), "waits", {});
+    }
+
+    const std::uint64_t refused = h.link.sendStill(still(), "fifth", {});
+
+    EXPECT_EQ(refused, 5U);
+    EXPECT_EQ(h.link.state().lastStillNumber, refused);
+    EXPECT_EQ(h.link.state().lastStill, std::nullopt);
+    EXPECT_EQ(h.link.state().lastStillReason, "refused: too many stills waiting");
+
+    Harness none;
+    const std::uint64_t noViewer = none.link.sendStill(still(), "a", {});
+    EXPECT_EQ(none.link.state().lastStillNumber, noViewer);
+    EXPECT_EQ(none.link.state().lastStillReason, "refused: no viewer address");
 }
 
 } // namespace

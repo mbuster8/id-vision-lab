@@ -32,27 +32,35 @@ void ViewerLink::setEndpoint(std::string endpoint) {
         }
         m_stopped = false;
         ++m_epoch;
-        refused.swap(m_stills);
-        m_state.stillsRefused += refused.size();
-        m_state.endpoint = std::move(endpoint);
-        m_state.viewer.reset();
         m_state.lastStill.reset();
         m_state.lastStillName.clear();
+        m_state.stillsRefused += m_stills.size();
+        dropStills(refused);
+        m_state.endpoint = std::move(endpoint);
+        m_state.viewer.reset();
         m_nextPing = m_state.endpoint.empty() ? std::nullopt : std::optional(now());
     }
     m_wake.notify_all();
 }
 
-void ViewerLink::sendStill(cv::Mat image, std::string name, visual_debug::ImageDescription description) {
+std::uint64_t ViewerLink::sendStill(cv::Mat image, std::string name,
+                                    visual_debug::ImageDescription description) {
+    std::uint64_t number = 0;
     {
         const std::lock_guard lock(m_mutex);
+        number = ++m_stillsNumbered;
         if (m_state.endpoint.empty() || m_stills.size() >= kMaxStills) {
             ++m_state.stillsRefused;
-            return;
+            m_state.lastStill.reset();
+            m_state.lastStillNumber = number;
+            m_state.lastStillReason =
+                m_state.endpoint.empty() ? "refused: no viewer address" : "refused: too many stills waiting";
+            return number;
         }
-        m_stills.push_back({std::move(image), std::move(name), std::move(description)});
+        m_stills.push_back({std::move(image), std::move(name), std::move(description), number});
     }
     m_wake.notify_all();
+    return number;
 }
 
 void ViewerLink::stop() {
@@ -61,10 +69,26 @@ void ViewerLink::stop() {
         const std::lock_guard lock(m_mutex);
         ++m_epoch; // an answer in progress is dropped, and schedules nothing
         m_stopped = true;
-        dropped.swap(m_stills);
+        dropStills(dropped);
         m_nextPing.reset();
     }
     m_wake.notify_all();
+}
+
+bool ViewerLink::dropStills(std::deque<Still>& dropped) {
+    std::optional<std::uint64_t> last = m_stillInProgress;
+    if (!m_stills.empty()) {
+        last = m_stills.back().number; // numbers grow: the newest is the last to end
+    }
+    dropped.swap(m_stills);
+    m_stillInProgress.reset();
+    if (!last) {
+        return false;
+    }
+    m_state.lastStill.reset();
+    m_state.lastStillNumber = *last;
+    m_state.lastStillReason = "the viewer changed";
+    return true;
 }
 
 bool ViewerLink::idle() const {
@@ -123,6 +147,7 @@ std::optional<ViewerLink::Work> ViewerLink::takeWork() {
     if (!m_stills.empty()) {
         work.still = std::move(m_stills.front());
         m_stills.pop_front();
+        m_stillInProgress = work.still->number;
     } else if (!m_nextPing || now() < *m_nextPing) {
         return std::nullopt;
     } else {
@@ -162,8 +187,11 @@ void ViewerLink::doWork(const Work& work) {
         if (work.epoch == m_epoch) {
             changed = true;
             if (work.still) {
+                m_stillInProgress.reset();
                 m_state.lastStill = sent;
                 m_state.lastStillName = work.still->name;
+                m_state.lastStillNumber = work.still->number;
+                m_state.lastStillReason.clear();
             } else {
                 m_state.viewer = viewer;
                 m_nextPing = now() + (viewer == visual_debug::ViewerState::PredatesPing

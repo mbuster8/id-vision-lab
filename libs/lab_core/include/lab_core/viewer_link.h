@@ -48,8 +48,9 @@ public:
     // the last one, refuses (and counts) the stills still waiting for it, and drops its late answers.
     void setEndpoint(std::string endpoint);
     // Sent in order, as an ordinary image into the viewer's history. At most kMaxStills wait; a further one,
-    // or one with no endpoint, is refused and counted.
-    void sendStill(cv::Mat image, std::string name, visual_debug::ImageDescription description);
+    // or one with no endpoint, is refused and counted. Returns the still's number (1, 2, …), by which
+    // State::lastStillNumber says when it has ended.
+    std::uint64_t sendStill(cv::Mat image, std::string name, visual_debug::ImageDescription description);
     // Drops the stills waiting and stops pinging; returns at once. A request in progress finishes.
     void stop();
     // Nothing in progress, nothing waiting and no ping due: after stop(), the link can be destroyed at once.
@@ -61,6 +62,10 @@ public:
         std::optional<visual_debug::SendResult> lastStill;
         std::string lastStillName;
         std::uint64_t stillsRefused = 0;
+        // The still that ended last: answered (lastStill its result), refused, or dropped by a new endpoint
+        // or stop() (lastStill empty, lastStillReason why, in fixed words).
+        std::uint64_t lastStillNumber = 0;
+        std::string lastStillReason;
     };
     State state() const;
 
@@ -72,6 +77,7 @@ private:
         cv::Mat image;
         std::string name;
         visual_debug::ImageDescription description;
+        std::uint64_t number = 0;
     };
     // One request, taken under the lock and made without it.
     struct Work {
@@ -83,6 +89,8 @@ private:
     void run();
     std::optional<Work> takeWork(); // with the lock held
     void doWork(const Work& work);
+    // With the lock held: the stills waiting and the one in progress end, unanswered; true if there were any.
+    bool dropStills(std::deque<Still>& dropped);
     Clock::time_point now() const;
 
     const Mode m_mode;
@@ -97,6 +105,8 @@ private:
     std::condition_variable m_wake;
     std::uint64_t m_epoch = 0; // the endpoint's: a new one starts a new epoch
     std::deque<Still> m_stills;
+    std::uint64_t m_stillsNumbered = 0;
+    std::optional<std::uint64_t> m_stillInProgress; // its number
     std::optional<Clock::time_point> m_nextPing;
     bool m_busy = false;
     bool m_stopped = false; // until the next setEndpoint()

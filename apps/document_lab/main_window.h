@@ -13,9 +13,12 @@
 #include <lab_core/engine.h>
 #include <lab_core/processors.h>
 #include <lab_core/viewer_link.h>
+#include <viewer_core/image_tags.h>
 #include <visual_debug/image_description.h>
 #include <visual_debug/image_sender.h>
 
+#include <QDate>
+#include <QList>
 #include <QMainWindow>
 #include <QSet>
 #include <QString>
@@ -39,11 +42,15 @@ class QLineEdit;
 class QPushButton;
 class QSlider;
 class QSplitter;
+class QStackedWidget;
 class QTimer;
 class QTreeWidget;
 
 namespace document_lab {
 
+class GateValuesBox;
+class ReviewBar;
+class ReviewPanel;
 class ScannedCard;
 
 using Clock = std::chrono::steady_clock;
@@ -79,6 +86,7 @@ struct LabDependencies {
     QString labFolder;                        // empty: the app's local data folder
     QString modelFolder;                      // empty: defaultModelFolder(), beside the program
     std::function<Clock::time_point()> clock; // null: steady_clock::now
+    std::function<QDate()> today;             // Review's expiry warning; null: QDate::currentDate()
 };
 
 // The Document Lab: a camera or a replay, run through a processor on the engine's thread, the result drawn on
@@ -151,6 +159,16 @@ private:
     void showScanState();
     // Stops the run; `keepScan` (a camera failure while a scan shows) keeps the scan, its picture and rows.
     void endRun(bool keepScan);
+    // Review (spec §3.4): its bar, its panel in the results' place, the pill and the gate values.
+    void showReview(bool shown);
+    // Review's overlays: as its check boxes say, or `everything` (a save keeps them all).
+    std::vector<visual_debug::Overlay> reviewOverlays(bool everything) const;
+    viewer_core::ImageTags reviewTags() const; // the canvas's: the outline and the band as guides
+    void saveScan();
+    void savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error);
+    void sendScan();
+    void updateSend(const lab_core::ViewerLink::State& link);
+    doc_vision::MrzDate today() const;
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
@@ -256,6 +274,12 @@ private:
     ScanBanner* m_banner = nullptr;
     GateChips* m_chips = nullptr;
     ScannedCard* m_scannedCard = nullptr;
+    ReviewBar* m_reviewBar = nullptr;
+    QWidget* m_reviewMarks = nullptr; // the pill and the gate values, top left over the canvas
+    QLabel* m_reviewPill = nullptr;
+    GateValuesBox* m_gateValues = nullptr;
+    QStackedWidget* m_sidePanel = nullptr; // the results, or Review's panel
+    ReviewPanel* m_reviewPanel = nullptr;
     QSplitter* m_splitter = nullptr;
     QTreeWidget* m_results = nullptr;
     QAction* m_resultsAction = nullptr;
@@ -309,6 +333,12 @@ private:
     bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
     bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
     bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
+    std::vector<lab_core::Finding> m_scanFindings; // the accept's rows (04's), which a save keeps
+    bool m_reviewShown = false;
+    QList<int> m_sizesBeforeReview;   // the splitter's, given back on leaving Review
+    std::uint64_t m_reviewNumber = 0; // a save that ends after its Review was left changes nothing
+    bool m_scanSaved = false;
+    std::optional<std::uint64_t> m_sendingStill; // Review's still, until the link says it ended
 
     // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop
     // before anything they call back into goes.

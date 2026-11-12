@@ -116,6 +116,8 @@ private:
 // The captured frame's gate values, top left on the canvas under Review's pill: one "Name: value" line per
 // row, on the banner's dark panel in both appearances.
 class GateValuesBox : public QWidget {
+    Q_OBJECT
+
 public:
     explicit GateValuesBox(QWidget* parent = nullptr);
     void setRows(const std::vector<lab_core::Finding>& rows);

@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include "model_folder.h"
+#include "review_view.h"
 #include "scan_banner.h"
 #include "scanned_card.h"
 
@@ -17,7 +18,9 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDate>
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
@@ -80,7 +83,8 @@ struct Lab {
         };
         dependencies.makeLinkSender =
             [this](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
-            auto sender = std::make_unique<test_support::RecordingSender>();
+            auto sender = std::make_unique<test_support::RecordingSender>(
+                [this](std::string_view name) { return linkAnswer(name); });
             sender->pingAnswer = [this] { return pingAnswer(); };
             sender->log = &linkLog;
             linkEndpoints.push_back(endpoint);
@@ -165,6 +169,9 @@ struct Lab {
     int streamSenders = 0;
     std::function<visual_debug::ViewerState()> pingAnswer = [] {
         return visual_debug::ViewerState::Listening;
+    };
+    std::function<visual_debug::SendResult(std::string_view)> linkAnswer = [](std::string_view) {
+        return visual_debug::SendResult::Delivered;
     };
     test_support::SendLog linkLog;
     std::vector<std::string> linkEndpoints;
@@ -3028,6 +3035,325 @@ TEST(LabWindow, CloseWithAScanDoesNotAsk) {
 
     EXPECT_EQ(asked, 0);
     EXPECT_FALSE(lab.window->isVisible());
+}
+
+// --- A4: Review
+// ------------------------------------------------------------------------------------------------
+
+document_lab::ReviewPanel* reviewPanel(const Lab& lab) {
+    return lab.window->findChild<document_lab::ReviewPanel*>();
+}
+document_lab::ReviewBar* reviewBar(const Lab& lab) {
+    return lab.window->findChild<document_lab::ReviewBar*>();
+}
+
+bool shownIn(const Lab& lab, const QWidget* widget) {
+    return widget != nullptr && widget->isVisibleTo(lab.window.get());
+}
+
+QPushButton* panelButton(const Lab& lab, const char* name) {
+    return reviewPanel(lab) != nullptr ? reviewPanel(lab)->findChild<QPushButton*>(name) : nullptr;
+}
+
+QString panelText(const Lab& lab, const char* name) {
+    const QLabel* label = reviewPanel(lab) != nullptr ? reviewPanel(lab)->findChild<QLabel*>(name) : nullptr;
+    return label != nullptr ? label->text() : QStringLiteral("(no %1)").arg(QString::fromLatin1(name));
+}
+
+// A replay accepted on its first frame, with Skip the chip clicked.
+void intoReview(Lab& lab) {
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+}
+
+std::function<void(LabDependencies&)> scanning(std::function<void(LabDependencies&)> more = {}) {
+    return [more](LabDependencies& dependencies) {
+        documentIs(scriptOf({acceptOf(scanOf())}))(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        if (more) {
+            more(dependencies);
+        }
+    };
+}
+
+std::vector<std::filesystem::path> capturesOf(const Lab& lab, const std::string& extension) {
+    std::vector<std::filesystem::path> files;
+    const std::filesystem::path folder = lab.folder.path() / "Captures";
+    if (!std::filesystem::exists(folder)) {
+        return files;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        if (entry.path().extension() == extension) {
+            files.push_back(entry.path());
+        }
+    }
+    return files;
+}
+
+const viewer_core::Polygon* polygonLabelledOrStyled(const Lab& lab, viewer_core::Polygon::Style style) {
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);
+        if (polygon != nullptr && polygon->style == style) {
+            return polygon;
+        }
+    }
+    return nullptr;
+}
+
+int pointsOnCanvas(const Lab& lab) {
+    int points = 0;
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        points += std::holds_alternative<viewer_core::Point>(overlay) ? 1 : 0;
+    }
+    return points;
+}
+
+TEST(LabWindow, ReviewAfterSkip) {
+    Lab lab(scanning());
+    intoReview(lab);
+
+    EXPECT_FALSE(scannedShown(lab));
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+    ASSERT_TRUE(shownIn(lab, reviewBar(lab)));
+    const auto* pill = lab.window->findChild<QLabel*>("reviewPill");
+    ASSERT_TRUE(shownIn(lab, pill));
+    EXPECT_EQ(pill->text(), QStringLiteral("✓ Passport scanned · chip skipped"));
+    EXPECT_EQ(panelText(lab, "surnameValue"), QStringLiteral("ERIKSSON"));
+    EXPECT_EQ(panelText(lab, "bornValue"), QStringLiteral("12 Aug 1974"));
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300)); // the scan's frame
+    EXPECT_TRUE(banner(lab)->isHidden());
+}
+
+// Spec §3.4: the panel shows whatever View ▸ Results says, and the setting is left as it was.
+TEST(LabWindow, ReviewShowsItsPanelWithResultsHidden) {
+    Lab lab(scanning());
+    QAction* results = lab.window->findChild<QAction*>("resultsAction");
+    if (results->isChecked()) {
+        results->trigger();
+    }
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    ASSERT_EQ(splitter->sizes().at(1), 0);
+
+    intoReview(lab);
+    EXPECT_GE(splitter->sizes().at(1), 330);
+    EXPECT_GE(reviewPanel(lab)->width(), 330);
+
+    panelButton(lab, "discardButton")->click();
+
+    EXPECT_EQ(splitter->sizes().at(1), 0);
+    EXPECT_FALSE(results->isChecked());
+    EXPECT_FALSE(QSettings().value(QStringLiteral("lab/resultsShown"), true).toBool());
+}
+
+TEST(LabWindow, ReviewOverlaysFollowTheBar) {
+    Lab lab(scanning());
+    intoReview(lab);
+    const auto* outline = polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::Guide);
+    const auto* band = polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::GuideDashed);
+    ASSERT_NE(outline, nullptr);
+    ASSERT_NE(band, nullptr);
+    EXPECT_EQ(outline->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+    EXPECT_EQ(band->colour, (viewer_core::Colour{0xF4, 0xBF, 0x4F}));
+    EXPECT_EQ(pointsOnCanvas(lab), 0);
+    const auto* gates = lab.window->findChild<document_lab::GateValuesBox*>();
+    ASSERT_NE(gates, nullptr);
+    EXPECT_FALSE(shownIn(lab, gates));
+
+    reviewBar(lab)->findChild<QCheckBox*>("bandBox")->click();
+    reviewBar(lab)->findChild<QCheckBox*>("cornersBox")->click();
+    reviewBar(lab)->findChild<QCheckBox*>("gatesBox")->click();
+
+    EXPECT_EQ(polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::GuideDashed), nullptr);
+    EXPECT_NE(polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::Guide), nullptr);
+    EXPECT_EQ(pointsOnCanvas(lab), 4);
+    EXPECT_TRUE(shownIn(lab, gates));
+}
+
+TEST(LabWindow, SaveWritesTheMrzSection) {
+    Lab lab(scanning());
+    intoReview(lab);
+    reviewBar(lab)->findChild<QCheckBox*>("bandBox")->click(); // unchecked: the save still keeps it
+
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(capturesOf(lab, ".png").size(), 1U);
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    std::ifstream stream(jsons[0]);
+    const nlohmann::json json = nlohmann::json::parse(stream);
+    ASSERT_TRUE(json.contains("mrz")) << json.dump();
+    EXPECT_EQ(json["mrz"]["line 1"], kSpecimen[0]);
+    EXPECT_EQ(json["mrz"]["line 2"], kSpecimen[1]);
+    EXPECT_NE(json["overlays"].dump().find("MRZ band"), std::string::npos) << json["overlays"].dump();
+    for (const std::string text : {"ERIKSSON", "ANNA", "L898902C3", "ZE184226B"}) {
+        EXPECT_EQ(json["findings"].dump().find(text), std::string::npos) << json["findings"].dump();
+    }
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+    EXPECT_FALSE(panelButton(lab, "saveButton")->isEnabled());
+}
+
+TEST(LabWindow, EnterSaves) {
+    Lab lab(scanning());
+    intoReview(lab);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    QTest::keyClick(lab.canvas(), Qt::Key_Return); // saved already: nothing more
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape); // Review needs an explicit choice
+
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
+    EXPECT_TRUE(shownIn(lab, reviewPanel(lab)));
+}
+
+TEST(LabWindow, SendThroughTheLink) {
+    Lab lab(scanning());
+    intoReview(lab);
+    reviewBar(lab)->findChild<QCheckBox*>("bandBox")->click(); // not sent
+
+    panelButton(lab, "sendButton")->click();
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sending…"));
+    lab.pump();
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    ASSERT_FALSE(calls.empty());
+    EXPECT_EQ(calls.back().name, "lab passport frame 8");
+    bool outline = false;
+    bool band = false;
+    for (const visual_debug::Overlay& overlay : calls.back().description.overlays) {
+        if (const auto* polygon = std::get_if<visual_debug::Polygon>(&overlay)) {
+            outline = outline || polygon->label == "Document";
+            band = band || polygon->label == "MRZ band";
+        }
+    }
+    EXPECT_TRUE(outline);
+    EXPECT_FALSE(band);
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sent to the viewer ✓"));
+    EXPECT_FALSE(panelButton(lab, "sendButton")->isEnabled());
+}
+
+// A second send waits for its own still's answer, not the first's.
+TEST(LabWindow, SendWaitsForItsOwnStill) {
+    Lab lab(scanning());
+    intoReview(lab);
+    lab.linkAnswer = [](std::string_view) { return visual_debug::SendResult::ViewerUnavailable; };
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    ASSERT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Send to the viewer"));
+    ASSERT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+    EXPECT_FALSE(panelText(lab, "sendFailure").isEmpty());
+    lab.linkAnswer = [](std::string_view) { return visual_debug::SendResult::Delivered; };
+
+    panelButton(lab, "sendButton")->click();
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sending…"));
+    lab.pump();
+
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sent to the viewer ✓"));
+}
+
+TEST(LabWindow, EndpointChangeFailsTheSend) {
+    Lab lab(scanning());
+    intoReview(lab);
+    panelButton(lab, "sendButton")->click();
+    ASSERT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sending…"));
+
+    setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7141"));
+
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Send to the viewer"));
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+    EXPECT_EQ(panelText(lab, "sendFailure"), QStringLiteral("the viewer changed"));
+}
+
+TEST(LabWindow, SendAsksFirstForAnotherComputer) {
+    int asked = 0;
+    Lab lab(scanning([&asked](LabDependencies& dependencies) {
+        dependencies.confirm = [&asked](const QString&) {
+            ++asked;
+            return false;
+        };
+    }));
+    setEndpoint(lab, QStringLiteral("tcp://192.0.2.1:7140"));
+    intoReview(lab);
+
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+
+    EXPECT_EQ(asked, 1);
+    EXPECT_FALSE(logHas(lab.linkLog, "image lab passport frame 8"));
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Send to the viewer"));
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+}
+
+TEST(LabWindow, DiscardReturnsToGuiding) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab([&script](LabDependencies& dependencies) { documentIs(script)(dependencies); });
+    intoReview(lab);
+    const int resets = script->resets;
+
+    panelButton(lab, "discardButton")->click();
+    lab.pump();
+
+    EXPECT_FALSE(shownIn(lab, reviewPanel(lab)));
+    EXPECT_FALSE(shownIn(lab, reviewBar(lab)));
+    EXPECT_FALSE(shownIn(lab, lab.window->findChild<QLabel*>("reviewPill")));
+    EXPECT_GT(script->resets, resets);
+    EXPECT_TRUE(shownIn(lab, lab.resultsTree()) ||
+                !lab.window->findChild<QAction*>("resultsAction")->isChecked());
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("State: review"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, ScanAnotherReturnsToGuiding) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab([&script](LabDependencies& dependencies) { documentIs(script)(dependencies); });
+    intoReview(lab);
+    panelButton(lab, "saveButton")->click();
+    const int resets = script->resets;
+
+    panelButton(lab, "scanAnotherButton")->click();
+    lab.pump();
+
+    EXPECT_FALSE(shownIn(lab, reviewPanel(lab)));
+    EXPECT_GT(script->resets, resets);
+}
+
+TEST(LabWindow, StatusSaysReview) {
+    Lab lab(scanning());
+    intoReview(lab);
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused · State: review")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, ExpiredWarningWithTodayFixed) {
+    {
+        Lab lab(scanning());
+        intoReview(lab);
+        EXPECT_EQ(
+            panelText(lab, "expiredWarning"),
+            QStringLiteral("Expired on 15 Apr 2012. A5 and later steps flag this; the scan itself still "
+                           "succeeded."));
+        EXPECT_TRUE(shownIn(lab, reviewPanel(lab)->findChild<QLabel*>("expiredWarning")));
+    }
+    Lab lab(scanning(
+        [](LabDependencies& dependencies) { dependencies.today = [] { return QDate(2011, 1, 1); }; }));
+    intoReview(lab);
+    EXPECT_FALSE(shownIn(lab, reviewPanel(lab)->findChild<QLabel*>("expiredWarning")));
+}
+
+TEST(LabWindow, ReviewDarkColours) {
+    const test_support::PaletteGuard guard;
+    Lab lab(scanning());
+    intoReview(lab);
+    const auto* value = reviewPanel(lab)->findChild<QLabel*>("surnameValue");
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(value->palette().color(QPalette::WindowText), QColor(0x1E, 0x23, 0x29));
+
+    test_support::applyPalette(test_support::paletteWith(QColor(0x1E, 0x1E, 0x1E), QColor(0xF0, 0xF0, 0xF0)));
+
+    EXPECT_EQ(value->palette().color(QPalette::WindowText), QColor(0xE8, 0xEA, 0xED));
 }
 
 } // namespace
