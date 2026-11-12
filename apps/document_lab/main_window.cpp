@@ -835,7 +835,7 @@ void LabWindow::endRun(bool keepScan) {
     }
     viewChanged();
     m_current.reset();
-    m_previous.reset();
+    m_drawing.clear();
     m_onScreen.reset();
     m_fitNext = true;
     if (keepScan) {
@@ -1113,8 +1113,6 @@ void LabWindow::takeResult() {
     if (scanShowing()) {
         return;
     }
-    m_previous = std::move(m_current);
-    m_previousSequence = m_resultSequence;
     m_current = std::move(*result);
     ++m_resultSequence;
     if (const std::optional<lab_core::FocusStatus>& focus = m_current->focus;
@@ -1255,6 +1253,10 @@ void LabWindow::display(ImageView::KeepView keep) {
     }
     m_fitPending = keep == ImageView::KeepView::No;
     const LiveDrawing drawing = liveDrawing(*m_canvas, image->size(), keep);
+    if (m_current) {
+        // Before the job: an immediate converter draws it within submit().
+        m_drawing.insert_or_assign(m_resultSequence, *m_current);
+    }
     const std::optional<LiveJob> replaced =
         m_converter->submit({.viewCounter = m_viewCounter,
                              .channel = currentShow(),
@@ -1271,23 +1273,25 @@ void LabWindow::display(ImageView::KeepView keep) {
     if (replaced && replaced->frameNumber != m_resultSequence) {
         ++m_notDrawn;
         m_engine->reportNotDrawn(m_notDrawn);
+        m_drawing.erase(replaced->frameNumber);
     }
 }
 
 void LabWindow::applyPicture(LiveResult result) {
     ++m_canvasCounts.received;
+    // The converter draws in the order it was given, so no older result's picture is still to come. This
+    // result's stays: a redraw of it (for another view) may follow.
+    const std::uint64_t number = result.job.frameNumber;
+    m_drawing.erase(m_drawing.begin(), m_drawing.lower_bound(number));
     if (result.job.viewCounter != m_viewCounter) {
         return; // made for what was in view before
     }
     ++m_canvasCounts.applied;
     m_drawn.push_back(now());
-    // The result this picture is of is now the one on screen: the newest, or the one before it.
-    if (result.job.frameNumber == m_resultSequence && m_current) {
-        m_onScreen = m_current;
-        m_onScreenSequence = m_resultSequence;
-    } else if (result.job.frameNumber == m_previousSequence && m_previous) {
-        m_onScreen = m_previous;
-        m_onScreenSequence = m_previousSequence;
+    // The result this picture is of is now the one on screen, however far the canvas lags.
+    if (const auto drawn = m_drawing.find(number); drawn != m_drawing.end()) {
+        m_onScreen = drawn->second;
+        m_onScreenSequence = number;
     }
     const ImageView::KeepView keep = result.job.keep;
     const cv::Rect& area = result.job.area;

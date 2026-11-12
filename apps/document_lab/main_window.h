@@ -29,6 +29,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -317,9 +318,10 @@ private:
     std::string m_replayKind;              // "video", "images" or "recording", for a recording made of it
     bool m_recordingAsked = false;         // Record clicked, and the engine not yet recording
     bool m_closing = false;                // closing waits for the recording; the run is already stopped
-    std::optional<lab_core::LabResult> m_current;  // the result taken last
-    std::optional<lab_core::LabResult> m_previous; // the one before, whose picture may still be on screen
-    std::uint64_t m_previousSequence = 0;
+    std::optional<lab_core::LabResult> m_current; // the result taken last
+    // The results whose pictures were sent to the converter, by their numbers, until a newer one is drawn:
+    // the converter's thread may still be making any of them (A2's F19), however many results came since.
+    std::map<std::uint64_t, lab_core::LabResult> m_drawing;
     std::optional<lab_core::LabResult> m_onScreen; // the result whose picture the canvas shows: Capture's
     std::uint64_t m_onScreenSequence = 0;          // its number among the results taken
     std::uint64_t m_scanFrom = 0; // results numbered from this on are of the processor and run chosen now
