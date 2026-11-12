@@ -68,6 +68,17 @@ struct MrzScan {
     int reads = 0;                         // reads made since then
 };
 
+// A4.1: a TD1 card's front, kept after its back's MRZ was accepted and the card turned over (spec §6.4).
+struct FrontShot {
+    frame_io::Frame frame;
+    doc_vision::Quad quad{};    // the outline as found and aligned: corner 1 as the outline numbers it
+    std::vector<Finding> gates; // that frame's Fill, Tilt, Sharpness, Glare and Exposure rows
+};
+
+// Where the Document processor's front stage is: waiting for the card to be turned (its page lost for longer
+// than PageHold bridges, or the frames before forgotten by a reset), then looking for a front to keep.
+enum class FrontStage { AwaitingTurn, Looking };
+
 // What the Document processor tells the user about a frame: the banner's hint, the chips, and which overlay
 // is the page's outline that the canvas draws as its guide.
 struct Guidance {
@@ -89,6 +100,10 @@ struct Guidance {
     // The accepted MRZ, on every result from the accept until reset(): the engine keeps only the newest
     // result, so one result alone could be missed.
     std::shared_ptr<const MrzScan> scan{};
+    // A4.1: while the front stage is on, where it is; nothing is read meanwhile.
+    std::optional<FrontStage> frontStage{};
+    // The front kept, on every result from its keeping until reset() or the stage's end, as `scan` is.
+    std::shared_ptr<const FrontShot> front{};
 };
 
 // What a processor found in one frame.
@@ -109,6 +124,9 @@ public:
     virtual ProcessorResult process(const frame_io::Frame& frame) = 0;
     // A new source or run, a restart, a step back, a loop, or another processor: forget earlier frames.
     virtual void reset() {}
+    // A4.1: look for a TD1 card's front after its back was accepted (on), or stop (off). Only the Document
+    // processor has a front stage.
+    virtual void setFrontStage(bool on) { static_cast<void>(on); }
 };
 
 } // namespace lab_core

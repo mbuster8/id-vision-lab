@@ -300,8 +300,11 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         m_page = cv::Mat();
         // Which way up a page flattens follows its corners' history: a turn is forgotten with it.
         m_turned = false;
+        // A4.1: the card left the detector's view for longer than PageHold bridges: it may have been turned.
+        m_frontTurned = true;
     }
-    const bool reading = m_worker && !m_scan && !m_worker->unavailable();
+    // Nothing is read once a scan is accepted, nor in the front stage, which has no MRZ to read (A4.1).
+    const bool reading = m_worker && !m_scan && !m_frontStage && !m_worker->unavailable();
     if (m_worker) {
         if (facts) {
             m_lastFreshAt = frame.at;
@@ -367,10 +370,23 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         result.findings.push_back({"Detector", "error: " + error, Tone::Bad});
     }
 
+    if (m_frontStage) {
+        // After the turn, the first frame whose banner has steadied on Good and whose own page, found in it,
+        // passes every gate: a new rule, stricter than "the first gate-passing frame" (spec §6.4).
+        const std::optional<PageFacts>& fresh = guidance.page;
+        if (m_frontTurned && !m_front && guidance.shownHint == doc_vision::Hint::Good && fresh &&
+            fresh->verdicts.allPassed()) {
+            m_front = std::make_shared<const FrontShot>(
+                FrontShot{.frame = frame, .quad = fresh->quad, .gates = gateRows(result.findings)});
+        }
+        guidance.frontStage = m_frontTurned ? FrontStage::Looking : FrontStage::AwaitingTurn;
+        guidance.front = m_front;
+    }
+
     if (m_worker) {
         const std::optional<PageFacts>& fresh = guidance.page;
         // A frame whose page, found in it, passes every gate: its page is read on the worker's thread.
-        if (!m_scan && !m_worker->unavailable() && fresh && fresh->verdicts.allPassed()) {
+        if (reading && fresh && fresh->verdicts.allPassed()) {
             MrzJob job;
             job.bgr = bgr;
             job.record = {.frame = frame,
@@ -384,8 +400,10 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         }
         if (m_scan) {
             guidance.scan = m_scan;
-            result.findings = scanFindings();
-        } else {
+            if (!m_frontStage) {
+                result.findings = scanFindings(); // in the front stage, the page's as the user adjusts it
+            }
+        } else if (!m_frontStage) {
             MrzProgress progress;
             if (const std::optional<std::string> why = m_worker->unavailable()) {
                 progress.available = false;
@@ -433,6 +451,17 @@ void DocumentProcessor::reset() {
     m_firstGatePassAt.reset();
     m_lastReadNoBand = false;
     m_band.reset();
+    // The front stage stays (spec §6.4): the frames before a reset (a new source, a seek, a loop) are
+    // forgotten, which counts as the card's turn. The hint timer starts afresh and shows its first hint at
+    // once, so the first frame after a reset whose page passes every gate may be kept as the front.
+    m_frontTurned = true;
+    m_front.reset();
+}
+
+void DocumentProcessor::setFrontStage(bool on) {
+    m_frontStage = on;
+    m_frontTurned = false;
+    m_front.reset();
 }
 
 } // namespace lab_core

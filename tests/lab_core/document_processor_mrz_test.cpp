@@ -4,6 +4,7 @@
 
 #include "fake_mrz_reader.h"
 #include "procedural_page.h"
+#include "reading_fixture.h"
 #include "scripted_finder.h"
 
 #include <doc_vision/guidance.h>
@@ -45,26 +46,7 @@ using test_support::scriptedReader;
 const std::string& kLine1 = test_support::kSpecimenLine1;
 const std::string& kLine2 = test_support::kSpecimenLine2;
 
-struct Reading {
-    std::shared_ptr<Script> finder = std::make_shared<Script>();
-    std::shared_ptr<ReaderScript> reader = std::make_shared<ReaderScript>();
-    std::unique_ptr<DocumentProcessor> processor;
-
-    Reading() {
-        finder->steps = {page(test_support::kPageQuad)};
-        reader->last = readingOf(kLine1, kLine2);
-        processor = std::make_unique<DocumentProcessor>(
-            scripted(finder), doc_vision::Thresholds{},
-            DocumentProcessor::Reader{.make = scriptedReader(reader), .mode = MrzWorker::Mode::Manual});
-    }
-
-    // Processes the frame, then reads its job, as the worker would before the next frame.
-    ProcessorResult step(const frame_io::Frame& frame) {
-        ProcessorResult result = processor->process(frame);
-        processor->pumpReaderForTests();
-        return result;
-    }
-};
+using Reading = test_support::Reading;
 
 const Finding* findingNamed(const ProcessorResult& result, const std::string& name) {
     for (const Finding& finding : result.findings) {

@@ -61,6 +61,11 @@ public:
     // forgets the reads, the agreement and an accepted scan, and reads still coming are dropped; the reader
     // stays open.
     void reset() override;
+    // A4.1's front stage (spec §6.4): while on, nothing is read and the findings are the page's; the stage
+    // waits for the card to be turned (its page lost for longer than PageHold bridges, or a reset), then
+    // keeps the first frame whose shown hint is Good and whose own page passes every gate. reset() keeps the
+    // stage (a new source counts as the turn) and drops a kept front; on and off both drop it.
+    void setFrontStage(bool on) override;
 
     // Manual mode: reads the job waiting. Whether there was one.
     bool pumpReaderForTests();
@@ -114,6 +119,11 @@ private:
         bool turned = false;
     };
     std::optional<BandSeen> m_band;
+
+    // A4.1's front stage.
+    bool m_frontStage = false;
+    bool m_frontTurned = false; // the page was lost, or the frames before forgotten, since the stage began
+    std::shared_ptr<const FrontShot> m_front;
 };
 
 } // namespace lab_core
