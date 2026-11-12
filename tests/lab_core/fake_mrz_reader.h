@@ -40,6 +40,9 @@ struct ReaderScript {
     bool readStarted = false;
     bool cancelled = false;
     std::vector<cv::Size> pages;
+    // Whether each page read was darker at the bottom than at the top: the procedural page's MRZ-like rows
+    // are at its bottom, so false means the page was read turned.
+    std::vector<bool> bottomDarker;
 
     // Waits up to five seconds for `ready`; whether it came.
     template <typename Predicate> bool waitFor(Predicate ready) {
@@ -57,6 +60,9 @@ public:
         std::unique_lock lock(s.mutex);
         ++s.reads;
         s.pages.push_back(page.size());
+        const int band = page.rows * 15 / 100;
+        s.bottomDarker.push_back(cv::mean(page.rowRange(page.rows - band, page.rows))[1] <
+                                 cv::mean(page.rowRange(0, band))[1]);
         s.readStarted = true;
         s.changed.notify_all();
         if (s.throwOnRead) {

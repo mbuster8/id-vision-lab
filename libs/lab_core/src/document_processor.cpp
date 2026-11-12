@@ -120,8 +120,12 @@ void DocumentProcessor::collectReads() {
         ++m_reads;
         m_lastReadTime = done.reading.detectTime + done.reading.recogniseTime;
         if (!done.reading.band) {
+            m_lastReadNoBand = true; // hint 11
+            m_band.reset();
             continue;
         }
+        m_lastReadNoBand = false;
+        m_band = BandSeen{*done.reading.band, done.turned};
         m_turned = done.turned;
         const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(done.reading.lines);
         const std::uint64_t number = done.record.frame.number;
@@ -172,6 +176,19 @@ void DocumentProcessor::accept(const doc_vision::Mrz& mrz, const MrzDone& accept
     m_scan = std::make_shared<const MrzScan>(std::move(scan));
     m_kept.clear();
     m_agreement.clear();
+}
+
+// Reads still coming belong to the window before: dropped by their count, as after a reset.
+void DocumentProcessor::clearReadWindow() {
+    ++m_resetCount;
+    m_agreement.clear();
+    m_kept.clear();
+    m_reads = 0;
+    m_firstPageAt.reset();
+    m_firstGatePassAt.reset();
+    m_lastFreshAt.reset();
+    m_lastReadNoBand = false;
+    m_band.reset();
 }
 
 std::vector<Finding> DocumentProcessor::readerFindings() const {
@@ -266,16 +283,41 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
         m_judge.reset();
         m_previous.reset();
         m_page = cv::Mat();
+        // Which way up a page flattens follows its corners' history: a turn is forgotten with it.
+        m_turned = false;
+    }
+    const bool reading = m_worker && !m_scan && !m_worker->unavailable();
+    if (m_worker) {
+        if (facts) {
+            m_lastFreshAt = frame.at;
+            if (!m_firstPageAt) {
+                m_firstPageAt = frame.at;
+            }
+            if (facts->verdicts.allPassed() && !m_firstGatePassAt) {
+                m_firstGatePassAt = frame.at;
+            }
+        } else if (m_lastFreshAt && frame.at - *m_lastFreshAt >= kReadWindowClearAfter) {
+            clearReadWindow();
+        }
     }
     const std::optional<doc_vision::Verdicts> verdicts =
         held ? std::optional<doc_vision::Verdicts>(held->verdicts) : std::nullopt;
     guidance.frameHint = doc_vision::hintFor(verdicts);
+    // Every gate passes: the reader may say more. Hint 12 once its 5 s have passed, else hint 11.
+    if (reading && guidance.frameHint == doc_vision::Hint::Good) {
+        if (m_firstGatePassAt && frame.at - *m_firstGatePassAt >= kCannotReadAfter) {
+            guidance.frameHint = doc_vision::Hint::CannotReadMrz;
+        } else if (m_lastReadNoBand) {
+            guidance.frameHint = doc_vision::Hint::NoMrzBand;
+        }
+    }
     if (facts) {
         facts->frameHint = guidance.frameHint;
         guidance.page = std::move(facts);
     }
     guidance.shownHint = m_hintTimer.next(guidance.frameHint, frame.at);
     guidance.chips = m_chipTimer.next(verdicts, guidance.shownHint, frame.at);
+    std::optional<doc_vision::Quad> bandInFrame;
 
     if (held) {
         guidance.outlineOverlay = result.overlays.size();
@@ -286,6 +328,21 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
                                                                       : visual_debug::kOverlayRed});
         result.images.push_back({.name = "document", .image = m_page, .description = {}});
         result.findings = pageFindings(m_measures, held->verdicts, m_judge.thresholds());
+        // The last read's band, through this frame's own quad so it moves with the outline: only on a page
+        // found in this frame, and while the banner says Good or hint 12 (spec §3.2).
+        const bool bannerAllows = guidance.shownHint == doc_vision::Hint::Good ||
+                                  guidance.shownHint == doc_vision::Hint::CannotReadMrz;
+        if (reading && m_band && guidance.page && bannerAllows) {
+            const doc_vision::Quad onPage =
+                m_band->turned ? doc_vision::unturned(m_band->onPage, doc_vision::kPageSize) : m_band->onPage;
+            const doc_vision::Quad band =
+                doc_vision::pageToFrame(onPage, guidance.page->quad, doc_vision::kPageSize);
+            guidance.bandOverlay = result.overlays.size();
+            result.overlays.push_back(visual_debug::Polygon{.points = {band.begin(), band.end()},
+                                                            .label = "MRZ band",
+                                                            .colour = visual_debug::kOverlayGreen});
+            bandInFrame = band;
+        }
     } else {
         result.findings = noPageFindings();
     }
@@ -297,9 +354,6 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
 
     if (m_worker) {
         const std::optional<PageFacts>& fresh = guidance.page;
-        if (fresh && !m_firstPageAt) {
-            m_firstPageAt = frame.at;
-        }
         // A frame whose page, found in it, passes every gate: its page is read on the worker's thread.
         if (!m_scan && !m_worker->unavailable() && fresh && fresh->verdicts.allPassed()) {
             MrzJob job;
@@ -323,6 +377,7 @@ ProcessorResult DocumentProcessor::process(const frame_io::Frame& frame) {
                 progress.reason = *why;
             }
             progress.agreeing = m_agreement.count();
+            progress.band = bandInFrame;
             guidance.reading = progress;
             if (held) {
                 result.findings.push_back(
@@ -359,6 +414,10 @@ void DocumentProcessor::reset() {
     m_lastReadTime.reset();
     m_lastReadError.clear();
     m_scan.reset();
+    m_lastFreshAt.reset();
+    m_firstGatePassAt.reset();
+    m_lastReadNoBand = false;
+    m_band.reset();
 }
 
 } // namespace lab_core

@@ -13,9 +13,13 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <chrono>
 #include <filesystem>
+#include <initializer_list>
 #include <memory>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 // A4: the Document processor reads the MRZ (spec §4.2), with a scripted reader in Manual mode: each frame's
@@ -305,6 +309,194 @@ TEST(DocumentProcessorMrz, ReaderErrorIsAFixedRow) {
     EXPECT_EQ(*findingNamed(result, "Reader"), (Finding{"Reader", "error: x", Finding::Tone::Bad}));
     ASSERT_TRUE(result.guidance);
     EXPECT_EQ(result.guidance->frameHint, Hint::Good); // an error is not "no band"
+}
+
+// --- Hints 11 and 12, the read window, the turn and the band (spec §3.2, §4.2)
+
+const doc_vision::Quad kQuad = test_support::kPageQuad;
+
+// The specimen read with its band between `top` and `bottom` on the 1250 × 880 page.
+doc_vision::MrzReading bandAt(double top, double bottom) {
+    doc_vision::MrzReading reading = readingOf(kLine1, kLine2);
+    reading.band = doc_vision::Quad{{{60, top}, {1190, top}, {1190, bottom}, {60, bottom}}};
+    return reading;
+}
+
+std::vector<test_support::Step> steps(std::initializer_list<std::pair<bool, int>> runs) {
+    std::vector<test_support::Step> out;
+    for (const auto& [found, count] : runs) {
+        for (int i = 0; i < count; ++i) {
+            out.push_back(found ? page(kQuad) : nothing());
+        }
+    }
+    return out;
+}
+
+TEST(DocumentProcessorMrz, NoBandShowsHintEleven) {
+    Reading lab;
+    lab.reader->last = test_support::noBand();
+    const cv::Mat good = goodFrame();
+    EXPECT_EQ(lab.step(frameAt(good, 0)).guidance->frameHint, Hint::Good);
+    EXPECT_EQ(lab.step(frameAt(good, 1)).guidance->frameHint, Hint::NoMrzBand);
+    ProcessorResult later;
+    for (int n = 2; n <= 5; ++n) {
+        later = lab.step(frameAt(good, n));
+    }
+    EXPECT_EQ(later.guidance->shownHint, Hint::NoMrzBand); // held 132 ms
+    EXPECT_FALSE(later.guidance->bandOverlay);
+}
+
+// An ID card's front: no band, ever. After 5 s hint 12 outranks hint 11, so D2's words show.
+TEST(DocumentProcessorMrz, HintTwelveAfterFiveSecondsOutranksEleven) {
+    Reading lab;
+    lab.reader->last = test_support::noBand();
+    const cv::Mat good = goodFrame();
+    ProcessorResult result;
+    for (int n = 0; n <= 151; ++n) {
+        result = lab.step(frameAt(good, n));
+    }
+    EXPECT_EQ(result.guidance->frameHint, Hint::NoMrzBand); // 4983 ms
+    result = lab.step(frameAt(good, 152));
+    EXPECT_EQ(result.guidance->frameHint, Hint::CannotReadMrz); // 5016 ms
+}
+
+TEST(DocumentProcessorMrz, FailingGateKeepsTheReads) {
+    Reading lab;
+    const cv::Mat good = goodFrame();
+    const cv::Mat soft = blurred(6.0);
+    lab.step(frameAt(good, 0));
+    lab.step(frameAt(good, 1));
+    ProcessorResult result;
+    for (int n = 2; n < 62; ++n) {
+        result = lab.step(frameAt(soft, n)); // two seconds of a blurred page, still found
+    }
+    ASSERT_TRUE(result.guidance->reading);
+    EXPECT_EQ(result.guidance->reading->agreeing, 2);
+    lab.step(frameAt(good, 62));
+    result = lab.step(frameAt(good, 63));
+    EXPECT_TRUE(result.guidance->scan);
+}
+
+TEST(DocumentProcessorMrz, WindowClearsAfterASecondWithoutAPage) {
+    Reading lab;
+    lab.finder->steps = steps({{true, 2}, {false, 31}, {true, 1}});
+    const cv::Mat good = goodFrame();
+    lab.step(frameAt(good, 0));
+    lab.step(frameAt(good, 1));
+    ProcessorResult result = lab.step(frameAt(good, 2));
+    EXPECT_EQ(result.guidance->reading->agreeing, 2);
+    for (int n = 3; n <= 31; ++n) {
+        result = lab.step(frameAt(good, n));
+    }
+    EXPECT_EQ(result.guidance->reading->agreeing, 2); // 990 ms without a page
+    result = lab.step(frameAt(good, 32));
+    EXPECT_EQ(result.guidance->reading->agreeing, 0); // 1023 ms
+    lab.step(frameAt(good, 33));
+    result = lab.step(frameAt(good, 34));
+    EXPECT_EQ(result.guidance->reading->agreeing, 1);
+}
+
+TEST(DocumentProcessorMrz, TimeToScanFromTheFirstPageAfterAClear) {
+    Reading lab;
+    lab.finder->steps = steps({{true, 1}, {false, 40}, {true, 1}});
+    const cv::Mat good = goodFrame();
+    ProcessorResult result;
+    for (int n = 0; n <= 44; ++n) {
+        result = lab.step(frameAt(good, n));
+    }
+    ASSERT_TRUE(result.guidance->scan);
+    EXPECT_EQ(result.guidance->scan->timeToScan, std::chrono::milliseconds(66)); // frame 43 − frame 41
+    EXPECT_EQ(result.guidance->scan->reads, 3);
+}
+
+TEST(DocumentProcessorMrz, BandFollowsThisFramesQuad) {
+    Reading lab;
+    doc_vision::Quad shifted = kQuad;
+    for (cv::Point2d& corner : shifted) {
+        corner.x += 50;
+    }
+    lab.finder->steps = {page(kQuad), page(kQuad), page(shifted)};
+    const cv::Mat good = goodFrame();
+    lab.step(frameAt(good, 0));
+    const ProcessorResult first = lab.step(frameAt(good, 1));
+    ASSERT_TRUE(first.guidance->bandOverlay);
+    ASSERT_TRUE(first.guidance->reading && first.guidance->reading->band);
+    const auto* polygon = std::get_if<visual_debug::Polygon>(&first.overlays[*first.guidance->bandOverlay]);
+    ASSERT_TRUE(polygon);
+    EXPECT_EQ(polygon->label, "MRZ band");
+    const doc_vision::Quad expected =
+        doc_vision::pageToFrame(*readingOf(kLine1, kLine2).band, kQuad, doc_vision::kPageSize);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_NEAR((*first.guidance->reading->band)[i].x, expected[i].x, 1e-6);
+        EXPECT_NEAR((*first.guidance->reading->band)[i].y, expected[i].y, 1e-6);
+    }
+    const ProcessorResult moved = lab.step(frameAt(good, 2));
+    ASSERT_TRUE(moved.guidance->reading && moved.guidance->reading->band);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_NEAR((*moved.guidance->reading->band)[i].x, expected[i].x + 50, 1.0);
+        EXPECT_NEAR((*moved.guidance->reading->band)[i].y, expected[i].y, 1.0);
+    }
+}
+
+TEST(DocumentProcessorMrz, NoBandOnAHeldPage) {
+    Reading lab;
+    lab.finder->steps = {page(kQuad), page(kQuad), nothing()};
+    const cv::Mat good = goodFrame();
+    lab.step(frameAt(good, 0));
+    ASSERT_TRUE(lab.step(frameAt(good, 1)).guidance->bandOverlay);
+    const ProcessorResult held = lab.step(frameAt(good, 2));
+    EXPECT_TRUE(held.guidance->outlineOverlay);
+    EXPECT_FALSE(held.guidance->bandOverlay);
+    EXPECT_FALSE(held.guidance->reading->band);
+}
+
+TEST(DocumentProcessorMrz, NoBandWhileTheBannerShowsABadHint) {
+    Reading lab;
+    const cv::Mat good = goodFrame();
+    const cv::Mat soft = blurred(6.0);
+    lab.step(frameAt(good, 0));
+    for (int n = 1; n <= 20; ++n) {
+        lab.step(frameAt(soft, n));
+    }
+    const ProcessorResult passing = lab.step(frameAt(good, 21)); // one gate-passing frame in a blurred run
+    EXPECT_EQ(passing.guidance->shownHint, Hint::Blurred);
+    EXPECT_FALSE(passing.guidance->bandOverlay);
+}
+
+TEST(DocumentProcessorMrz, TurnedReadTurnsTheNextJob) {
+    Reading lab;
+    lab.reader->readings = {bandAt(30, 120), bandAt(760, 850)}; // the page as flattened is upside down
+    lab.reader->last = bandAt(760, 850);
+    lab.finder->steps = steps({{true, 2}, {false, 12}, {true, 1}});
+    const cv::Mat good = goodFrame();
+    lab.step(frameAt(good, 0)); // read as flattened (band at the top), then turned
+    lab.step(frameAt(good, 1)); // read turned first
+    EXPECT_EQ(lab.reader->bottomDarker, (std::vector<bool>{true, false, false}));
+    for (int n = 2; n <= 13; ++n) {
+        lab.step(frameAt(good, n)); // the page lost past PageHold: its corners, and so its turn, forgotten
+    }
+    lab.step(frameAt(good, 14));
+    EXPECT_TRUE(lab.reader->bottomDarker.back());
+}
+
+TEST(DocumentProcessorMrz, ScanQuadIsUpright) {
+    Reading lab;
+    lab.reader->readings = {bandAt(30, 120), bandAt(760, 850)};
+    lab.reader->last = bandAt(760, 850);
+    const cv::Mat good = goodFrame();
+    ProcessorResult result;
+    for (int n = 0; n <= 3; ++n) {
+        result = lab.step(frameAt(good, n));
+    }
+    ASSERT_TRUE(result.guidance->scan);
+    const doc_vision::Quad& quad = result.guidance->scan->quad;
+    EXPECT_EQ(quad[0], kQuad[2]);
+    EXPECT_EQ(quad[1], kQuad[3]);
+    EXPECT_EQ(quad[2], kQuad[0]);
+    EXPECT_EQ(quad[3], kQuad[1]);
+    // The band, turned back, lies along the page's bottom as read: next to corners 3 and 4 (the frame's top).
+    const doc_vision::Quad& band = result.guidance->scan->band;
+    EXPECT_LT((band[0].y + band[1].y + band[2].y + band[3].y) / 4, (kQuad[0].y + kQuad[3].y) / 2);
 }
 
 } // namespace

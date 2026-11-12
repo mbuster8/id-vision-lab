@@ -22,6 +22,13 @@
 
 namespace lab_core {
 
+// The read window (spec §4.2): the agreement, hint 11's last read, hint 12's clock and the time to scan's
+// start are cleared once no fresh page has been found for this long, in frame time. A failing gate clears
+// nothing.
+inline constexpr std::chrono::nanoseconds kReadWindowClearAfter = std::chrono::seconds{1};
+// Hint 12: this long since the first gate-passing frame after the window was cleared, without an accept.
+inline constexpr std::chrono::nanoseconds kCannotReadAfter = std::chrono::seconds{5};
+
 // The Document processor's MRZ reader (A4), made on the worker's thread on the first read; no `make`, no
 // reading. At namespace scope: a default argument of the class it is nested in could not use its
 // initialisers.
@@ -69,6 +76,7 @@ private:
     };
 
     void collectReads();
+    void clearReadWindow();
     void accept(const doc_vision::Mrz& mrz, const MrzDone& accepting);
     std::vector<Finding> readerFindings() const;
     std::vector<Finding> scanFindings() const;
@@ -97,6 +105,15 @@ private:
     std::optional<std::chrono::nanoseconds> m_lastReadTime; // the last read's two stages
     std::string m_lastReadError;
     std::shared_ptr<const MrzScan> m_scan;
+    std::optional<std::chrono::nanoseconds> m_lastFreshAt;     // the last frame with a page found in it
+    std::optional<std::chrono::nanoseconds> m_firstGatePassAt; // hint 12's clock
+    bool m_lastReadNoBand = false;                             // hint 11
+    // The last read's band on the page as read, drawn through each frame's own quad.
+    struct BandSeen {
+        doc_vision::Quad onPage{};
+        bool turned = false;
+    };
+    std::optional<BandSeen> m_band;
 };
 
 } // namespace lab_core
