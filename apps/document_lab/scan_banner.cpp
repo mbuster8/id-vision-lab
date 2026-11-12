@@ -29,6 +29,13 @@ constexpr int kSmallestBig = 22;
 constexpr int kIcon = 34;
 constexpr int kIconGap = 14;
 constexpr int kSmallSize = 18;
+// A4's progress bar (spec §3.2): three parts, 70 × 8, radius 4, 6 apart.
+constexpr int kBarParts = 3;
+constexpr int kBarPartWidth = 70;
+constexpr int kBarHeight = 8;
+constexpr double kBarRadius = 4;
+constexpr int kBarGap = 6;
+constexpr int kBarWidth = kBarParts * kBarPartWidth + (kBarParts - 1) * kBarGap;
 
 // The chips (spec §3.6).
 constexpr int kChipsBottom = 22; // from the canvas's bottom, as the widget's own transparent margin
@@ -180,6 +187,15 @@ void ScanBanner::setContent(std::optional<BannerContent> content) {
     }
 }
 
+void ScanBanner::setProgress(std::optional<int> filled) {
+    if (filled == m_progress) {
+        return;
+    }
+    m_progress = filled;
+    updateGeometry();
+    update();
+}
+
 ScanBanner::Layout ScanBanner::layoutFor(int width) const {
     Layout layout;
     if (!m_content) {
@@ -206,12 +222,22 @@ ScanBanner::Layout ScanBanner::layoutFor(int width) const {
                                         Qt::TextWordWrap | Qt::AlignHCenter, m_content->smallLine)
                           .height();
     }
+    const bool bar = m_progress.has_value();
+    if (bar) {
+        contentWidth = std::max(contentWidth, std::min(kBarWidth, innerLimit));
+    }
     const int panelWidth = contentWidth + 2 * kPaddingX;
-    const int panelHeight = 2 * kPaddingY + layout.rowHeight + (smallHeight > 0 ? kLineGap + smallHeight : 0);
+    const int panelHeight = 2 * kPaddingY + layout.rowHeight +
+                            (smallHeight > 0 ? kLineGap + smallHeight : 0) +
+                            (bar ? kLineGap + kBarHeight : 0);
     layout.panel = QRectF((width - panelWidth) / 2, kBannerTop, panelWidth, panelHeight);
     layout.smallText =
         QRectF(layout.panel.left() + kPaddingX, layout.panel.top() + kPaddingY + layout.rowHeight + kLineGap,
                contentWidth, smallHeight);
+    if (bar) {
+        const double top = layout.smallText.top() + (smallHeight > 0 ? smallHeight + kLineGap : 0);
+        layout.bar = QRectF(layout.panel.center().x() - kBarWidth / 2.0, top, kBarWidth, kBarHeight);
+    }
     return layout;
 }
 
@@ -263,6 +289,15 @@ void ScanBanner::paintEvent(QPaintEvent*) {
         painter.setPen(colours.small);
         painter.drawText(layout.smallText, Qt::TextWordWrap | Qt::AlignHCenter | Qt::AlignTop,
                          m_content->smallLine);
+    }
+    if (m_progress) {
+        painter.setPen(Qt::NoPen);
+        for (int part = 0; part < kBarParts; ++part) {
+            painter.setBrush(part < *m_progress ? kProgressFilled : kProgressEmpty);
+            painter.drawRoundedRect(QRectF(layout.bar.left() + part * (kBarPartWidth + kBarGap),
+                                           layout.bar.top(), kBarPartWidth, kBarHeight),
+                                    kBarRadius, kBarRadius);
+        }
     }
 }
 

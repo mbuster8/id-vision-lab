@@ -39,6 +39,9 @@ public:
 
     void setContent(std::optional<BannerContent> content); // nullopt hides it
     std::optional<BannerContent> content() const { return m_content; }
+    // A4's Reading: the three-part bar under the small line, this many parts filled; nothing hides it.
+    void setProgress(std::optional<int> filled);
+    std::optional<int> progress() const { return m_progress; }
     FittedLine fittedBigLine() const { return m_fitted; } // as last painted
 
     QSize sizeHint() const override;
@@ -53,12 +56,14 @@ private:
         FittedLine big;
         QRectF panel;     // in the widget
         QRectF smallText; // in the widget
+        QRectF bar;       // the progress bar, in the widget; empty without one
         int bigWidth = 0; // the fitted big line's advance
         int rowHeight = 0;
     };
     Layout layoutFor(int width) const;
 
     std::optional<BannerContent> m_content;
+    std::optional<int> m_progress;
     FittedLine m_fitted;
 };
 

@@ -219,6 +219,38 @@ TEST(ScanBanner, BannerPaintsItsTone) {
     EXPECT_EQ(banner.fittedBigLine().pixelSize, 32);
 }
 
+// A4: Reading's three parts under the small line, 70 × 8 px, 6 px apart: filled #3DDC84, empty #3E4A44 (spec
+// §3.2). The filled colour is also the Good tone's, so the bar's own pixels are counted against the same
+// banner without it.
+TEST(ScanBanner, ProgressBarHasThreeParts) {
+    QWidget canvas;
+    document_lab::ScanBanner banner(&canvas);
+    document_lab::BannerContent content = document_lab::bannerFor(Hint::Good);
+    content.smallLine = document_lab::readingLine(2);
+    banner.setContent(content);
+    const QImage without = rendered(banner, {900, 300});
+    const int heightWithout = banner.heightForWidth(900);
+
+    banner.setProgress(2);
+    const QImage with = rendered(banner, {900, 300});
+
+    const int filled =
+        pixelsOf(with, document_lab::kProgressFilled) - pixelsOf(without, document_lab::kProgressFilled);
+    const int empty = pixelsOf(with, document_lab::kProgressEmpty);
+    EXPECT_GE(filled, 900); // two 70 × 8 parts, less their rounded corners' blended edges
+    EXPECT_LE(filled, 1120);
+    EXPECT_GE(empty, 450); // one part
+    EXPECT_LE(empty, 560);
+    EXPECT_EQ(banner.heightForWidth(900), heightWithout + 18); // a 10 px gap and the 8 px bar
+}
+
+TEST(ScanBanner, NoProgressNoBar) {
+    QWidget canvas;
+    document_lab::ScanBanner banner(&canvas);
+    banner.setContent(document_lab::bannerFor(Hint::Good));
+    EXPECT_EQ(pixelsOf(rendered(banner, {900, 300}), document_lab::kProgressEmpty), 0);
+}
+
 TEST(ScanBanner, NoContentHidesIt) {
     QWidget canvas;
     document_lab::ScanBanner banner(&canvas);
