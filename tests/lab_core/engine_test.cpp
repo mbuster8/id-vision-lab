@@ -87,10 +87,17 @@ struct Harness {
     Clock::time_point now = Clock::time_point{} + 1000s;
     int resultsReady = 0;
     int statusChanges = 0;
+    std::function<void()> retiringSender;
     Engine engine{Engine::Mode::Immediate,
                   {.resultReady = [this] { ++resultsReady; },
                    .statusChanged = [this] { ++statusChanges; },
-                   .now = [this] { return now; }}};
+                   .now = [this] { return now; },
+                   .retiringSender =
+                       [this] {
+                           if (retiringSender) {
+                               retiringSender();
+                           }
+                       }}};
 
     // Pumps once and takes the result, if any.
     std::optional<lab_core::LabResult> next() {
@@ -1040,6 +1047,25 @@ TEST(Engine, EndingChannelsFromTheCall) {
     latch.release();
 
     EXPECT_TRUE(pumpUntil(h, [&] { return !h.engine.status().endingChannels; }));
+}
+
+// Memory exhausted while ■ retires the sender stops the run, as any throw does, and still answers the call:
+// ▶ is not left disabled, and the window can close.
+TEST(Engine, ThrowWhileRetiringASenderStillLetsTheWindowClose) {
+    Harness h;
+    KeptSender kept;
+    h.engine.setSender(std::move(kept.owned));
+    h.engine.startReplay(openerOf(framesApart(3, 40ms)));
+    h.engine.pump();
+    h.retiringSender = [] { throw std::bad_alloc(); };
+
+    h.engine.stopSending(true);
+    h.engine.pump();
+    h.engine.pump();
+
+    EXPECT_EQ(h.engine.status().state, EngineState::Stopped);
+    EXPECT_FALSE(h.engine.status().endingChannels);
+    EXPECT_TRUE(h.engine.shutDown());
 }
 
 // ▶ on a paused replay sends the frame on screen at once rather than nothing until the next frame.

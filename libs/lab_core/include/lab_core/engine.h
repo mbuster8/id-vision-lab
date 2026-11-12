@@ -71,6 +71,7 @@ struct EngineHooks {
     std::function<void()> resultReady;      // a result entered the empty slot
     std::function<void()> statusChanged;    // the state, the message or the recording changed
     std::function<Clock::time_point()> now; // null: Clock::now
+    std::function<void()> retiringSender;   // tests throw here, as a full memory would while a sender retires
 };
 
 // Moves frames from a source through the processor to the window, the recorder and the sender, on one

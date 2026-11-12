@@ -1037,11 +1037,21 @@ void Engine::doPauseSending(bool paused) {
 }
 
 void Engine::doStopSending(bool endChannels) {
-    retireSender(endChannels);
-    if (endChannels) {
-        const std::lock_guard lock(m_mutex);
-        --m_endsAsked; // the retiree, if there was one, now says whether it is ending
+    const auto answered = [this, endChannels] {
+        if (endChannels) {
+            const std::lock_guard lock(m_mutex);
+            --m_endsAsked; // the retiree, if there was one, now says whether it is ending
+        }
+    };
+    try {
+        retireSender(endChannels);
+    } catch (...) {
+        // A throw (memory exhausted) stops the run, and still answers the call: else ▶ stays disabled and
+        // shutDown() never says the window may close.
+        answered();
+        throw;
     }
+    answered();
 }
 
 // The sender goes on a thread of its own, after ending its channels when asked, so a send in progress to a
@@ -1057,6 +1067,9 @@ void Engine::retireSender(bool endChannels) {
     }
     if (!old) {
         return;
+    }
+    if (m_hooks.retiringSender) {
+        m_hooks.retiringSender();
     }
     try {
         std::future<void> retiring =
