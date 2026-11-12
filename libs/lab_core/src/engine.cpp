@@ -228,6 +228,10 @@ void Engine::setProcessor(std::unique_ptr<FrameProcessor> processor) {
     post([this, processor = held(std::move(processor))] { doSetProcessor(std::move(*processor)); });
 }
 
+void Engine::resetProcessor() {
+    post([this] { resetProcessorNow(); });
+}
+
 void Engine::startRecording(std::unique_ptr<frame_io::RecordingWriter> writer) {
     // The counts start now, when the user asked, not when the processing thread gets to it.
     Totals base;
@@ -952,7 +956,7 @@ void Engine::doSetAsFastAsPossible(bool on) {
 
 void Engine::doSetProcessor(std::unique_ptr<FrameProcessor> processor) {
     m_processor = processor ? std::move(processor) : makeProcessor(ProcessorKind::None);
-    resetProcessor();
+    resetProcessorNow();
     // Frames that keep coming show the new results soon enough; a paused replay or an image needs this.
     if (m_onScreen && !isRunning(m_state)) {
         process(*m_onScreen, false);
@@ -1045,7 +1049,7 @@ void Engine::newGeneration() {
         m_status.generation = m_generation;
         stale.swap(m_slot);
     }
-    resetProcessor();
+    resetProcessorNow();
     m_held.reset();
     m_heldDue.reset();
     m_stepWanted = false;
@@ -1133,7 +1137,7 @@ void Engine::setMessage(std::string message) {
     m_notifyStatus = true;
 }
 
-void Engine::resetProcessor() {
+void Engine::resetProcessorNow() {
     try {
         m_processor->reset();
     } catch (...) {
