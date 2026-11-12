@@ -305,7 +305,8 @@ absolute seek replaces the request, steps add to it (Step Back is one step back)
 steps count from a seek still running, else from the frame on screen, and stop at the first and the last frame.
 A new source, a stop or a restart drops the request; the command carries its request's number, so a request
 made after them waits for its own command, behind theirs, rather than go to an older command ahead of them.
-The status says `seeking` until the target's frame is shown. Each run has a generation, bumped by a new source,
+The status says `seeking` until the target's frame is shown, and for an absolute seek (the slider) from the
+moment it is asked for, so a refresh before its command runs leaves the handle where it was let go. Each run has a generation, bumped by a new source,
 a restart, a seek and a loop: the processor is reset, the recording stops (one recording is one unbroken run),
 and nothing of the old one reaches the result slot. Whatever a source, a command or the recorder throws stops
 the run with `internal error` rather than leave the thread, and a recording whose writer failed stops at the

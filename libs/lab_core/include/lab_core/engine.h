@@ -226,6 +226,7 @@ private:
 
     void newGeneration();
     void clearSeeking();
+    void showRunningSeek();
     void stopFailedRecording();
     void stopAfterThrow(const std::string& what);
     void stopRecordingNow(const std::string& message = {});

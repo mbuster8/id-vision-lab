@@ -449,6 +449,35 @@ TEST(Engine, SeekingUntilTheFrameArrives) {
     EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
 }
 
+// The status says a seek is on its way from the moment it is asked for, so a refresh before its command runs
+// leaves the slider's handle where the user let it go rather than put it back on the frame on screen; a seek
+// dropped before it runs, or found unneeded, is no longer shown.
+TEST(Engine, SeekShowsItsTargetBeforeItsCommandRuns) {
+    Harness h;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    pausedAt(h, 2);
+
+    h.engine.seek(7);
+    EXPECT_TRUE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(7));
+    h.engine.seekBy(+1);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(8));
+    h.engine.seek(100);
+    EXPECT_EQ(h.engine.status().seekTarget, std::optional<std::uint64_t>(9)); // the last frame
+    EXPECT_EQ(pumpUntilAResult(h), 9U);
+    EXPECT_FALSE(h.engine.status().seeking);
+
+    h.engine.seek(9); // the frame on screen, paused
+    EXPECT_TRUE(h.engine.status().seeking);
+    h.engine.pump();
+    EXPECT_FALSE(h.engine.status().seeking);
+    EXPECT_EQ(h.engine.status().seekTarget, std::nullopt);
+
+    h.engine.seek(3);
+    h.engine.restart();
+    EXPECT_FALSE(h.engine.status().seeking);
+}
+
 // A click on the slider seeks on the press and again on the release, and holding ← at the first frame keeps
 // asking for frame 0: a seek already running to that frame goes on rather than start again.
 TEST(Engine, SameTargetDoesNotRestartTheSeek) {
