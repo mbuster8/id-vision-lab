@@ -1,7 +1,5 @@
 #pragma once
 
-#include <lab_core/document_kind.h>
-
 #include <QWidget>
 
 class QEvent;
@@ -9,6 +7,12 @@ class QLabel;
 class QPaintEvent;
 class QPushButton;
 class QScrollArea;
+
+// Declared, not included: lab_core/document_kind.h brings doc_vision/mrz.h, whose <compare> is then the first
+// standard header Qt 6.4's moc meets here, and it cannot parse GCC 13's <concepts> behind it (Ubuntu 24.04).
+namespace lab_core {
+enum class DocumentKind;
+} // namespace lab_core
 
 namespace document_lab {
 

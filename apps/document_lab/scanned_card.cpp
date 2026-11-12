@@ -4,6 +4,8 @@
 
 #include "shades.h"
 
+#include <lab_core/document_kind.h>
+
 #include <QApplication>
 #include <QEvent>
 #include <QFont>

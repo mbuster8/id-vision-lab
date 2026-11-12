@@ -3,6 +3,8 @@
 
 #include "palette_support.h"
 
+#include <lab_core/document_kind.h>
+
 #include <QApplication>
 #include <QColor>
 #include <QImage>
