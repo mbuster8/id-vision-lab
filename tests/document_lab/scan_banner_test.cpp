@@ -9,6 +9,7 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
+#include <QLocale>
 #include <QPoint>
 #include <QRegion>
 #include <QString>
@@ -103,6 +104,37 @@ TEST(ScanWords, MrzHints) {
     EXPECT_EQ(document_lab::stateWord(Hint::NoMrzBand), "reading");
     EXPECT_EQ(document_lab::stateWord(Hint::CannotReadMrz), "reading");
 }
+
+// A4: Reading's small line and its alternatives (spec §3.1, §3.2).
+TEST(ScanWords, ReadingLine) {
+    EXPECT_EQ(document_lab::readingLine(0), "Reading the lines at the bottom · 0 of 3");
+    EXPECT_EQ(document_lab::readingLine(2), "Reading the lines at the bottom · 2 of 3");
+    EXPECT_EQ(document_lab::readingLine(3), "Reading the lines at the bottom · 3 of 3");
+    EXPECT_EQ(document_lab::readingNeedsMotion(), "MRZ reading needs a camera or a video");
+    EXPECT_EQ(document_lab::readerUnavailableLine(),
+              "The MRZ reader could not be opened · reinstall the Document Lab");
+}
+
+// Dates in English month names whatever the locale (spec §3.4); an unknown day or month shows less.
+TEST(ScanWords, MrzDates) {
+    using doc_vision::MrzDate;
+    EXPECT_EQ(document_lab::mrzDate("740812", MrzDate{1974, 8, 12}), "12 Aug 1974");
+    EXPECT_EQ(document_lab::mrzDate("7408<<", MrzDate{1974, 8, 0}), "Aug 1974");
+    EXPECT_EQ(document_lab::mrzDate("74<<<<", MrzDate{1974, 0, 0}), "1974");
+    EXPECT_EQ(document_lab::mrzDate("741312", std::nullopt), "741312");
+    const QLocale before;
+    QLocale::setDefault(QLocale(QLocale::German));
+    EXPECT_EQ(document_lab::mrzDate("120415", MrzDate{2012, 4, 15}), "15 Apr 2012");
+    QLocale::setDefault(before);
+}
+
+TEST(ScanWords, Expired) {
+    EXPECT_EQ(document_lab::expiredWarning(doc_vision::MrzDate{2012, 4, 15}),
+              "Expired on 15 Apr 2012. A5 and later steps flag this; the scan itself still succeeded.");
+}
+
+// A still's name is fixed words and the frame's number as the user sees it: never MRZ text.
+TEST(ScanWords, StillNameHasNoMrz) { EXPECT_EQ(document_lab::stillName(1342), "lab passport frame 1343"); }
 
 TEST(ScanWords, WindowStates) {
     EXPECT_EQ(document_lab::bannerFor(WindowState::NoCamera),
