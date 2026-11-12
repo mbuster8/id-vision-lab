@@ -13,15 +13,34 @@
 // INTER_LINEAR). labels.csv has rows "clip,frame,state[,x0,y0,...,x3,y3]": state "doc" (the page wholly in
 // view, with its corners), "part" (cut by the frame's edge) or "none". MIDV-2020's frames are cut when a
 // corner of their doc_quad lies outside the image.
+//
+// A4, reading the MRZ (with --replay or --midv; not --labels, whose loop reuses one cv::Mat for every frame):
+//   --read every    every gate-passing frame read before the next is processed: deterministic, for accepted
+//                   right / wrong / never, reads made, the share valid and valid-but-wrong reads by line;
+//   --read paced    frames paced at their own times (frame_io::ReplayPacer), the reader on its own thread as
+//                   in the lab: for the time to accept, each stage's timing, and the processor's per-frame
+//                   time while the reader is busy;
+//   --reader-threads <n> (the reader's intra-op threads; 0 for ONNX Runtime's default), --truth <file> (the
+//   MRZ every replayed clip shows: its first two lines, 44 characters each once whitespace is removed;
+//   compared inside, never printed), --midv-templates <folder> (MIDV-2020's templates: each clip's truth from
+//   its template's mrz_line0 and mrz_line1; with --read, MIDV's clips are 00, 04, …, 96), --band-stats (p5,
+//   p50 and p95 of the band's peak, width share and aspect over the reads), --negatives <folder> (pages with
+//   no MRZ, read once each, for the same statistics). The MRZ models are looked for beside --model.
 
 #include <doc_vision/guidance.h>
+#include <doc_vision/mrz.h>
+#include <doc_vision/mrz_reader.h>
 #include <doc_vision/onnx_model.h>
 #include <doc_vision/page_detector.h>
 #include <doc_vision/page_geometry.h>
 #include <doc_vision/quality_gates.h>
+#include <frame_io/image_folder.h>
 #include <frame_io/recording.h>
+#include <frame_io/replay_pacer.h>
 #include <lab_core/document_processor.h>
 #include <lab_core/focus_controller.h>
+#include <lab_core/mrz_worker.h>
+#include <lab_core/processors.h>
 
 #include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
@@ -34,6 +53,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -41,9 +62,11 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -137,6 +160,54 @@ private:
     TimedFinder& m_finder;
 };
 
+// A4: every read the processor's reader makes, from whichever thread reads.
+struct ReadLog {
+    std::mutex mutex;
+    std::vector<doc_vision::MrzReading> readings; // this clip's, error-free
+    int errors = 0;
+    bool ending = false; // the clip's processor is going: a read it cancels is no error
+    std::atomic<bool> busy{false};
+    std::vector<double> openMs;
+};
+
+class LoggingReader final : public doc_vision::MrzReader {
+public:
+    LoggingReader(std::unique_ptr<doc_vision::MrzReader> inner, ReadLog& log)
+        : m_inner(std::move(inner)), m_log(log) {}
+    doc_vision::MrzReading read(const cv::Mat& page, std::string& error) override {
+        m_log.busy = true;
+        doc_vision::MrzReading reading = m_inner->read(page, error);
+        {
+            const std::lock_guard lock(m_log.mutex);
+            if (error.empty()) {
+                m_log.readings.push_back(reading);
+            } else if (!m_log.ending) {
+                ++m_log.errors;
+            }
+        }
+        m_log.busy = false;
+        return reading;
+    }
+    void cancel() override { m_inner->cancel(); }
+
+private:
+    std::unique_ptr<doc_vision::MrzReader> m_inner;
+    ReadLog& m_log;
+};
+
+// What reading one clip came to. Nothing of what was read: only whether it was right.
+struct ClipReads {
+    enum class Accept { Never, Right, Wrong, Unknown };
+    Accept accept = Accept::Never;
+    std::optional<double> acceptedAt; // the clip's time, s
+    std::optional<double> timeToScan; // the scan's own, s
+    int reads = 0;
+    int valid = 0;
+    int validWrongLine1 = 0; // valid reads (every check digit passes) that are not the truth, by line
+    int validWrongLine2 = 0;
+    int errors = 0;
+};
+
 // What one group of frames (a label, or MIDV's in-view and cut frames) came to.
 struct Group {
     int frames = 0;
@@ -160,6 +231,10 @@ struct Run {
     // first time how long after sharpness began to fail first.
     int cannotFocus = 0;
     std::optional<double> firstCannotFocusAfter;
+    // A4's reading.
+    std::vector<ClipReads> reads;
+    std::vector<double> detect, recognise, busyFrame; // ms
+    std::vector<double> peak, widthShare, aspect;     // the reads' band candidates
 };
 
 struct Options {
@@ -173,7 +248,79 @@ struct Options {
     bool replay = false;
     int frames = 30;
     std::vector<std::string> inputs;
+    // A4.
+    std::optional<std::string> read; // "every" or "paced"
+    int readerThreads = doc_vision::kReaderIntraOpThreads;
+    std::optional<std::filesystem::path> truth;
+    std::optional<std::filesystem::path> midvTemplates;
+    bool bandStats = false;
+    std::optional<std::filesystem::path> negatives;
 };
+
+// The MRZ as compared: whitespace removed, upper-cased, two lines of 44 joined by '\n' (Mrz::text()'s form).
+std::optional<std::string> truthOf(const std::string& line1, const std::string& line2) {
+    const auto clean = [](const std::string& line) {
+        std::string out;
+        for (const char c : line) {
+            if (!std::isspace(static_cast<unsigned char>(c))) {
+                out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+        }
+        return out;
+    };
+    const std::string first = clean(line1);
+    const std::string second = clean(line2);
+    if (first.size() != 44 || second.size() != 44) {
+        return std::nullopt;
+    }
+    return first + "\n" + second;
+}
+
+// The owner's truth file: its first two lines. Never printed.
+std::optional<std::string> readTruthFile(const std::filesystem::path& path) {
+    std::ifstream in(path);
+    std::string line1;
+    std::string line2;
+    if (!std::getline(in, line1) || !std::getline(in, line2)) {
+        return std::nullopt;
+    }
+    return truthOf(line1, line2);
+}
+
+// MIDV-2020's template for clip `clip` of `type`: its mrz_line0 and mrz_line1.
+std::optional<std::string> midvTruth(const std::filesystem::path& templates, const std::string& type,
+                                     const std::string& clip) {
+    std::ifstream in(templates / "annotations" / (type + ".json"));
+    if (!in) {
+        return std::nullopt;
+    }
+    const nlohmann::json annotations = nlohmann::json::parse(in, nullptr, false);
+    if (annotations.is_discarded() || !annotations.contains("_via_img_metadata")) {
+        return std::nullopt;
+    }
+    for (const auto& [key, meta] : annotations["_via_img_metadata"].items()) {
+        if (meta.value("filename", "") != clip + ".jpg") {
+            continue;
+        }
+        std::string lines[2];
+        for (const auto& region : meta["regions"]) {
+            const std::string field = region["region_attributes"].value("field_name", "");
+            if (field == "mrz_line0" || field == "mrz_line1") {
+                lines[field == "mrz_line0" ? 0 : 1] = region["region_attributes"].value("value", "");
+            }
+        }
+        return truthOf(lines[0], lines[1]);
+    }
+    return std::nullopt;
+}
+
+std::unique_ptr<doc_vision::MrzScanner> openScanner(const Options& options, std::string& error,
+                                                    doc_vision::OpenFailure* failure = nullptr) {
+    const std::filesystem::path folder = options.model.parent_path();
+    return doc_vision::MrzScanner::open(folder / lab_core::kMrzDetectionModelFile,
+                                        folder / lab_core::kMrzRecognitionModelFile, error, failure,
+                                        options.readerThreads);
+}
 
 doc_vision::Thresholds thresholdsOf(const Options& options) {
     doc_vision::Thresholds thresholds;
@@ -193,12 +340,36 @@ public:
         : m_options(options), m_thresholds(thresholdsOf(options)), m_finder(detector, run.timings),
           m_run(run) {}
 
-    void startClip() {
+    // `truth`: the MRZ this clip shows, when known (A4's --read).
+    void startClip(std::optional<std::string> truth = std::nullopt) {
+        lab_core::DocumentProcessor::Reader reader;
+        if (m_options.read) {
+            reader.mode = *m_options.read == "every" ? lab_core::MrzWorker::Mode::Manual
+                                                     : lab_core::MrzWorker::Mode::Threaded;
+            reader.make = [this](std::string& error,
+                                 doc_vision::OpenFailure& failure) -> std::unique_ptr<doc_vision::MrzReader> {
+                const Clock::time_point start = Clock::now();
+                std::unique_ptr<doc_vision::MrzScanner> scanner = openScanner(m_options, error, &failure);
+                {
+                    const std::lock_guard lock(m_log.mutex);
+                    m_log.openMs.push_back(msSince(start));
+                }
+                if (!scanner) {
+                    return nullptr;
+                }
+                return std::make_unique<LoggingReader>(std::move(scanner), m_log);
+            };
+            m_run.reads.emplace_back();
+            m_truth = std::move(truth);
+            m_pacer.restart();
+            const std::lock_guard lock(m_log.mutex);
+            m_log.ending = false;
+        }
         m_processor = std::make_unique<lab_core::DocumentProcessor>(
             [this](std::string&, doc_vision::OpenFailure&) -> std::unique_ptr<doc_vision::PageFinder> {
                 return std::make_unique<Forwarding>(m_finder);
             },
-            m_thresholds);
+            m_thresholds, std::move(reader));
         m_shown.reset();
         m_run.firstGood.emplace_back();
         // No control: the rule for a camera the lab cannot focus. Every frame of a replay counts at once.
@@ -206,7 +377,8 @@ public:
         m_focusState = lab_core::FocusStatus::State::Camera;
     }
 
-    void frame(cv::Mat image, std::uint64_t number, double seconds, Group* group,
+    // Whether the frame brought an accept (with --read: the clip can end there).
+    bool frame(cv::Mat image, std::uint64_t number, double seconds, Group* group,
                const std::optional<Quad>& truth, const visual_debug::ImageDescription& tags = {}) {
         if (m_options.size && image.size() != *m_options.size) {
             cv::resize(image, image, *m_options.size, 0, 0, cv::INTER_LINEAR);
@@ -216,15 +388,39 @@ public:
                                     .at = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                         std::chrono::duration<double>(seconds)),
                                     .tags = tags};
+        const bool paced = m_options.read && *m_options.read == "paced";
+        if (paced) {
+            std::this_thread::sleep_until(m_pacer.due(frame.at, Clock::now()));
+        }
+        const bool readerBusy = m_log.busy;
         const Clock::time_point start = Clock::now();
         const lab_core::ProcessorResult result = m_processor->process(frame);
-        m_run.timings.total.push_back(msSince(start));
+        const double took = msSince(start);
+        m_run.timings.total.push_back(took);
+        if (paced && readerBusy) {
+            m_run.busyFrame.push_back(took);
+        }
+        if (m_options.read && !paced) {
+            m_processor->pumpReaderForTests(); // read now: the next frame collects it
+        }
         const Clock::time_point convertStart = Clock::now();
         const cv::Mat bgr = doc_vision::toBgr8(image, tags.valueRange.min, tags.valueRange.max);
         m_run.timings.convert.push_back(msSince(convertStart));
 
         if (!result.guidance) {
-            return;
+            return false;
+        }
+        bool accepted = false;
+        if (m_options.read && result.guidance->scan &&
+            m_run.reads.back().accept == ClipReads::Accept::Never) {
+            ClipReads& clip = m_run.reads.back();
+            const std::string text = result.guidance->scan->mrz.text();
+            clip.accept = !m_truth           ? ClipReads::Accept::Unknown
+                          : text == *m_truth ? ClipReads::Accept::Right
+                                             : ClipReads::Accept::Wrong;
+            clip.acceptedAt = seconds;
+            clip.timeToScan = std::chrono::duration<double>(result.guidance->scan->timeToScan).count();
+            accepted = true;
         }
         m_number = number;
         const lab_core::FocusStatus focus = m_focus->next(frame, result.guidance->page);
@@ -259,7 +455,7 @@ public:
             sharpness = measures.sharpness;
         }
         if (group == nullptr) {
-            return;
+            return accepted;
         }
         ++group->frames;
         if (m_finder.raw) {
@@ -278,13 +474,63 @@ public:
         }
         group->frameGood += doc_vision::gatesPass(result.guidance->frameHint) ? 1 : 0;
         group->shownGood += doc_vision::gatesPass(shown) ? 1 : 0;
+        return accepted;
     }
+
+    // The clip's reads, once its processor (and a read in progress) is gone: counted, scored against the
+    // truth, timed. Nothing read is kept.
+    void finishClip() {
+        {
+            const std::lock_guard lock(m_log.mutex);
+            m_log.ending = true;
+        }
+        m_processor.reset(); // cancels and joins a threaded reader
+        if (!m_options.read) {
+            return;
+        }
+        std::vector<doc_vision::MrzReading> readings;
+        {
+            const std::lock_guard lock(m_log.mutex);
+            readings.swap(m_log.readings);
+            m_run.reads.back().errors = m_log.errors;
+            m_log.errors = 0;
+            m_log.ending = false;
+        }
+        ClipReads& clip = m_run.reads.back();
+        for (const doc_vision::MrzReading& reading : readings) {
+            ++clip.reads;
+            m_run.detect.push_back(std::chrono::duration<double, std::milli>(reading.detectTime).count());
+            if (reading.band) {
+                m_run.recognise.push_back(
+                    std::chrono::duration<double, std::milli>(reading.recogniseTime).count());
+            }
+            m_run.peak.push_back(reading.peak);
+            m_run.widthShare.push_back(reading.widthShare);
+            m_run.aspect.push_back(reading.aspect);
+            const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(reading.lines);
+            if (!mrz || !mrz->valid()) {
+                continue;
+            }
+            ++clip.valid;
+            if (m_truth && mrz->text() != *m_truth && mrz->lines.size() == 2) {
+                const std::string truthLine1 = m_truth->substr(0, 44);
+                const std::string truthLine2 = m_truth->substr(45);
+                clip.validWrongLine1 += mrz->lines[0] != truthLine1 ? 1 : 0;
+                clip.validWrongLine2 += mrz->lines[1] != truthLine2 ? 1 : 0;
+            }
+        }
+    }
+
+    ReadLog& log() { return m_log; }
 
 private:
     const Options& m_options;
     doc_vision::Thresholds m_thresholds;
     TimedFinder m_finder;
     Run& m_run;
+    ReadLog m_log;
+    std::optional<std::string> m_truth;
+    frame_io::ReplayPacer m_pacer;
     std::unique_ptr<lab_core::DocumentProcessor> m_processor;
     std::optional<Hint> m_shown;
     std::unique_ptr<lab_core::FocusController> m_focus;
@@ -380,6 +626,7 @@ void runLabelled(const Options& options, Scorer& scorer, Run& run) {
             }
             scorer.frame(image, static_cast<std::uint64_t>(i), i / fps, group, truth);
         }
+        scorer.finishClip();
         run.seconds += i / fps;
     }
 }
@@ -387,6 +634,13 @@ void runLabelled(const Options& options, Scorer& scorer, Run& run) {
 // Any replay the Document Lab opens, without labels: every frame at its own time, its tags too (a 16-bit
 // recording's value range), into one group.
 void runReplay(const Options& options, Scorer& scorer, Run& run) {
+    std::optional<std::string> truth;
+    if (options.read && options.truth) {
+        truth = readTruthFile(*options.truth);
+        if (!truth) {
+            std::printf("truth file not used: right and wrong are unknown\n");
+        }
+    }
     for (std::size_t c = 0; c < options.inputs.size(); ++c) {
         std::string error;
         const std::unique_ptr<frame_io::ReplaySource> source =
@@ -395,7 +649,7 @@ void runReplay(const Options& options, Scorer& scorer, Run& run) {
             std::fprintf(stderr, "source %zu: cannot be opened: %s\n", c + 1, error.c_str());
             continue;
         }
-        scorer.startClip();
+        scorer.startClip(truth);
         double last = 0;
         for (;;) {
             frame_io::ReadResult read = source->next();
@@ -406,9 +660,12 @@ void runReplay(const Options& options, Scorer& scorer, Run& run) {
                 break;
             }
             last = std::chrono::duration<double>(read.frame.at).count();
-            scorer.frame(read.frame.image, read.frame.number, last, &run.groups["all"], std::nullopt,
-                         read.frame.tags);
+            if (scorer.frame(read.frame.image, read.frame.number, last, &run.groups["all"], std::nullopt,
+                             read.frame.tags)) {
+                break; // accepted: the clip's reading is done
+            }
         }
+        scorer.finishClip();
         run.seconds += last;
     }
 }
@@ -459,7 +716,8 @@ std::vector<Annotated> annotatedFrames(const std::filesystem::path& clips, const
 void runMidv(const Options& options, Scorer& scorer, Run& run) {
     int clipsSeen = 0;
     for (const std::string& type : options.inputs) {
-        for (int c = 0; c < 100; ++c) {
+        // Reading: clips 00, 04, …, 96, as the spike ran them (spec §6).
+        for (int c = 0; c < 100; c += options.read ? 4 : 1) {
             char clip[8];
             std::snprintf(clip, sizeof clip, "%02d", c);
             std::vector<Annotated> frames = annotatedFrames(*options.midv, type, clip);
@@ -470,7 +728,9 @@ void runMidv(const Options& options, Scorer& scorer, Run& run) {
             if (static_cast<int>(frames.size()) > options.frames) {
                 frames.resize(static_cast<std::size_t>(options.frames));
             }
-            scorer.startClip();
+            scorer.startClip(options.read && options.midvTemplates
+                                 ? midvTruth(*options.midvTemplates, type, clip)
+                                 : std::nullopt);
             const int firstNumber = frames.front().number;
             for (const Annotated& frame : frames) {
                 const cv::Mat image = cv::imread(frame.file.string(), cv::IMREAD_COLOR);
@@ -483,10 +743,13 @@ void runMidv(const Options& options, Scorer& scorer, Run& run) {
                                  : frame.quad;
                 const cv::Size size = options.size.value_or(image.size());
                 const bool cut = doc_vision::edgeMarginShare(truth, size) < 0;
-                scorer.frame(image, static_cast<std::uint64_t>(frame.number),
-                             (frame.number - firstNumber) / 30.0, &run.groups[cut ? "cut" : "in view"],
-                             cut ? std::nullopt : std::optional<Quad>(truth));
+                if (scorer.frame(image, static_cast<std::uint64_t>(frame.number),
+                                 (frame.number - firstNumber) / 30.0, &run.groups[cut ? "cut" : "in view"],
+                                 cut ? std::nullopt : std::optional<Quad>(truth))) {
+                    break; // accepted
+                }
             }
+            scorer.finishClip();
             run.seconds += (frames.back().number - firstNumber) / 30.0;
         }
     }
@@ -566,17 +829,169 @@ void report(const Run& run) {
     std::printf("  gates               %s\n", percentiles(run.timings.gates).c_str());
 }
 
+std::string spread(std::vector<double> values) {
+    if (values.empty()) {
+        return "n/a";
+    }
+    std::sort(values.begin(), values.end());
+    const auto at = [&values](double q) {
+        return values[static_cast<std::size_t>(q * static_cast<double>(values.size() - 1) + 0.5)];
+    };
+    char text[96];
+    std::snprintf(text, sizeof text, "p5 %.3f  p50 %.3f  p95 %.3f  (%zu)", at(0.05), at(0.5), at(0.95),
+                  values.size());
+    return text;
+}
+
+struct BandStats {
+    std::vector<double> peak, widthShare, aspect;
+};
+
+// Pages with no MRZ, each resized to the flattened page's size and read once: where a band's candidate
+// falls when there is none.
+BandStats readNegatives(const Options& options) {
+    BandStats stats;
+    std::string error;
+    const std::unique_ptr<doc_vision::MrzScanner> scanner = openScanner(options, error);
+    if (!scanner) {
+        std::fprintf(stderr, "the MRZ reader could not be opened: %s\n", error.c_str());
+        return stats;
+    }
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(*options.negatives)) {
+        if (entry.is_regular_file() && frame_io::isImageFileName(entry.path())) {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    for (const std::filesystem::path& file : files) {
+        const cv::Mat image = cv::imread(file.string(), cv::IMREAD_COLOR);
+        if (image.empty()) {
+            continue;
+        }
+        cv::Mat page;
+        cv::resize(image, page, doc_vision::kPageSize, 0, 0, cv::INTER_AREA);
+        error.clear();
+        const doc_vision::MrzReading reading = scanner->read(page, error);
+        if (!error.empty()) {
+            continue;
+        }
+        stats.peak.push_back(reading.peak);
+        stats.widthShare.push_back(reading.widthShare);
+        stats.aspect.push_back(reading.aspect);
+    }
+    return stats;
+}
+
+const char* acceptWord(ClipReads::Accept accept) {
+    switch (accept) {
+    case ClipReads::Accept::Never:
+        return "never";
+    case ClipReads::Accept::Right:
+        return "right";
+    case ClipReads::Accept::Wrong:
+        return "WRONG";
+    case ClipReads::Accept::Unknown:
+        return "accepted (truth unknown)";
+    }
+    return "?";
+}
+
+// Aggregates only: whether each clip's accept was right, never what was read.
+void reportReading(const Options& options, const Run& run, const ReadLog& log) {
+    const bool paced = *options.read == "paced";
+    std::printf("\nMRZ reading · %s · reader threads %d · band: peak %.2f, width share %.2f, aspect %.1f\n",
+                paced ? "paced" : "every gate-passing frame", options.readerThreads, doc_vision::kBandPeak,
+                doc_vision::kBandWidthShare, doc_vision::kBandAspect);
+    int right = 0;
+    int wrong = 0;
+    int never = 0;
+    int unknown = 0;
+    int reads = 0;
+    int valid = 0;
+    int wrong1 = 0;
+    int wrong2 = 0;
+    int errors = 0;
+    std::vector<double> toAccept;
+    std::vector<double> toScan;
+    const bool perClip = run.reads.size() <= 12;
+    for (std::size_t c = 0; c < run.reads.size(); ++c) {
+        const ClipReads& clip = run.reads[c];
+        right += clip.accept == ClipReads::Accept::Right ? 1 : 0;
+        wrong += clip.accept == ClipReads::Accept::Wrong ? 1 : 0;
+        never += clip.accept == ClipReads::Accept::Never ? 1 : 0;
+        unknown += clip.accept == ClipReads::Accept::Unknown ? 1 : 0;
+        reads += clip.reads;
+        valid += clip.valid;
+        wrong1 += clip.validWrongLine1;
+        wrong2 += clip.validWrongLine2;
+        errors += clip.errors;
+        if (clip.acceptedAt) {
+            toAccept.push_back(*clip.acceptedAt);
+            toScan.push_back(clip.timeToScan.value_or(0.0));
+        }
+        if (perClip) {
+            std::printf("  clip %zu: %s", c + 1, acceptWord(clip.accept));
+            if (clip.acceptedAt) {
+                std::printf(" at %.2f s (time to scan %.2f s)", *clip.acceptedAt,
+                            clip.timeToScan.value_or(0.0));
+            }
+            std::printf("; reads %d, valid %.1f%%, valid but wrong: line 1 %d, line 2 %d", clip.reads,
+                        share(clip.valid, clip.reads), clip.validWrongLine1, clip.validWrongLine2);
+            if (clip.errors > 0) {
+                std::printf(", errors %d", clip.errors);
+            }
+            std::printf("\n");
+        }
+    }
+    std::printf("accepted: right %d, wrong %d, never %d", right, wrong, never);
+    if (unknown > 0) {
+        std::printf(", truth unknown %d", unknown);
+    }
+    std::printf(" (of %zu clips)\n", run.reads.size());
+    std::printf("reads %d, valid %.1f%%, valid but wrong: line 1 %d, line 2 %d, errors %d\n", reads,
+                share(valid, reads), wrong1, wrong2, errors);
+    std::printf("ms: reader open %s\n", percentiles(log.openMs).c_str());
+    std::printf("ms: detection %s\n", percentiles(run.detect).c_str());
+    std::printf("ms: recognition %s\n", percentiles(run.recognise).c_str());
+    if (paced) {
+        std::printf("ms: the processor per frame with the reader busy %s\n",
+                    percentiles(run.busyFrame).c_str());
+        if (!toAccept.empty()) {
+            std::printf("s to accept (the clip's time): %s, worst %.2f\n", percentiles(toAccept).c_str(),
+                        *std::max_element(toAccept.begin(), toAccept.end()));
+            std::printf("s to scan (the scan's own): %s, worst %.2f\n", percentiles(toScan).c_str(),
+                        *std::max_element(toScan.begin(), toScan.end()));
+        }
+    }
+    if (options.bandStats) {
+        std::printf("band candidates of the reads:\n  peak        %s\n  width share %s\n  aspect      %s\n",
+                    spread(run.peak).c_str(), spread(run.widthShare).c_str(), spread(run.aspect).c_str());
+    }
+    if (options.negatives) {
+        const BandStats negatives = readNegatives(options);
+        std::printf(
+            "band candidates of the negatives:\n  peak        %s\n  width share %s\n  aspect      %s\n",
+            spread(negatives.peak).c_str(), spread(negatives.widthShare).c_str(),
+            spread(negatives.aspect).c_str());
+    }
+}
+
 int usage() {
-    std::fprintf(stderr,
-                 "usage: doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
-                 "[--size <w>x<h>]\n"
-                 "                       --labels <labels.csv> <clip>...\n"
-                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
-                 "[--size <w>x<h>]\n"
-                 "                       --midv <clips folder> [--frames <n>] <type>...\n"
-                 "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
-                 "[--size <w>x<h>]\n"
-                 "                       --replay <video, image, folder of images or recording>...\n");
+    std::fprintf(
+        stderr,
+        "usage: doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
+        "[--size <w>x<h>]\n"
+        "                       --labels <labels.csv> <clip>...\n"
+        "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
+        "[--size <w>x<h>]\n"
+        "                       --midv <clips folder> [--frames <n>] <type>...\n"
+        "       doc_vision_eval --model <onnx> [--threads <n>] [--margin <share>] [--sharpness <v>] "
+        "[--size <w>x<h>]\n"
+        "                       --replay <video, image, folder of images or recording>...\n"
+        "reading the MRZ, with --replay or --midv (the MRZ models beside --model):\n"
+        "       --read every|paced [--reader-threads <n>] [--truth <file>] [--midv-templates <folder>]\n"
+        "       [--band-stats] [--negatives <folder of pages with no MRZ>]\n");
     return 2;
 }
 
@@ -596,6 +1011,10 @@ std::optional<Options> parse(int argc, char** argv) {
         }
         if (arg == "--replay") {
             options.replay = true;
+            continue;
+        }
+        if (arg == "--band-stats") {
+            options.bandStats = true;
             continue;
         }
         const std::optional<std::string> v = value();
@@ -622,12 +1041,36 @@ std::optional<Options> parse(int argc, char** argv) {
             options.midv = *v;
         } else if (arg == "--frames") {
             options.frames = std::stoi(*v);
+        } else if (arg == "--read") {
+            if (*v != "every" && *v != "paced") {
+                return std::nullopt;
+            }
+            options.read = *v;
+        } else if (arg == "--reader-threads") {
+            options.readerThreads = std::stoi(*v);
+        } else if (arg == "--truth") {
+            options.truth = *v;
+        } else if (arg == "--midv-templates") {
+            options.midvTemplates = *v;
+        } else if (arg == "--negatives") {
+            options.negatives = *v;
         } else {
             return std::nullopt;
         }
     }
     const int modes = (options.labels ? 1 : 0) + (options.midv ? 1 : 0) + (options.replay ? 1 : 0);
     if (options.model.empty() || modes != 1 || options.inputs.empty()) {
+        return std::nullopt;
+    }
+    // The labelled loop reuses one cv::Mat for every frame, which a scan kept for Review would share.
+    const bool reading =
+        options.read || options.truth || options.midvTemplates || options.bandStats || options.negatives;
+    if (options.labels && reading) {
+        std::fprintf(stderr, "reading the MRZ works with --replay or --midv only\n");
+        return std::nullopt;
+    }
+    if (!options.read && reading) {
+        std::fprintf(stderr, "--truth, --midv-templates, --band-stats and --negatives need --read\n");
         return std::nullopt;
     }
     return options;
@@ -672,5 +1115,8 @@ int main(int argc, char** argv) {
         runReplay(*options, scorer, run);
     }
     report(run);
+    if (options->read) {
+        reportReading(*options, run, scorer.log());
+    }
     return 0;
 }
