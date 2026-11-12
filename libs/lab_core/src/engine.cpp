@@ -180,29 +180,33 @@ void Engine::step() {
 }
 
 void Engine::seek(std::uint64_t index) {
-    bool first = false;
+    std::optional<std::uint64_t> first; // the new request's number, when there was none waiting
     {
         const std::lock_guard lock(m_mutex);
-        first = !m_seekRequest;
-        m_seekRequest = SeekRequest{.absolute = index, .relative = 0};
+        if (!m_seekRequest) {
+            m_seekRequest = SeekRequest{.number = ++m_seekRequests};
+            first = m_seekRequest->number;
+        }
+        m_seekRequest->absolute = index;
+        m_seekRequest->relative = 0;
     }
     if (first) {
-        post([this] { doSeek(); });
+        post([this, number = *first] { doSeek(number); });
     }
 }
 
 void Engine::seekBy(std::int64_t frames) {
-    bool first = false;
+    std::optional<std::uint64_t> first;
     {
         const std::lock_guard lock(m_mutex);
-        first = !m_seekRequest;
-        if (first) {
-            m_seekRequest = SeekRequest{};
+        if (!m_seekRequest) {
+            m_seekRequest = SeekRequest{.number = ++m_seekRequests};
+            first = m_seekRequest->number;
         }
         m_seekRequest->relative += frames;
     }
     if (first) {
-        post([this] { doSeek(); });
+        post([this, number = *first] { doSeek(number); });
     }
 }
 
@@ -870,11 +874,13 @@ void Engine::doStep() {
 
 // Steps count from the seek still running, else from the frame on screen; in signed arithmetic, so a step
 // back from frame 0 stays there rather than wrapping round to the last frame.
-void Engine::doSeek() {
+void Engine::doSeek(std::uint64_t number) {
     std::optional<SeekRequest> request;
     {
         const std::lock_guard lock(m_mutex);
-        request.swap(m_seekRequest);
+        if (m_seekRequest && m_seekRequest->number == number) {
+            request.swap(m_seekRequest); // else a newer one, whose own command is behind this one
+        }
     }
     if (!request || m_live || !m_source || !m_source->canSeek()) {
         return;

@@ -519,6 +519,39 @@ TEST(Engine, PendingSeekDiesWithTheSource) {
     EXPECT_EQ(second.seeks, 0);
 }
 
+// A step asked for once another source is opening is for the new one, though the command of a step asked for
+// before it is still in the mailbox, ahead of the opening.
+TEST(Engine, StepAfterAnotherSourceIsForIt) {
+    Harness h;
+    ListSource::Counters first;
+    ListSource::Counters second;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &first));
+    pausedAt(h, 4);
+
+    h.engine.seekBy(-1);
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &second));
+    h.engine.seekBy(+3);
+
+    EXPECT_EQ(pumpUntilAResult(h), 3U);
+    EXPECT_EQ(first.seeks, 0);
+    EXPECT_EQ(second.seeks, 1);
+}
+
+// The same with a restart: a seek asked for after it goes to its frame once the restart has run.
+TEST(Engine, SeekAfterARestartIsForIt) {
+    Harness h;
+    ListSource::Counters counters;
+    h.engine.startReplay(openerOf(framesApart(10, 40ms), true, &counters));
+    pausedAt(h, 4);
+
+    h.engine.seekBy(-1);
+    h.engine.restart();
+    h.engine.seek(7);
+
+    EXPECT_EQ(pumpUntilAResult(h), 7U);
+    EXPECT_EQ(counters.lastSeek, std::optional<std::uint64_t>(7));
+}
+
 TEST(Engine, StatusHasRateAndSeek) {
     Harness h;
     h.engine.startReplay(openerOf(framesApart(3, 40ms)));

@@ -303,6 +303,8 @@ each due its gap after the one before was due, or when ready if that is later, s
 replay and skips nothing. A seek leaves a request under the lock and posts one command while none waits: an
 absolute seek replaces the request, steps add to it (Step Back is one step back), so a held key makes one seek;
 steps count from a seek still running, else from the frame on screen, and stop at the first and the last frame.
+A new source, a stop or a restart drops the request; the command carries its request's number, so a request
+made after them waits for its own command, behind theirs, rather than go to an older command ahead of them.
 The status says `seeking` until the target's frame is shown. Each run has a generation, bumped by a new source,
 a restart, a seek and a loop: the processor is reset, the recording stops (one recording is one unbroken run),
 and nothing of the old one reaches the result slot. Whatever a source, a command or the recorder throws stops
