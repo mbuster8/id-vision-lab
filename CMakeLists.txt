@@ -38,6 +38,18 @@ id_vision_lab_resolve_model(ID_VISION_LAB_LC100_MODEL
     URL https://github.com/DocsaidLab/DocAligner/releases/download/1.1.1/lcnet100_h_e_bifpn_256_fp32.onnx
     SHA256 f4117b786e3a18470f3865c93f3c2bd69d9b998edd60f385574a5c665e79594e)
 file(COPY "${ID_VISION_LAB_LC100_MODEL}" DESTINATION "${CMAKE_BINARY_DIR}/models")
+# MRZScanner's two stages, the MRZ reader (Apache-2.0, DocsaidLab's release 1.0.7): the band's detection, then its
+# recognition (ADR-004 decision 7).
+id_vision_lab_resolve_model(ID_VISION_LAB_MRZ_DETECTION_MODEL
+    FILE mrz_detection_20250222_fp32.onnx
+    URL https://github.com/DocsaidLab/MRZScanner/releases/download/1.0.7/mrz_detection_20250222_fp32.onnx
+    SHA256 0786844728d828dc68c19b844aa87e2b29fdba3a587468f2863824d116ffc269)
+id_vision_lab_resolve_model(ID_VISION_LAB_MRZ_RECOGNITION_MODEL
+    FILE mrz_recognition_20250221_fp32.onnx
+    URL https://github.com/DocsaidLab/MRZScanner/releases/download/1.0.7/mrz_recognition_20250221_fp32.onnx
+    SHA256 07cef987fc1852aac12f18e1269fbaf1e2644579ca5743061d6f9cec7bef77c0)
+file(COPY "${ID_VISION_LAB_MRZ_DETECTION_MODEL}" "${ID_VISION_LAB_MRZ_RECOGNITION_MODEL}"
+     DESTINATION "${CMAKE_BINARY_DIR}/models")
 
 add_subdirectory(libs/visual_debug)
 add_subdirectory(libs/viewer_core)

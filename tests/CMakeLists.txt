@@ -114,10 +114,12 @@ id_vision_lab_add_test_executable(doc_vision_tests
         doc_vision::doc_vision
         opencv_imgproc
         GTest::gtest_main)
-# The model resolved at configure time, and the ONNX Runtime version built against; scratch_folder.h. With the
+# The models resolved at configure time, and the ONNX Runtime version built against; scratch_folder.h. With the
 # UTF-8 code page on Windows, so a model under a non-ASCII user folder opens.
 target_compile_definitions(doc_vision_tests PRIVATE
     ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}"
+    ID_VISION_LAB_MRZ_DETECTION_MODEL="${ID_VISION_LAB_MRZ_DETECTION_MODEL}"
+    ID_VISION_LAB_MRZ_RECOGNITION_MODEL="${ID_VISION_LAB_MRZ_RECOGNITION_MODEL}"
     ID_VISION_LAB_ONNXRUNTIME_VERSION="${onnxruntime_VERSION}")
 target_include_directories(doc_vision_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
 id_vision_lab_use_utf8_code_page(doc_vision_tests)
@@ -154,7 +156,9 @@ target_include_directories(lab_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/doc_vision)
 # The model the Document processor's end-to-end test opens, under the UTF-8 code page on Windows as in the lab.
-target_compile_definitions(lab_core_tests PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}")
+target_compile_definitions(lab_core_tests PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}"
+                                                  ID_VISION_LAB_MRZ_DETECTION_MODEL="${ID_VISION_LAB_MRZ_DETECTION_MODEL}"
+                                                  ID_VISION_LAB_MRZ_RECOGNITION_MODEL="${ID_VISION_LAB_MRZ_RECOGNITION_MODEL}")
 id_vision_lab_use_utf8_code_page(lab_core_tests)
 id_vision_lab_copy_runtime_dlls(lab_core_tests)
 
@@ -312,14 +316,16 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
         # its own so that it also runs from the installed Windows package.
         add_test(NAME media_smoke COMMAND media_smoke)
         set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
-        # The page model inside the Document Lab, where it looks for it: the bundle's Resources on macOS, a models
-        # folder beside the program elsewhere.
+        # The page model and MRZScanner's two inside the Document Lab, where it looks for them: the bundle's
+        # Resources on macOS, a models folder beside the program elsewhere.
         if(APPLE)
             set(lab_models "$<TARGET_BUNDLE_CONTENT_DIR:document_lab>/Resources/models")
         else()
             set(lab_models "$<TARGET_FILE_DIR:document_lab>/models")
         endif()
         add_test(NAME document_lab_ships_its_model
-            COMMAND "${CMAKE_COMMAND}" -E sha256sum "${lab_models}/lcnet100_h_e_bifpn_256_fp32.onnx")
+            COMMAND "${CMAKE_COMMAND}" -E sha256sum "${lab_models}/lcnet100_h_e_bifpn_256_fp32.onnx"
+                    "${lab_models}/mrz_detection_20250222_fp32.onnx"
+                    "${lab_models}/mrz_recognition_20250221_fp32.onnx")
     endif()
 endif()

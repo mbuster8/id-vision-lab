@@ -55,6 +55,10 @@ DocAligner LC100 weights (models\lcnet100_h_e_bifpn_256_fp32.onnx), the Document
 from DocsaidLab's release 1.1.1
     Licence: Apache License 2.0 (Apache-2.0.txt). DocsaidLab's notice: DocAligner-NOTICE.txt.
 
+MRZScanner weights (models\mrz_detection_20250222_fp32.onnx, models\mrz_recognition_20250221_fp32.onnx), the
+Document Lab's MRZ reader, unmodified from DocsaidLab's release 1.0.7
+    Licence: Apache License 2.0 (Apache-2.0.txt). DocsaidLab's notice: MRZScanner-NOTICE.txt.
+
 The libraries come from vcpkg (https://github.com/microsoft/vcpkg); the exact versions are pinned by the
 builtin-baseline in vcpkg.json of this project's source, https://github.com/mbuster8/id-vision-lab.
 
