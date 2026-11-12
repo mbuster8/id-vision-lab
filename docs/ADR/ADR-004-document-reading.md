@@ -81,7 +81,10 @@ Options considered, by concern (measured figures are from that spike):
 8. **The MRZ parser is ours** (ICAO Doc 9303's TD1, TD2 and TD3), with field-aware correction; a read counts only
    when every check digit passes.
 9. **Agreement is whole-MRZ, M of the last K frames** (3 of 10 to start), reset for a new document. No
-   per-character combination, weights or estimated results.
+   per-character combination, weights or estimated results. The reads that agree are of different frames: one
+   read a frame (A4).
+   A4 reads passports only (TD3, document code `P`; the owner, 12 November): a valid TD1 or TD2 read counts for
+   nothing, and ID cards come in A4.1.
 10. **Faces come in A3.2**, with libfacedetection (BSD-3-Clause, its weights compiled in).
 11. **Not used:** Apple Vision as an engine, Tesseract, VLMs and LLMs.
 
@@ -124,7 +127,12 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
     | 9 | Too bright | ✗ Too bright · move out of direct light | A3 |
     | 10 | Every gate passes | ✓ Good: hold still (A4 adds "Reading the lines at the bottom · 2 of 3") | A3, A4 |
     | 11 | Gates pass, no MRZ band | ✗ Keep your fingers off the two lines at the bottom | A4 |
-    | 12 | Gates pass, no accept after 5 s | ✗ Can't read the lines at the bottom · check for glare or a finger on them | A4 |
+    | 12 | Gates pass, no accept after 5 s | ✗ Can't read the lines at the bottom · check for glare or fingers; only passports are read for now | A4 |
+
+    Hints 11 and 12 are checked 12 first (A4): an ID card's front never has a band, so with 11 first the small
+    line of 12, which says that only passports are read, would never show. Row 12's small line is wider than the
+    hints picture's: the lab cannot tell an ID card's front from a passport whose MRZ is covered (the owner, 12
+    November).
 
     ![The hints, their order and timing](../images/scan-flow/07-hints.png)
 
@@ -144,7 +152,9 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
 17. **Scanned, then the chip (A4, then A5).** When the MRZ is accepted the frame is captured and kept in memory,
     and a card says at once that the passport is scanned and to place it on the chip reader. Until A5 the
     reader line reads "Chip reading arrives in A5", and the card offers only Skip the chip and Scan again. A5's
-    screen shows the read's steps and progress, a hint if contact is lost, and Cancel.
+    screen shows the read's steps and progress, a hint if contact is lost, and Cancel. While the card and Review
+    show, the camera is paused: the lab stops handing its frames on and keeps its session open, so Scan again and
+    Scan another are instant; its light stays on (the owner, 12 November).
 
     ![Passport scanned: place it on the chip reader](../images/scan-flow/04-scanned.png)
 

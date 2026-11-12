@@ -158,9 +158,11 @@ CMake then does not look for Qt at all; the five libraries, the examples and the
 
 ### The models
 
-The Document processor's page model, DocAligner LC100 (`lcnet100_h_e_bifpn_256_fp32.onnx`, 4,767,987 bytes,
-Apache-2.0, DocsaidLab's release 1.1.1), is not in the repository. Configuring finds it, in this order
-(`cmake/models.cmake`):
+The Document processor's three models are not in the repository: the page model, DocAligner LC100
+(`lcnet100_h_e_bifpn_256_fp32.onnx`, 4,767,987 bytes, Apache-2.0, DocsaidLab's release 1.1.1), and the MRZ
+reader's two, MRZScanner's band detection and line recognition (`mrz_detection_20250222_fp32.onnx`, 29,949,153
+bytes, and `mrz_recognition_20250221_fp32.onnx`, 40,578,848 bytes, Apache-2.0, DocsaidLab's release 1.0.7).
+Configuring finds each, in this order (`cmake/models.cmake`):
 
 1. in the folder `ID_VISION_LAB_MODEL_DIR` names, when set;
 2. in a cache of your own that every build folder shares: `~/.cache/id-vision-lab/models` on macOS and Linux
@@ -168,13 +170,15 @@ Apache-2.0, DocsaidLab's release 1.1.1), is not in the repository. Configuring f
 3. else it downloads it from the model's GitHub release into that cache.
 
 Every copy is checked against the SHA-256 pinned in `CMakeLists.txt`. A wrong copy in the cache is downloaded
-again; a wrong copy in your own folder stops the configure, naming the file. Without a network, copy the file
-into a folder and configure with `-DID_VISION_LAB_MODEL_DIR=<folder>`.
+again; a wrong copy in your own folder stops the configure, naming the file. Without a network, copy the three
+files into one folder and configure with `-DID_VISION_LAB_MODEL_DIR=<folder>`.
 
-The build copies the model into `build/<preset>/models`, into the Document Lab's bundle
+The build copies the models into `build/<preset>/models`, into the Document Lab's bundle
 (`document_lab.app/Contents/Resources/models`) on macOS, and into a `models` folder beside `document_lab` on
-Linux and Windows, where the lab looks for it. A lab that cannot open it says so in its banner, "The document
-model is missing", and the other processors work as before. The programs never download anything.
+Linux and Windows, where the lab looks for them. A lab that cannot open the page model says so in its banner,
+"The document model is missing", and the other processors work as before; one that cannot open the MRZ reader's
+guides as before and says under "Good: hold still" that the reader could not be opened. The programs never
+download anything.
 
 ### The Document Lab's picture
 
@@ -211,6 +215,22 @@ images or a recording. It is how to see what a camera gives: every run also prin
 found wholly in view (percentiles, and the share at or above several thresholds). `--threads <n>` sets ONNX
 Runtime's threads (0, the default, lets it choose), `--margin <share>` tries another in-view margin,
 `--sharpness <value>` another sharpness limit, and `--size 1920x1080` resizes each frame first. `--help` prints the usage.
+
+With `--replay` or `--midv`, `--read every` also reads the MRZ of every frame that passes the gates before the next
+one, for each clip's accept (right, wrong or never against the truth), the reads made, the share valid and the
+valid reads that are not the truth; `--read paced` plays the frames at their own times with the reader on its own
+thread, as the lab runs it, for the time to accept and the processor's time a frame while the reader is busy. The
+MRZ models are looked for beside `--model`. `--truth <file>` gives the MRZ a replayed clip shows (its first two
+lines), compared inside and never printed; `--midv-templates <MIDV-2020>/templates` takes each MIDV clip's from its
+template, and reads clips 00, 04, …, 96. `--reader-threads <n>` sets the reader's threads, `--band-stats` prints
+the spread of the band's measures over the reads, and `--negatives <folder>` reads pages with no MRZ (a MIDV-2020
+`photo/images/<type>` folder of ID card fronts is flattened by its annotations) for the same spread:
+
+```sh
+build/release/tests/doc_vision_eval --model <the model> --midv <MIDV-2020>/clips --frames 30 \
+    --midv-templates <MIDV-2020>/templates --read every --band-stats \
+    aze_passport grc_passport lva_passport srb_passport
+```
 
 ## Running the tests
 
@@ -397,9 +417,9 @@ or this project's `build` folder; otherwise, find out what the tool is first.
 development files when it configured. Install them (`brew install ffmpeg`, or Ubuntu's four `-dev` packages
 above), check that `pkg-config --modversion libavformat` answers, and configure again.
 
-**`Could not find or download the file lcnet100_h_e_bifpn_256_fp32.onnx` during configure.** The page model is
-not in `ID_VISION_LAB_MODEL_DIR` or the cache, and could not be downloaded. The message names the folders it
-looked in; see [the models](#the-models) for an offline build.
+**`Could not find or download the file lcnet100_h_e_bifpn_256_fp32.onnx` during configure** (or one of the MRZ
+reader's two). The model is not in `ID_VISION_LAB_MODEL_DIR` or the cache, and could not be downloaded. The message
+names the folders it looked in; see [the models](#the-models) for an offline build.
 
 **`Could not find a package configuration file provided by "onnxruntime"`.** ONNX Runtime is not installed:
 `brew install onnxruntime` on macOS, `scripts/install-onnxruntime.sh` on Linux ([below](#linux)); vcpkg builds

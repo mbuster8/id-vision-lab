@@ -6,8 +6,8 @@
 
 A lab for reading identity documents with a camera, on this computer, and a visual debugger for OpenCV that shows
 every step of your own code. The **Document Lab** finds a passport's data page in a camera's frames or a recording,
-judges whether it can be read, and tells the user what to change; reading the machine-readable zone (MRZ) and the
-chip come next. The **Visual Debug Viewer** shows any image or camera frame your OpenCV program sends it, with the
+judges whether it can be read, tells the user what to change, and reads the machine-readable zone (MRZ) of a
+passport; reading the chip comes next. The **Visual Debug Viewer** shows any image or camera frame your OpenCV program sends it, with the
 original value of every pixel.
 
 This started as my bachelor's thesis in 2013, a visual debugger for Qt 4 and OpenCV 2.4 on Ubuntu. In 2026 I
@@ -34,7 +34,7 @@ brought it back, ported to Qt 6 and OpenCV 5, tested, documented, and grown into
 
 | Program | What it is for |
 |---|---|
-| **Document Lab** | The workbench for document-reading code: a camera or a replayed video, image, folder or recording through a processor, with guidance, focus on the document, recording, capture and streaming to the viewer ([Running the Document Lab](docs/user-guide.md#running-the-document-lab)) |
+| **Document Lab** | The workbench for document-reading code: a camera or a replayed video, image, folder or recording through a processor, with guidance, focus on the document, reading a passport's MRZ, recording, capture and streaming to the viewer ([Running the Document Lab](docs/user-guide.md#running-the-document-lab)) |
 | **Visual Debug Viewer** | Shows every image and live frame sent to it: zoom, history, pixel values, display ranges, HDR, overlays ([Running the viewer](docs/user-guide.md#running-the-viewer)) |
 | **Visual Debug Example Sender** | A small Qt app that opens an image and sends it, to show how a GUI program uses the library ([Running the example sender](docs/user-guide.md#running-the-example-sender)) |
 | `live_sender` | Streams a camera, a video file, a phone's HDR video or a test pattern to the viewer as live channels ([Running live_sender](docs/user-guide.md#running-live_sender)) |
@@ -54,7 +54,8 @@ the same zoomable canvas as the viewer's, with what the processor found drawn ov
 It replays every frame in order and goes to any frame of a video, records frames losslessly as PNG folders,
 captures one at full resolution, and streams its frames to the viewer, or sends it one, when asked, showing
 whether the viewer is there. Its processors find edges, a simple outline of a light four-sided shape, or a
-passport's data page.
+passport's data page, whose MRZ the Document processor reads once three reads of different frames agree, then
+keeps the frame for review, to save or send only when asked.
 
 The **Document** processor guides the user to a page the next steps can read. DocsaidLab's DocAligner LC100
 (Apache-2.0), a small page model run on ONNX Runtime, finds the page's corners; six checks (in view, size, flat,
@@ -130,8 +131,8 @@ cmake --preset debug
 cmake --build --preset debug
 ```
 
-The first configure downloads the Document Lab's page model (4.8 MB) into a cache of your own and checks its
-SHA-256; the [build guide](docs/build-guide.md#the-models) says where, and how to build without a network.
+The first configure downloads the Document Lab's three models (the page model and the MRZ reader's two, 75 MB
+in all) into a cache of your own and checks their SHA-256; the [build guide](docs/build-guide.md#the-models) says where, and how to build without a network.
 
 **The Document Lab:**
 
@@ -263,7 +264,7 @@ flowchart LR
 
 - **The libraries stay free of Qt**, so any C++ program can use them; only the programs use Qt.
 - **The Document Lab** processes on one thread of its own, and runs the page model on ONNX Runtime's CPU
-  provider; the window only draws what comes back.
+  provider, the MRZ reader on another thread beside it; the window only draws what comes back.
 - **The viewer is a separate process.** If it is not running, a send fails within half a second the first time
   and at once after that, and the program carries on; start the viewer later and images arrive again.
 - **A message** is a small JSON header that describes the image, followed by the raw pixels; new fields can be
@@ -285,15 +286,15 @@ sanitizers on macOS; the CI badge above shows the latest result.
 ## Roadmap
 
 Done: the viewer with live channels, HDR and overlays; the Document Lab with replay, recording and capture; the
-Document processor's guidance; focus on the document. Next, as [ADR-004](docs/ADR/ADR-004-document-reading.md) sets
-out: the photo zone on the flattened page, then reading and checking the MRZ, then reading the chip (ICAO 9303:
-BAC, PACE, Passive and Active Authentication) through a PC/SC reader.
+Document processor's guidance; focus on the document; reading and checking a passport's MRZ, with review. Next,
+as [ADR-004](docs/ADR/ADR-004-document-reading.md) sets out: reading the chip (ICAO 9303: BAC, PACE, Passive and
+Active Authentication) through a PC/SC reader, ID cards' MRZ, and the photo zone on the flattened page.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [User guide](docs/user-guide.md) | Running the Document Lab (cameras, the Document processor, focus, replay, recording, the viewer row), the Visual Debug Viewer, the example sender and `live_sender`; sending from Python; configuration; send results; worked examples |
+| [User guide](docs/user-guide.md) | Running the Document Lab (cameras, the Document processor, reading the MRZ, focus, replay, recording, the viewer row), the Visual Debug Viewer, the example sender and `live_sender`; sending from Python; configuration; send results; worked examples |
 | [Tour of live channels](docs/live-channels-tour.md) | Nine stops through live channels, cameras, video files, several senders and HDR video, with what to expect at each |
 | [Build guide](docs/build-guide.md) | The tools on macOS, Linux and Windows; presets, targets and the page model; tests and coverage; checks before a push; Qt Creator; Windows packages; troubleshooting |
 | [Architecture](docs/architecture.md) | Components, the dependency rule, threads, transport behaviour, extension points |
@@ -314,8 +315,8 @@ id-vision-lab/
 │   ├── visual_debug/      the sender library and the viewer's server (no Qt)
 │   ├── viewer_core/       the viewer's logic: display, history, live channels, pixel readout, zoom (no Qt)
 │   ├── frame_io/          video, image and recording readers, the recorder, YUV conversion (no Qt)
-│   ├── doc_vision/        the page model on ONNX Runtime, page geometry, quality gates and hints (no Qt)
-│   └── lab_core/          the Document Lab's engine, processors, focus controller, result sender and viewer link (no Qt)
+│   ├── doc_vision/        the page model on ONNX Runtime, page geometry, quality gates, hints and the MRZ (no Qt)
+│   └── lab_core/          the Document Lab's engine, processors, MRZ worker, focus controller, result sender and viewer link (no Qt)
 ├── apps/
 │   ├── document_lab/      the Document Lab (Qt 6, Qt Multimedia), with the cameras' native focus controls
 │   ├── viewer/            the Visual Debug Viewer (Qt 6)
@@ -400,5 +401,5 @@ file: `photo.png #1`.
 ## Licence
 
 Copyright 2013, 2026 Matej Suster. Licensed under the [Apache License, Version 2.0](LICENSE); see also
-[NOTICE](NOTICE). The Document Lab's page model, DocAligner LC100, is DocsaidLab's, under Apache-2.0; the build
-downloads and checks it, and it is not kept in this repository.
+[NOTICE](NOTICE). The Document Lab's models, DocAligner LC100 and MRZScanner's two, are DocsaidLab's, under
+Apache-2.0; the build downloads and checks them, and they are not kept in this repository.

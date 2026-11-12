@@ -14,6 +14,10 @@
 
 #include "application_identity.h"
 
+#include <doc_vision/page_detector.h>
+#include <lab_core/document_processor.h>
+#include <lab_core/processors.h>
+
 #include <QAbstractButton>
 #include <QApplication>
 #include <QComboBox>
@@ -153,6 +157,19 @@ int main(int argc, char* argv[]) {
     dependencies.labFolder = labFolder.path();
     dependencies.modelFolder =
         QString::fromStdU16String(std::filesystem::path(ID_VISION_LAB_LC100_MODEL).parent_path().u16string());
+    // The Document processor without its MRZ reader (A3.1's): the drawn page's two rows are no MRZ, and the
+    // picture shows the banner's "Good: hold still" on it, not the reader's hints.
+    dependencies.makeProcessor =
+        [](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+        if (kind != lab_core::ProcessorKind::Document) {
+            return lab_core::makeProcessor(kind);
+        }
+        return std::make_unique<lab_core::DocumentProcessor>(
+            [](std::string& error,
+               doc_vision::OpenFailure& failure) -> std::unique_ptr<doc_vision::PageFinder> {
+                return doc_vision::PageDetector::open(ID_VISION_LAB_LC100_MODEL, error, &failure);
+            });
+    };
 
     document_lab::LabWindow window(std::move(dependencies));
     window.resize(1360, 860);

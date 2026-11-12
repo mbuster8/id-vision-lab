@@ -10,7 +10,7 @@ passport pages blurred, its own autofocus losing the page whenever it moved, and
 camera never reached the Sharp gate's bar. The owner asked for the lab to focus on the document itself, for
 click-to-focus as the fallback, and for a plain message when a camera cannot focus.
 
-A spike on 11 November (the `camera_focus_probe` tool, on a branch of its own) measured what each route offers,
+A spike on 11 November (the `camera_focus_probe` tool, kept at the tag `spike/a3-focus`) measured what each route offers,
 aggregates only, with the owner holding the passport:
 
 - **Qt Multimedia 6.12** reports no usable focus control for any of the cameras tried: the C920 on macOS only
