@@ -30,6 +30,8 @@ add_library(document_lab_ui STATIC
     main_window.h
     model_folder.cpp
     model_folder.h
+    review_view.cpp
+    review_view.h
     scan_banner.cpp
     scan_banner.h
     scan_flow.cpp
