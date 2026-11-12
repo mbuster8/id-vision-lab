@@ -4,11 +4,13 @@
 # onnxruntime.dll ships with Windows), and MSVC's detect_mismatch requires every unit that includes them to agree.
 add_library(doc_vision STATIC
     include/doc_vision/guidance.h
+    include/doc_vision/mrz.h
     include/doc_vision/onnx_model.h
     include/doc_vision/page_detector.h
     include/doc_vision/page_geometry.h
     include/doc_vision/quality_gates.h
     src/guidance.cpp
+    src/mrz.cpp
     src/onnx_model.cpp
     src/page_detector.cpp
     src/page_geometry.cpp
