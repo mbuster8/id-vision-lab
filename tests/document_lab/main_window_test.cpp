@@ -3111,6 +3111,18 @@ int pointsOnCanvas(const Lab& lab) {
     return points;
 }
 
+// A hand check on Windows: the Review panel, hidden in the results' place, made the window's least height its
+// own, so the window grew after it was shown and the canvas was drawn again. It must leave the side's least
+// height to the results.
+TEST(LabWindow, HiddenReviewPanelLeavesTheWindowsHeight) {
+    Lab lab;
+    const auto* side = lab.window->findChild<QWidget*>("sidePanel");
+    ASSERT_NE(side, nullptr);
+    EXPECT_LE(side->minimumSizeHint().height(), lab.resultsTree()->minimumSizeHint().height());
+    EXPECT_LE(reviewPanel(lab)->minimumSizeHint().height(), 200);
+    EXPECT_EQ(lab.window->height(), 600);
+}
+
 TEST(LabWindow, ReviewAfterSkip) {
     Lab lab(scanning());
     intoReview(lab);

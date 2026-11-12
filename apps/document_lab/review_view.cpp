@@ -14,6 +14,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -175,7 +176,20 @@ void ReviewBar::changeEvent(QEvent* event) {
 ReviewPanel::ReviewPanel(QWidget* parent) : QWidget(parent) {
     setMinimumWidth(kPanelWidth);
     const QFont base = font();
-    auto* column = new QVBoxLayout(this);
+    // Its contents scroll in a short window: the panel never makes the window taller, even hidden in the
+    // results' place (a window that grew after it was shown drew its canvas again).
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->viewport()->setAutoFillBackground(false);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
+    outer->addWidget(scroll);
+    auto* content = new QWidget;
+    content->setAutoFillBackground(false);
+    auto* column = new QVBoxLayout(content);
     column->setContentsMargins(kPanelPadding, kPanelPadding, kPanelPadding, kPanelPadding);
     column->setSpacing(12);
 
@@ -260,6 +274,7 @@ ReviewPanel::ReviewPanel(QWidget* parent) : QWidget(parent) {
     m_note->setFont(pixelFont(base, kNotePixels));
     m_note->setWordWrap(true);
     column->addWidget(m_note);
+    scroll->setWidget(content);
     applyColours();
 }
 

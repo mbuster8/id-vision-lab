@@ -11,6 +11,8 @@
 #include <QColor>
 #include <QLabel>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 
 #include <gtest/gtest.h>
@@ -182,6 +184,22 @@ TEST(ReviewPanel, SendFailedSaysWhyAndEnables) {
     EXPECT_EQ(textOf(panel, "sendFailure"), "the viewer changed");
     panel.setSendOutcome(Outcome::Busy);
     EXPECT_FALSE(shown(panel, "sendFailure"));
+}
+
+// A short window: the panel scrolls rather than making the window taller (a window that grew after it was
+// shown redrew its canvas, seen on Windows), and its buttons stay reachable.
+TEST(ReviewPanel, ShortPanelScrolls) {
+    ReviewPanel panel;
+    panel.setScan(specimenScan(), kToday);
+    EXPECT_LE(panel.minimumSizeHint().height(), 200);
+    panel.resize(330, 300);
+    panel.show();
+    QApplication::processEvents();
+    const auto* scroll = panel.findChild<QScrollArea*>();
+    ASSERT_NE(scroll, nullptr);
+    EXPECT_GT(scroll->verticalScrollBar()->maximum(), 0);
+    EXPECT_TRUE(scroll->widget()->isAncestorOf(button(panel, "saveButton")));
+    EXPECT_EQ(scroll->horizontalScrollBar()->maximum(), 0);
 }
 
 TEST(ReviewPanel, IsAtLeast330Wide) {
