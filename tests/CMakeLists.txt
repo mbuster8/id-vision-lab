@@ -106,6 +106,8 @@ id_vision_lab_add_test_executable(doc_vision_tests
         doc_vision/mrz_agreement_test.cpp
         doc_vision/mrz_reader_test.cpp
         doc_vision/mrz_test.cpp
+        doc_vision/mrz_truth.h
+        doc_vision/mrz_truth_test.cpp
         doc_vision/onnx_model_test.cpp
         doc_vision/page_detector_test.cpp
         doc_vision/page_geometry_test.cpp

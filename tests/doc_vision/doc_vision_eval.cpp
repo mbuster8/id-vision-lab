@@ -21,11 +21,14 @@
 //                   in the lab: for the time to accept, each stage's timing, and the processor's per-frame
 //                   time while the reader is busy;
 //   --reader-threads <n> (the reader's intra-op threads; 0 for ONNX Runtime's default), --truth <file> (the
-//   MRZ every replayed clip shows: its first two lines, 44 characters each once whitespace is removed;
-//   compared inside, never printed), --midv-templates <folder> (MIDV-2020's templates: each clip's truth from
+//   MRZ every replayed clip shows: the file's lines that are not blank, once whitespace is removed two of 44,
+//   two of 36 or three of 30 (mrz_truth.h); compared inside, never printed), --midv-templates <folder>
+//   (MIDV-2020's templates: each clip's truth from
 //   its template's mrz_line0 and mrz_line1; with --read, MIDV's clips are 00, 04, …, 96), --band-stats (p5,
 //   p50 and p95 of the band's peak, width share and aspect over the reads), --negatives <folder> (pages with
 //   no MRZ, read once each, for the same statistics). The MRZ models are looked for beside --model.
+
+#include "mrz_truth.h"
 
 #include <doc_vision/guidance.h>
 #include <doc_vision/mrz.h>
@@ -203,8 +206,9 @@ struct ClipReads {
     std::optional<double> timeToScan; // the scan's own, s
     int reads = 0;
     int valid = 0;
-    int validWrongLine1 = 0; // valid reads (every check digit passes) that are not the truth, by line
-    int validWrongLine2 = 0;
+    // Valid reads (every check digit passes) that are not the truth, by line: a TD1 card's has three.
+    std::array<int, 3> validWrongLine{};
+    std::size_t truthLines = 0; // none when the truth is unknown
     int errors = 0;
 };
 
@@ -257,39 +261,9 @@ struct Options {
     std::optional<std::filesystem::path> negatives;
 };
 
-// The MRZ as compared: whitespace removed, upper-cased, two lines of 44 joined by '\n' (Mrz::text()'s form).
-std::optional<std::string> truthOf(const std::string& line1, const std::string& line2) {
-    const auto clean = [](const std::string& line) {
-        std::string out;
-        for (const char c : line) {
-            if (!std::isspace(static_cast<unsigned char>(c))) {
-                out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-            }
-        }
-        return out;
-    };
-    const std::string first = clean(line1);
-    const std::string second = clean(line2);
-    if (first.size() != 44 || second.size() != 44) {
-        return std::nullopt;
-    }
-    return first + "\n" + second;
-}
-
-// The owner's truth file: its first two lines. Never printed.
-std::optional<std::string> readTruthFile(const std::filesystem::path& path) {
-    std::ifstream in(path);
-    std::string line1;
-    std::string line2;
-    if (!std::getline(in, line1) || !std::getline(in, line2)) {
-        return std::nullopt;
-    }
-    return truthOf(line1, line2);
-}
-
 // MIDV-2020's template for clip `clip` of `type`: its mrz_line0 and mrz_line1.
-std::optional<std::string> midvTruth(const std::filesystem::path& templates, const std::string& type,
-                                     const std::string& clip) {
+std::optional<doc_vision::Mrz> midvTruth(const std::filesystem::path& templates, const std::string& type,
+                                         const std::string& clip) {
     std::ifstream in(templates / "annotations" / (type + ".json"));
     if (!in) {
         return std::nullopt;
@@ -309,7 +283,7 @@ std::optional<std::string> midvTruth(const std::filesystem::path& templates, con
                 lines[field == "mrz_line0" ? 0 : 1] = region["region_attributes"].value("value", "");
             }
         }
-        return truthOf(lines[0], lines[1]);
+        return test_support::truthOf({lines[0], lines[1]});
     }
     return std::nullopt;
 }
@@ -341,7 +315,7 @@ public:
           m_run(run) {}
 
     // `truth`: the MRZ this clip shows, when known (A4's --read).
-    void startClip(std::optional<std::string> truth = std::nullopt) {
+    void startClip(std::optional<doc_vision::Mrz> truth = std::nullopt) {
         lab_core::DocumentProcessor::Reader reader;
         if (m_options.read) {
             reader.mode = *m_options.read == "every" ? lab_core::MrzWorker::Mode::Manual
@@ -360,15 +334,9 @@ public:
                 return std::make_unique<LoggingReader>(std::move(scanner), m_log);
             };
             m_run.reads.emplace_back();
+            // Parsed as a read is (test_support::truthOf), so both compare in the parser's form.
             m_truth = std::move(truth);
-            // Compared as the parser writes a read: an empty personal number's check digit as '<', say.
-            if (m_truth) {
-                const std::string line1 = m_truth->substr(0, 44);
-                const std::string line2 = m_truth->substr(45);
-                if (const std::optional<doc_vision::Mrz> parsed = doc_vision::parseMrz({line1, line2})) {
-                    m_truth = parsed->text();
-                }
-            }
+            m_run.reads.back().truthLines = m_truth ? m_truth->lines.size() : 0;
             m_pacer.restart();
             const std::lock_guard lock(m_log.mutex);
             m_log.ending = false;
@@ -423,9 +391,9 @@ public:
             m_run.reads.back().accept == ClipReads::Accept::Never) {
             ClipReads& clip = m_run.reads.back();
             const std::string text = result.guidance->scan->mrz.text();
-            clip.accept = !m_truth           ? ClipReads::Accept::Unknown
-                          : text == *m_truth ? ClipReads::Accept::Right
-                                             : ClipReads::Accept::Wrong;
+            clip.accept = !m_truth                  ? ClipReads::Accept::Unknown
+                          : text == m_truth->text() ? ClipReads::Accept::Right
+                                                    : ClipReads::Accept::Wrong;
             clip.acceptedAt = seconds;
             clip.timeToScan = std::chrono::duration<double>(result.guidance->scan->timeToScan).count();
             accepted = true;
@@ -520,11 +488,12 @@ public:
                 continue;
             }
             ++clip.valid;
-            if (m_truth && mrz->text() != *m_truth && mrz->lines.size() == 2) {
-                const std::string truthLine1 = m_truth->substr(0, 44);
-                const std::string truthLine2 = m_truth->substr(45);
-                clip.validWrongLine1 += mrz->lines[0] != truthLine1 ? 1 : 0;
-                clip.validWrongLine2 += mrz->lines[1] != truthLine2 ? 1 : 0;
+            // Line by line; a read of another format than the truth's is wrong on every line it has.
+            if (m_truth && mrz->text() != m_truth->text()) {
+                for (std::size_t i = 0; i < mrz->lines.size() && i < clip.validWrongLine.size(); ++i) {
+                    clip.validWrongLine[i] +=
+                        i >= m_truth->lines.size() || mrz->lines[i] != m_truth->lines[i] ? 1 : 0;
+                }
             }
         }
     }
@@ -537,7 +506,7 @@ private:
     TimedFinder m_finder;
     Run& m_run;
     ReadLog m_log;
-    std::optional<std::string> m_truth;
+    std::optional<doc_vision::Mrz> m_truth;
     frame_io::ReplayPacer m_pacer;
     std::unique_ptr<lab_core::DocumentProcessor> m_processor;
     std::optional<Hint> m_shown;
@@ -642,9 +611,10 @@ void runLabelled(const Options& options, Scorer& scorer, Run& run) {
 // Any replay the Document Lab opens, without labels: every frame at its own time, its tags too (a 16-bit
 // recording's value range), into one group.
 void runReplay(const Options& options, Scorer& scorer, Run& run) {
-    std::optional<std::string> truth;
+    std::optional<doc_vision::Mrz> truth;
     if (options.read && options.truth) {
-        truth = readTruthFile(*options.truth);
+        // The owner's truth file: never printed.
+        truth = test_support::truthOf(test_support::truthLinesIn(*options.truth));
         if (!truth) {
             std::printf("truth file not used: right and wrong are unknown\n");
         }
@@ -975,12 +945,23 @@ void reportReading(const Options& options, const Run& run, const ReadLog& log) {
     int unknown = 0;
     int reads = 0;
     int valid = 0;
-    int wrong1 = 0;
-    int wrong2 = 0;
+    std::array<int, 3> wrongLine{};
     int errors = 0;
     std::vector<double> toAccept;
     std::vector<double> toScan;
     const bool perClip = run.reads.size() <= 12;
+    // A third line only where a TD1 card's truth, or a read, has one: a passport's report keeps its shape.
+    bool thirdLine = false;
+    for (const ClipReads& clip : run.reads) {
+        thirdLine = thirdLine || clip.truthLines == 3 || clip.validWrongLine[2] > 0;
+    }
+    const auto wrongByLine = [thirdLine](const std::array<int, 3>& wrong) {
+        std::string text = "line 1 " + std::to_string(wrong[0]) + ", line 2 " + std::to_string(wrong[1]);
+        if (thirdLine) {
+            text += ", line 3 " + std::to_string(wrong[2]);
+        }
+        return text;
+    };
     for (std::size_t c = 0; c < run.reads.size(); ++c) {
         const ClipReads& clip = run.reads[c];
         right += clip.accept == ClipReads::Accept::Right ? 1 : 0;
@@ -989,8 +970,9 @@ void reportReading(const Options& options, const Run& run, const ReadLog& log) {
         unknown += clip.accept == ClipReads::Accept::Unknown ? 1 : 0;
         reads += clip.reads;
         valid += clip.valid;
-        wrong1 += clip.validWrongLine1;
-        wrong2 += clip.validWrongLine2;
+        for (std::size_t i = 0; i < wrongLine.size(); ++i) {
+            wrongLine[i] += clip.validWrongLine[i];
+        }
         errors += clip.errors;
         if (clip.acceptedAt) {
             toAccept.push_back(*clip.acceptedAt);
@@ -1002,8 +984,8 @@ void reportReading(const Options& options, const Run& run, const ReadLog& log) {
                 std::printf(" at %.2f s (time to scan %.2f s)", *clip.acceptedAt,
                             clip.timeToScan.value_or(0.0));
             }
-            std::printf("; reads %d, valid %.1f%%, valid but wrong: line 1 %d, line 2 %d", clip.reads,
-                        share(clip.valid, clip.reads), clip.validWrongLine1, clip.validWrongLine2);
+            std::printf("; reads %d, valid %.1f%%, valid but wrong: %s", clip.reads,
+                        share(clip.valid, clip.reads), wrongByLine(clip.validWrongLine).c_str());
             if (clip.errors > 0) {
                 std::printf(", errors %d", clip.errors);
             }
@@ -1015,8 +997,8 @@ void reportReading(const Options& options, const Run& run, const ReadLog& log) {
         std::printf(", truth unknown %d", unknown);
     }
     std::printf(" (of %zu clips)\n", run.reads.size());
-    std::printf("reads %d, valid %.1f%%, valid but wrong: line 1 %d, line 2 %d, errors %d\n", reads,
-                share(valid, reads), wrong1, wrong2, errors);
+    std::printf("reads %d, valid %.1f%%, valid but wrong: %s, errors %d\n", reads, share(valid, reads),
+                wrongByLine(wrongLine).c_str(), errors);
     std::printf("ms: reader open %s\n", percentiles(log.openMs).c_str());
     std::printf("ms: detection %s\n", percentiles(run.detect).c_str());
     std::printf("ms: recognition %s\n", percentiles(run.recognise).c_str());
@@ -1061,7 +1043,8 @@ int usage() {
         "                       --replay <video, image, folder of images or recording>...\n"
         "reading the MRZ, with --replay or --midv (the MRZ models beside --model):\n"
         "       --read every|paced [--reader-threads <n>] [--truth <file>] [--midv-templates <folder>]\n"
-        "       [--band-stats] [--negatives <folder of pages with no MRZ>]\n");
+        "       [--band-stats] [--negatives <folder of pages with no MRZ>]\n"
+        "--truth's file: its lines that are not blank, two of 44, two of 36 or three of 30\n");
     return 2;
 }
 
