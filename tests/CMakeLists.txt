@@ -145,6 +145,7 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/focus_controller_test.cpp
         lab_core/fake_sender.h
         lab_core/list_source.h
+        lab_core/mrz_privacy_test.cpp
         lab_core/mrz_worker_test.cpp
         lab_core/processors_test.cpp
         lab_core/scripted_finder.h

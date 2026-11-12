@@ -3356,4 +3356,61 @@ TEST(LabWindow, ReviewDarkColours) {
     EXPECT_EQ(value->palette().color(QPalette::WindowText), QColor(0xE8, 0xEA, 0xED));
 }
 
+// --- A4: privacy
+// ------------------------------------------------------------------------------------------------
+
+// The specimen's lines and the fields a leak would most likely show; the first it finds in `text`, or "".
+std::string mrzIn(const std::string& text) {
+    for (const std::string& secret :
+         {kSpecimen[0], kSpecimen[1], std::string("ERIKSSON"), std::string("ANNA"), std::string("L898902C3"),
+          std::string("ZE184226B")}) {
+        if (text.find(secret) != std::string::npos) {
+            return secret;
+        }
+    }
+    return {};
+}
+
+// Spec §2: the MRZ shows in Review and goes into a save the user chose, in its "mrz" section only: never the
+// status line, a still's name or overlays, nor the rest of the capture.
+TEST(LabWindow, PrivacyStatusAndStills) {
+    Lab lab(scanning());
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "Scanned";
+    EXPECT_EQ(mrzIn(lab.results().join('|').toStdString()), "") << "Scanned's rows";
+
+    cardButton(lab, "skipChipButton")->click();
+    lab.pump();
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "Review";
+
+    panelButton(lab, "saveButton")->click();
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "saved";
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "sent";
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    ASSERT_FALSE(calls.empty());
+    for (const test_support::RecordingSender::Call& call : calls) {
+        EXPECT_EQ(mrzIn(call.name), "") << "the still's name";
+        for (const visual_debug::Overlay& overlay : call.description.overlays) {
+            const std::string label = std::visit([](const auto& shape) { return shape.label; }, overlay);
+            EXPECT_EQ(mrzIn(label), "") << "a still's overlay";
+        }
+    }
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    EXPECT_EQ(mrzIn(jsons[0].filename().string()), "") << "the capture's name";
+    std::ifstream stream(jsons[0]);
+    nlohmann::json json = nlohmann::json::parse(stream);
+    ASSERT_TRUE(json.contains("mrz"));
+    json.erase("mrz");
+    EXPECT_EQ(mrzIn(json.dump()), "") << json.dump();
+    EXPECT_EQ(mrzIn(capturesOf(lab, ".png").at(0).filename().string()), "") << "the picture's name";
+}
+
 } // namespace
