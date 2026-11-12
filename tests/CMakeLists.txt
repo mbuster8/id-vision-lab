@@ -137,6 +137,7 @@ id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
         lab_core/document_outline_test.cpp
+        lab_core/document_processor_mrz_test.cpp
         lab_core/document_processor_test.cpp
         lab_core/engine_test.cpp
         lab_core/fake_focus_control.h
@@ -146,6 +147,7 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/list_source.h
         lab_core/mrz_worker_test.cpp
         lab_core/processors_test.cpp
+        lab_core/scripted_finder.h
         lab_core/result_sender_test.cpp
         lab_core/viewer_link_test.cpp
     LIBRARIES

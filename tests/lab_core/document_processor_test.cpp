@@ -2,6 +2,7 @@
 #include "lab_core/processors.h"
 
 #include "procedural_page.h"
+#include "scripted_finder.h"
 
 #include <doc_vision/guidance.h>
 #include <doc_vision/page_detector.h>
@@ -30,71 +31,18 @@ using lab_core::Finding;
 using lab_core::Guidance;
 using lab_core::ProcessorResult;
 
-// One answer of the scripted finder: a page, nothing, or nothing with an error.
-struct Step {
-    std::optional<doc_vision::Quad> quad;
-    std::string error;
-};
-
-Step page(const doc_vision::Quad& quad) { return {.quad = quad, .error = {}}; }
-Step nothing() { return {}; }
-Step failure(std::string error) { return {.quad = std::nullopt, .error = std::move(error)}; }
-
-// What the scripted finders of one processor share with the test: the answers in order (the last one
-// repeats), the frames they were given, and how often the processor asked for a finder.
-struct Script {
-    std::vector<Step> steps;
-    std::size_t calls = 0;
-    int opens = 0;
-    cv::Mat lastImage;
-};
-
-class ScriptedFinder final : public doc_vision::PageFinder {
-public:
-    explicit ScriptedFinder(std::shared_ptr<Script> script) : m_script(std::move(script)) {}
-
-    std::optional<doc_vision::PageFound> find(const cv::Mat& bgr8, std::string& error) override {
-        Script& script = *m_script;
-        script.lastImage = bgr8.clone();
-        if (script.steps.empty()) {
-            return std::nullopt;
-        }
-        const Step& step = script.steps[std::min(script.calls++, script.steps.size() - 1)];
-        error = step.error;
-        if (!step.quad) {
-            return std::nullopt;
-        }
-        return doc_vision::PageFound{.quad = *step.quad, .weakestPeak = 1.0};
-    }
-
-private:
-    std::shared_ptr<Script> m_script;
-};
-
-DocumentProcessor::MakeFinder scripted(const std::shared_ptr<Script>& script) {
-    return [script](std::string&, doc_vision::OpenFailure&) -> std::unique_ptr<doc_vision::PageFinder> {
-        ++script->opens;
-        return std::make_unique<ScriptedFinder>(script);
-    };
-}
-
-const cv::Size kFrameSize{1280, 720};
-
-// The frame TheProceduralPagePassesEveryGate judges: every gate passes.
-cv::Mat goodFrame() {
-    return test_support::pageInFrame(test_support::proceduralPage(), test_support::kPageQuad, kFrameSize);
-}
+using test_support::failure;
+using test_support::frameAt;
+using test_support::goodFrame;
+using test_support::kFrameSize;
+using test_support::nothing;
+using test_support::page;
+using test_support::Script;
+using test_support::scripted;
 
 // A page cut by the frame's left edge, too large to fit if moved: "Cut by the edge", not "Move to the
 // middle".
 const doc_vision::Quad kCutQuad{{{-60, 80}, {1180, 110}, {1160, 690}, {-40, 660}}};
-
-frame_io::Frame frameAt(const cv::Mat& image, int n, visual_debug::ImageDescription tags = {}) {
-    return {.image = image,
-            .number = static_cast<std::uint64_t>(n),
-            .at = std::chrono::milliseconds{33 * n},
-            .tags = std::move(tags)};
-}
 
 const visual_debug::Polygon& outlineOf(const ProcessorResult& result) {
     static const visual_debug::Polygon none{};
