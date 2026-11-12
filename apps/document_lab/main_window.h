@@ -78,6 +78,8 @@ struct LabDependencies {
     frame_io::RecordingWriter::Mode recorderMode = frame_io::RecordingWriter::Mode::Threaded;
     std::function<void(std::uint64_t)> recorderBeforeWrite;
     bool immediateCapture = false;
+    // Where a capture or a save is written when not immediate; null: Qt's global thread pool.
+    std::function<void(std::function<void()>)> background;
     std::function<std::uintmax_t(const std::filesystem::path&)> freeSpace; // null: what the volume has
     std::function<bool(const QString& question)> confirm;                  // null: a QMessageBox
     std::function<QString()> chooseFile;
@@ -328,8 +330,9 @@ private:
     ScanState m_scanState = ScanState::Guiding;
     std::shared_ptr<const lab_core::MrzScan> m_scan; // while Scanned or Review shows
     // The scan accepted last in this run: results still carrying it (in flight, or before the processor's
-    // reset) never bring it back.
-    std::shared_ptr<const lab_core::MrzScan> m_handledScan;
+    // reset) never bring it back. Weak, so a scan gone back from leaves no passport frame in memory; compared
+    // by owner, which an expired pointer keeps.
+    std::weak_ptr<const lab_core::MrzScan> m_handledScan;
     bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
     bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
     bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
@@ -338,6 +341,7 @@ private:
     QList<int> m_sizesBeforeReview;   // the splitter's, given back on leaving Review
     std::uint64_t m_reviewNumber = 0; // a save that ends after its Review was left changes nothing
     bool m_scanSaved = false;
+    bool m_scanSaving = false;                   // a save is being written: Enter and Save start no other
     std::optional<std::uint64_t> m_sendingStill; // Review's still, until the link says it ended
 
     // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop

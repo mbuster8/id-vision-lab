@@ -22,6 +22,7 @@
 #include <QComboBox>
 #include <QDate>
 #include <QFile>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -32,6 +33,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QTest>
+#include <QThreadPool>
 #include <QTreeWidget>
 #include <QWheelEvent>
 
@@ -3366,6 +3368,163 @@ TEST(LabWindow, ReviewDarkColours) {
     test_support::applyPalette(test_support::paletteWith(QColor(0x1E, 0x1E, 0x1E), QColor(0xF0, 0xF0, 0xF0)));
 
     EXPECT_EQ(value->palette().color(QPalette::WindowText), QColor(0xE8, 0xEA, 0xED));
+}
+
+// --- A4: the final review's findings
+// ------------------------------------------------------------------------------------------------
+
+std::size_t savesWritten(const Lab& lab) {
+    QThreadPool::globalInstance()->waitForDone(10000);
+    QApplication::processEvents();
+    return capturesOf(lab, ".png").size();
+}
+
+// F1: a second Enter while the first save still writes starts no second save.
+TEST(LabWindow, EnterWhileSavingSavesOnce) {
+    std::vector<std::function<void()>> held; // the saves started, written when the test says
+    Lab lab(scanning([&held](LabDependencies& dependencies) {
+        dependencies.immediateCapture = false;
+        dependencies.background = [&held](std::function<void()> job) { held.push_back(std::move(job)); };
+    }));
+    intoReview(lab);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    ASSERT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saving…"));
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+
+    EXPECT_EQ(held.size(), 1U);
+    for (const std::function<void()>& job : held) {
+        job();
+    }
+    QApplication::processEvents();
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+// F1: Enter held down in Scanned skips the chip once; its repeats save nothing in Review.
+TEST(LabWindow, HeldEnterDoesNotSave) {
+    Lab lab(scanning());
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(lab.canvas(), &press);
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+    for (int i = 0; i < 3; ++i) {
+        QKeyEvent repeat(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, QString(), true);
+        QApplication::sendEvent(lab.canvas(), &repeat);
+    }
+
+    EXPECT_EQ(savesWritten(lab), 0U);
+}
+
+// F2: Scanned and Review draw the scan's frame with its own tags (a 10-bit frame's value range), as Send
+// sends it.
+TEST(LabWindow, ScanIsDrawnWithItsTags) {
+    auto scan = std::make_shared<lab_core::MrzScan>(*scanOf());
+    scan->frame.image = cv::Mat(300, 400, CV_16UC3, cv::Scalar::all(512));
+    scan->frame.tags.valueRange = {0, 1023};
+    std::optional<viewer_core::ImageTags> drawn;
+    Lab lab([&](LabDependencies& dependencies) {
+        documentIs(scriptOf({acceptOf(scan)}))(dependencies);
+        dependencies.conversion = [&drawn](const LiveJob& job) {
+            drawn = job.tags;
+            return convertLiveFrame(job);
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    ASSERT_TRUE(drawn);
+    EXPECT_TRUE(drawn->hasValueRange());
+
+    cardButton(lab, "skipChipButton")->click();
+
+    ASSERT_TRUE(drawn);
+    EXPECT_TRUE(drawn->hasValueRange());
+}
+
+// Hands one scan over on its first frame and then forgets it, as the processor does once reset.
+class HandsOverOnce : public lab_core::FrameProcessor {
+public:
+    explicit HandsOverOnce(std::shared_ptr<const lab_core::MrzScan> scan) : m_scan(std::move(scan)) {}
+    lab_core::ProcessorResult process(const frame_io::Frame&) override {
+        if (m_scan) {
+            std::shared_ptr<const lab_core::MrzScan> scan = std::move(m_scan);
+            m_scan.reset();
+            return acceptOf(std::move(scan));
+        }
+        return guided({.shown = Hint::Good});
+    }
+
+private:
+    std::shared_ptr<const lab_core::MrzScan> m_scan;
+};
+
+// F5: a scan gone back from (Scan again, Discard) leaves no passport frame in memory: the window only
+// remembers which it was.
+TEST(LabWindow, ScanGoneBackFromIsFreed) {
+    std::weak_ptr<const lab_core::MrzScan> watch;
+    Lab lab([&watch](LabDependencies& dependencies) {
+        dependencies.makeProcessor =
+            [&watch](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+            if (kind != lab_core::ProcessorKind::Document) {
+                return lab_core::makeProcessor(kind);
+            }
+            std::shared_ptr<const lab_core::MrzScan> scan = scanOf();
+            watch = scan;
+            return std::make_unique<HandsOverOnce>(std::move(scan));
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 10));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    ASSERT_FALSE(watch.expired());
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    lab.pump(3);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(watch.expired());
+}
+
+// F6: Review's panel cannot be dragged shut or narrower than 330 px while it shows; the results' can again
+// after.
+TEST(LabWindow, ReviewPanelCannotBeShut) {
+    Lab lab(scanning());
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    intoReview(lab);
+
+    EXPECT_FALSE(splitter->isCollapsible(1));
+    EXPECT_GE(lab.window->findChild<QWidget*>("sidePanel")->minimumWidth(), 330);
+    const int total = splitter->sizes().at(0) + splitter->sizes().at(1);
+    splitter->setSizes({total, 0});
+    EXPECT_GE(splitter->sizes().at(1), 330);
+
+    panelButton(lab, "discardButton")->click();
+
+    EXPECT_TRUE(splitter->isCollapsible(1));
+    EXPECT_LT(lab.window->findChild<QWidget*>("sidePanel")->minimumWidth(), 330);
+}
+
+// F7: Scan again on a replay the user had paused keeps the banner of the frame on screen, not "Show the
+// document" with the passport in view.
+TEST(LabWindow, ScanAgainOnAPausedReplayKeepsTheBanner) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    button(lab, "stepButton")->click();
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+
+    cardButton(lab, "scanAgainButton")->click();
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
 }
 
 // --- A4: privacy

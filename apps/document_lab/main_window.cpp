@@ -1105,7 +1105,7 @@ void LabWindow::takeResult() {
     // replaced in the engine's slot is not missed; the one handled last never comes back.
     if (const std::optional<lab_core::Guidance>& guidance = m_current->processed.guidance;
         documentChosen() && m_resultSequence >= m_scanFrom && guidance && guidance->scan &&
-        guidance->scan != m_handledScan) {
+        (m_handledScan.owner_before(guidance->scan) || guidance->scan.owner_before(m_handledScan))) {
         accept(guidance->scan);
     }
     updateShowEntries(*m_current);
@@ -1195,8 +1195,13 @@ void LabWindow::display(ImageView::KeepView keep) {
             return;
         }
         image = &m_scan->frame.image;
-        tags =
-            m_scanState == ScanState::Review ? reviewTags() : toImageTags(visual_debug::ImageDescription{});
+        if (m_scanState == ScanState::Review) {
+            tags = reviewTags();
+        } else {
+            visual_debug::ImageDescription description = m_scan->frame.tags; // its range, its transfer
+            description.overlays.clear();
+            tags = toImageTags(description);
+        }
     } else {
         if (!m_current) {
             return;
@@ -1563,8 +1568,11 @@ void LabWindow::resumeScanning() {
         return;
     }
     m_engine->resetProcessor();
-    // The guidance on screen is of the scan's frames: the banner waits for a new result's.
-    m_scanFrom = m_resultSequence + 1;
+    // Frames come again: the banner waits for a new result's guidance rather than the scan's. A replay the
+    // user had paused brings none until stepped, so the banner keeps the frame on screen's.
+    if (m_cameraRunning || m_replayWasPlaying) {
+        m_scanFrom = m_resultSequence + 1;
+    }
     m_cameraPaused = false;
     if (m_replayWasPlaying) {
         m_engine->play(); // only a replay the accept paused playing; a user's pause, or its end, stays
@@ -1613,6 +1621,7 @@ void LabWindow::showReview(bool shown) {
     if (shown && m_scan) {
         ++m_reviewNumber;
         m_scanSaved = false;
+        m_scanSaving = false;
         m_sendingStill.reset();
         m_reviewPanel->setScan(*m_scan, today());
         m_gateValues->setRows(m_scan->gates);
@@ -1620,12 +1629,17 @@ void LabWindow::showReview(bool shown) {
         m_gateValues->setVisible(m_reviewBar->overlays().gates);
         m_sizesBeforeReview = m_splitter->sizes();
         m_sidePanel->setCurrentWidget(m_reviewPanel);
+        // Its buttons are the way on: the panel cannot be dragged shut or narrower while it shows.
+        m_sidePanel->setMinimumWidth(kReviewPanelWidth);
+        m_splitter->setCollapsible(1, false);
         const int total = m_sizesBeforeReview.value(0) + m_sizesBeforeReview.value(1);
         const int panel = std::max(m_sizesBeforeReview.value(1), kReviewPanelWidth);
         m_splitter->setSizes({std::max(1, total - panel), panel});
     } else if (!shown) {
         m_sendingStill.reset();
         m_sidePanel->setCurrentWidget(m_results);
+        m_sidePanel->setMinimumWidth(kResultsMinimumWidth);
+        m_splitter->setCollapsible(1, true);
         m_splitter->setSizes(m_sizesBeforeReview);
     }
     m_reviewBar->setVisible(shown);
@@ -1665,7 +1679,9 @@ std::vector<visual_debug::Overlay> LabWindow::reviewOverlays(bool everything) co
 }
 
 viewer_core::ImageTags LabWindow::reviewTags() const {
-    visual_debug::ImageDescription description;
+    // The frame's own tags (a 10-bit frame's value range, an HDR transfer), as Send sends them.
+    visual_debug::ImageDescription description =
+        m_scan ? m_scan->frame.tags : visual_debug::ImageDescription{};
     description.overlays = reviewOverlays(false);
     viewer_core::ImageTags tags = toImageTags(description);
     std::vector<viewer_core::Overlay> overlays = tags.overlayList();
@@ -1690,8 +1706,8 @@ viewer_core::ImageTags LabWindow::reviewTags() const {
 // Spec §3.4: the scan's frame, never drawn on, with every overlay of Review whatever its check boxes, 04's
 // rows and the gate values as findings (no MRZ text), and the MRZ itself in its own "mrz" section.
 void LabWindow::saveScan() {
-    if (!m_scan || !m_reviewShown || m_scanSaved) {
-        return;
+    if (!m_scan || !m_reviewShown || m_scanSaved || m_scanSaving) {
+        return; // saved, or being written: Enter pressed twice saves once
     }
     const QString folder = QDir(labFolder()).filePath(QStringLiteral("Captures"));
     if (!makePrivateFolder(folder)) {
@@ -1719,13 +1735,14 @@ void LabWindow::saveScan() {
         return {std::move(written), std::move(error)};
     };
     m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Busy);
+    m_scanSaving = true;
     const std::uint64_t review = m_reviewNumber;
     if (m_dependencies.immediateCapture) {
         const auto [written, error] = write();
         savedScan(review, written, error);
         return;
     }
-    QThreadPool::globalInstance()->start([write, review, window = QPointer<LabWindow>(this)] {
+    std::function<void()> job = [write, review, window = QPointer<LabWindow>(this)] {
         auto [written, error] = write();
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
@@ -1735,13 +1752,19 @@ void LabWindow::saveScan() {
                 }
             },
             Qt::QueuedConnection);
-    });
+    };
+    if (m_dependencies.background) {
+        m_dependencies.background(std::move(job));
+    } else {
+        QThreadPool::globalInstance()->start(std::move(job));
+    }
 }
 
 void LabWindow::savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error) {
     m_message = file.empty() ? tr("Could not save the scan: %1").arg(QString::fromStdString(error))
                              : tr("saved %1").arg(fromPath(file));
     if (review == m_reviewNumber && m_reviewShown) {
+        m_scanSaving = false;
         m_scanSaved = !file.empty();
         if (m_scanSaved) {
             m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Done);
@@ -2157,6 +2180,10 @@ bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
         if ((enter || escape) && plain && widget != nullptr && widget->window() == this &&
             qobject_cast<QLineEdit*>(focusWidget()) == nullptr &&
             QApplication::activePopupWidget() == nullptr) {
+            // A key held down acts once: its repeats would carry Scanned's Enter on into Review's Save.
+            if (key->isAutoRepeat()) {
+                return true;
+            }
             if (const std::optional<ScanEvent> scanEvent =
                     eventFor(m_scanState, enter ? ScanKey::Enter : ScanKey::Escape)) {
                 applyScanEvent(*scanEvent);
