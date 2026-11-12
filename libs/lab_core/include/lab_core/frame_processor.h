@@ -1,13 +1,16 @@
 #pragma once
 
 #include <doc_vision/guidance.h>
+#include <doc_vision/mrz.h>
 #include <frame_io/frame.h>
 #include <visual_debug/image_description.h>
 #include <visual_debug/overlay.h>
 
 #include <opencv2/core/mat.hpp>
 
+#include <chrono>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,6 +49,25 @@ struct PageFacts {
     doc_vision::Hint frameHint = doc_vision::Hint::NoPage; // this frame's own
 };
 
+// The MRZ reader's state while the Document processor reads (A4, spec §4.2).
+struct MrzProgress {
+    bool available = true;                // false: the reader could not be opened
+    std::string reason;                   // why, in fixed words, when unavailable
+    int agreeing = 0;                     // the most identical valid reads in the window, at most 3
+    std::optional<doc_vision::Quad> band; // in this frame, when it is drawn
+};
+
+// An accepted MRZ (A4): the frame kept for the user to review, save or send.
+struct MrzScan {
+    frame_io::Frame frame;      // the sharpest of the agreeing reads' frames
+    doc_vision::Quad quad{};    // the document's, the right way up: corner 1 is the page's top left as read
+    doc_vision::Quad band{};    // the MRZ band's, in the frame, the right way up
+    std::vector<Finding> gates; // that frame's Fill, Tilt, Sharpness, Glare and Exposure rows
+    doc_vision::Mrz mrz;
+    std::chrono::nanoseconds timeToScan{}; // from the first fresh page after the window was last cleared
+    int reads = 0;                         // reads made since then
+};
+
 // What the Document processor tells the user about a frame: the banner's hint, the chips, and which overlay
 // is the page's outline that the canvas draws as its guide.
 struct Guidance {
@@ -60,6 +82,13 @@ struct Guidance {
     Unavailable unavailable = Unavailable::None;
     std::string reason{};            // the error, for the status bar
     std::optional<PageFacts> page{}; // the page found in this frame, if any
+    // A4: while the processor has a reader and has accepted nothing.
+    std::optional<MrzProgress> reading{};
+    // The index in ProcessorResult::overlays of the MRZ band, drawn as a dashed guide.
+    std::optional<std::size_t> bandOverlay{};
+    // The accepted MRZ, on every result from the accept until reset(): the engine keeps only the newest
+    // result, so one result alone could be missed.
+    std::shared_ptr<const MrzScan> scan{};
 };
 
 // What a processor found in one frame.

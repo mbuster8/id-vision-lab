@@ -6,15 +6,19 @@
 #include "lab_settings.h"
 #include "live_converter.h"
 #include "scan_banner.h"
+#include "scan_flow.h"
 #include "scan_words.h"
 
 #include <frame_io/recording.h>
 #include <lab_core/engine.h>
 #include <lab_core/processors.h>
 #include <lab_core/viewer_link.h>
+#include <viewer_core/image_tags.h>
 #include <visual_debug/image_description.h>
 #include <visual_debug/image_sender.h>
 
+#include <QDate>
+#include <QList>
 #include <QMainWindow>
 #include <QSet>
 #include <QString>
@@ -38,10 +42,16 @@ class QLineEdit;
 class QPushButton;
 class QSlider;
 class QSplitter;
+class QStackedWidget;
 class QTimer;
 class QTreeWidget;
 
 namespace document_lab {
+
+class GateValuesBox;
+class ReviewBar;
+class ReviewPanel;
+class ScannedCard;
 
 using Clock = std::chrono::steady_clock;
 
@@ -68,6 +78,8 @@ struct LabDependencies {
     frame_io::RecordingWriter::Mode recorderMode = frame_io::RecordingWriter::Mode::Threaded;
     std::function<void(std::uint64_t)> recorderBeforeWrite;
     bool immediateCapture = false;
+    // Where a capture or a save is written when not immediate; null: Qt's global thread pool.
+    std::function<void(std::function<void()>)> background;
     std::function<std::uintmax_t(const std::filesystem::path&)> freeSpace; // null: what the volume has
     std::function<bool(const QString& question)> confirm;                  // null: a QMessageBox
     std::function<QString()> chooseFile;
@@ -76,6 +88,7 @@ struct LabDependencies {
     QString labFolder;                        // empty: the app's local data folder
     QString modelFolder;                      // empty: defaultModelFolder(), beside the program
     std::function<Clock::time_point()> clock; // null: steady_clock::now
+    std::function<QDate()> today;             // Review's expiry warning; null: QDate::currentDate()
 };
 
 // The Document Lab: a camera or a replay, run through a processor on the engine's thread, the result drawn on
@@ -132,6 +145,32 @@ private:
     const lab_core::Guidance* drawnGuidance() const;
     // The banner, the chips and the canvas's empty text, from the drawn guidance or the window's state.
     void updateScan();
+    // A replay of one frame (an image file): three reads of one picture are no evidence (A4, spec §3.1).
+    bool oneFrameSource() const;
+    // The status line's "State:" word for the drawn guidance.
+    QString scanStateWord(const lab_core::Guidance* guidance) const;
+
+    // A4's scan (spec §3.1): Scanned or Review shows the kept scan, and the camera or the replay is paused.
+    bool scanShowing() const;
+    void accept(std::shared_ptr<const lab_core::MrzScan> scan);
+    void applyScanEvent(ScanEvent event); // the user's: Skip the chip, Scan again, Discard, Scan another
+    void resumeScanning();                // frames come again, to a processor that has forgotten the scan
+    // Stop, another camera, format, source or processor end the scan as Discard does; `runContinues` plays a
+    // replay the accept paused.
+    void dropScan(bool runContinues);
+    void showScanState();
+    // Stops the run; `keepScan` (a camera failure while a scan shows) keeps the scan, its picture and rows.
+    void endRun(bool keepScan);
+    // Review (spec §3.4): its bar, its panel in the results' place, the pill and the gate values.
+    void showReview(bool shown);
+    // Review's overlays: as its check boxes say, or `everything` (a save keeps them all).
+    std::vector<visual_debug::Overlay> reviewOverlays(bool everything) const;
+    viewer_core::ImageTags reviewTags() const; // the canvas's: the outline and the band as guides
+    void saveScan();
+    void savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error);
+    void sendScan();
+    void updateSend(const lab_core::ViewerLink::State& link);
+    doc_vision::MrzDate today() const;
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
@@ -236,6 +275,13 @@ private:
     QLabel* m_placeholder = nullptr;
     ScanBanner* m_banner = nullptr;
     GateChips* m_chips = nullptr;
+    ScannedCard* m_scannedCard = nullptr;
+    ReviewBar* m_reviewBar = nullptr;
+    QWidget* m_reviewMarks = nullptr; // the pill and the gate values, top left over the canvas
+    QLabel* m_reviewPill = nullptr;
+    GateValuesBox* m_gateValues = nullptr;
+    QStackedWidget* m_sidePanel = nullptr; // the results, or Review's panel
+    ReviewPanel* m_reviewPanel = nullptr;
     QSplitter* m_splitter = nullptr;
     QTreeWidget* m_results = nullptr;
     QAction* m_resultsAction = nullptr;
@@ -279,6 +325,24 @@ private:
     CanvasCounts m_canvasCounts;
     std::deque<Clock::time_point> m_taken; // results taken in the last second
     std::deque<Clock::time_point> m_drawn; // pictures drawn in the last second
+
+    // A4's scan.
+    ScanState m_scanState = ScanState::Guiding;
+    std::shared_ptr<const lab_core::MrzScan> m_scan; // while Scanned or Review shows
+    // The scan accepted last in this run: results still carrying it (in flight, or before the processor's
+    // reset) never bring it back. Weak, so a scan gone back from leaves no passport frame in memory; compared
+    // by owner, which an expired pointer keeps.
+    std::weak_ptr<const lab_core::MrzScan> m_handledScan;
+    bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
+    bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
+    bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
+    std::vector<lab_core::Finding> m_scanFindings; // the accept's rows (04's), which a save keeps
+    bool m_reviewShown = false;
+    QList<int> m_sizesBeforeReview;   // the splitter's, given back on leaving Review
+    std::uint64_t m_reviewNumber = 0; // a save that ends after its Review was left changes nothing
+    bool m_scanSaved = false;
+    bool m_scanSaving = false;                   // a save is being written: Enter and Save start no other
+    std::optional<std::uint64_t> m_sendingStill; // Review's still, until the link says it ended
 
     // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop
     // before anything they call back into goes.

@@ -19,11 +19,14 @@ std::string_view nameOf(ProcessorKind kind);
 
 // What a processor may need from the program that makes it.
 struct ProcessorSettings {
-    std::filesystem::path modelFolder{}; // where the Document processor finds kLc100ModelFile
+    std::filesystem::path modelFolder{}; // where the Document processor finds its models' files
 };
 
 // DocAligner LC100's file in the model folder.
 inline constexpr const char* kLc100ModelFile = "lcnet100_h_e_bifpn_256_fp32.onnx";
+// MRZScanner's two stages' files in the model folder: the band's detection, then its recognition.
+inline constexpr const char* kMrzDetectionModelFile = "mrz_detection_20250222_fp32.onnx";
+inline constexpr const char* kMrzRecognitionModelFile = "mrz_recognition_20250221_fp32.onnx";
 
 std::unique_ptr<FrameProcessor> makeProcessor(ProcessorKind kind, const ProcessorSettings& settings = {});
 

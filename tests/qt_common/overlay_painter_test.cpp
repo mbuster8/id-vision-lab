@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -254,6 +255,43 @@ TEST(OverlayPainter, GuideHaloContrastOverWhite) {
     const QImage image = paintGuideOnWhite(guideAt100({0x3D, 0xDC, 0x84}));
 
     EXPECT_GE(contrast(image.pixelColor(200, 97), Qt::white), 3.0);
+}
+
+// A4's MRZ band: 5 px outside the shape, 3 px dashes of 8 with gaps of 6 that show the picture (screen 03).
+TEST(OverlayPainter, GuideDashedIsOffsetAndDashed) {
+    const Colour green{0x3D, 0xDC, 0x84};
+    Polygon band = guideAt100(green);
+    band.style = Polygon::Style::GuideDashed;
+    const QImage image = paintGuideOnWhite(band);
+
+    int longestColour = 0;
+    int longestWhite = 0;
+    int colourRun = 0;
+    int whiteRun = 0;
+    for (int x = 110; x <= 290; ++x) {
+        const QColor pixel = image.pixelColor(x, 95);
+        colourRun = near(pixel, green.r, green.g, green.b, 2) ? colourRun + 1 : 0;
+        whiteRun = pixel == QColor(Qt::white) ? whiteRun + 1 : 0;
+        longestColour = std::max(longestColour, colourRun);
+        longestWhite = std::max(longestWhite, whiteRun);
+    }
+    EXPECT_GE(longestColour, 6);
+    EXPECT_LE(longestColour, 9);
+    EXPECT_GE(longestWhite, 4);
+    for (int x = 110; x <= 290; ++x) {
+        ASSERT_EQ(image.pixelColor(x, 100), QColor(Qt::white)) << x; // nothing on the shape's own edge
+    }
+}
+
+TEST(OverlayPainter, GuideDashedHasNoLabel) {
+    Polygon band = guideAt100({0xF4, 0xBF, 0x4F});
+    band.style = Polygon::Style::GuideDashed;
+    const QImage image = paintGuideOnWhite(band);
+    for (int y = 70; y <= 88; ++y) {
+        for (int x = 80; x <= 120; ++x) {
+            ASSERT_EQ(image.pixelColor(x, y), QColor(Qt::white)) << x << ", " << y;
+        }
+    }
 }
 
 } // namespace

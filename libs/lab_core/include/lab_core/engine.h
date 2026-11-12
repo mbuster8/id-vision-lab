@@ -124,6 +124,9 @@ public:
     // Null is None. The processor is reset() and, unless frames are coming, the frame on screen processed
     // again.
     void setProcessor(std::unique_ptr<FrameProcessor> processor);
+    // The processor's reset() and nothing else (A4's Scan again, Discard and Scan another): no new
+    // generation, so a recording in progress and a camera run's focus go on.
+    void resetProcessor();
     // Records the frames processed from now on. A restart, a seek, a loop, another source and stop() also
     // stop the recording; its counts are those since this call.
     void startRecording(std::unique_ptr<frame_io::RecordingWriter> writer);
@@ -226,7 +229,7 @@ private:
     void stopWithError(const std::string& message);
     void setState(EngineState state);
     void setMessage(std::string message);
-    void resetProcessor();
+    void resetProcessorNow();
     void closeSource();
     Totals totals() const; // with the lock
     Clock::time_point now() const;

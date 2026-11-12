@@ -9,14 +9,30 @@ constexpr std::size_t index(Gate gate) { return static_cast<std::size_t>(gate); 
 } // namespace
 
 Tone toneOf(Hint hint) {
+    // Every hint named, no default: a new one must be given its tone (-Wswitch).
     switch (hint) {
     case Hint::NoPage:
         return Tone::Neutral;
     case Hint::Good:
         return Tone::Good;
-    default:
-        return Tone::Bad;
+    case Hint::CutByEdge:
+    case Hint::MoveToMiddle:
+    case Hint::TooFar:
+    case Hint::TooClose:
+    case Hint::Tilted:
+    case Hint::Blurred:
+    case Hint::Glare:
+    case Hint::TooDark:
+    case Hint::TooBright:
+    case Hint::NoMrzBand:
+    case Hint::CannotReadMrz:
+        break;
     }
+    return Tone::Bad;
+}
+
+bool gatesPass(Hint hint) {
+    return hint == Hint::Good || hint == Hint::NoMrzBand || hint == Hint::CannotReadMrz;
 }
 
 std::optional<Gate> gateOf(Hint hint) {
@@ -38,6 +54,8 @@ std::optional<Gate> gateOf(Hint hint) {
         return Gate::Light;
     case Hint::NoPage:
     case Hint::Good:
+    case Hint::NoMrzBand:
+    case Hint::CannotReadMrz:
         return std::nullopt;
     }
     return std::nullopt;

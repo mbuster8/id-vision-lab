@@ -45,6 +45,12 @@ BannerContent bannerFor(doc_vision::Hint hint) {
         return bad("Too dark", "add more light");
     case Hint::TooBright:
         return bad("Too bright", "move out of direct light");
+    case Hint::NoMrzBand:
+        return bad("Keep your fingers off the two lines at the bottom");
+    case Hint::CannotReadMrz:
+        // Wider than screen 07's (the owner, A4's D2): an ID card's front has no MRZ to read.
+        return bad("Can't read the lines at the bottom",
+                   "check for glare or fingers; only passports are read for now");
     case Hint::Good:
         break;
     }
@@ -88,6 +94,40 @@ BannerContent bannerFor(WindowState state, const QString& detail) {
     return {doc_vision::Tone::Bad, false, tr("ONNX Runtime could not be loaded"), reinstall()};
 }
 
+QString readingLine(int agreeing) { return tr("Reading the lines at the bottom · %1 of 3").arg(agreeing); }
+
+QString readingNeedsMotion() { return tr("MRZ reading needs a camera or a video"); }
+
+QString readerUnavailableLine() {
+    return tr("The MRZ reader could not be opened · reinstall the Document Lab");
+}
+
+QString mrzDate(const std::string& yymmdd, const std::optional<doc_vision::MrzDate>& date) {
+    // A fixed table, never QLocale: Review shows English month names whatever the locale (spec §3.4).
+    static constexpr const char* kMonths[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    if (!date) {
+        return QString::fromStdString(yymmdd);
+    }
+    if (date->month < 1 || date->month > 12) {
+        return QString::number(date->year);
+    }
+    const QString month = QString::fromLatin1(kMonths[date->month - 1]);
+    if (date->day < 1) {
+        return QStringLiteral("%1 %2").arg(month).arg(date->year);
+    }
+    return QStringLiteral("%1 %2 %3").arg(date->day).arg(month).arg(date->year);
+}
+
+QString expiredWarning(const doc_vision::MrzDate& expiry) {
+    return tr("Expired on %1. A5 and later steps flag this; the scan itself still succeeded.")
+        .arg(mrzDate({}, expiry));
+}
+
+QString stillName(std::uint64_t frameNumber) {
+    return QStringLiteral("lab passport frame %1").arg(frameNumber + 1);
+}
+
 QString chipLabel(doc_vision::Gate gate) {
     using doc_vision::Gate;
     switch (gate) {
@@ -127,6 +167,9 @@ QString stateWord(doc_vision::Hint shown) {
     case Hint::TooDark:
     case Hint::TooBright:
         return tr("adjust (light)");
+    case Hint::NoMrzBand:
+    case Hint::CannotReadMrz:
+        return tr("reading");
     case Hint::Good:
         break;
     }

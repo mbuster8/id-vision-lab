@@ -83,6 +83,27 @@ cv::Mat flatten(const cv::Mat& image, const Quad& quad, cv::Size size) {
     return flat;
 }
 
+Quad pageToFrame(const Quad& onPage, const Quad& pageQuad, cv::Size pageSize) {
+    // getPerspectiveTransform, as flatten uses: findHomography is calib3d's in OpenCV 4, which this library
+    // does not link.
+    const float right = static_cast<float>(pageSize.width - 1);
+    const float bottom = static_cast<float>(pageSize.height - 1);
+    const std::vector<cv::Point2f> page{{0, 0}, {right, 0}, {right, bottom}, {0, bottom}};
+    const cv::Mat homography = cv::getPerspectiveTransform(page, asFloats(pageQuad));
+    std::vector<cv::Point2d> points(onPage.begin(), onPage.end());
+    std::vector<cv::Point2d> mapped;
+    cv::perspectiveTransform(points, mapped, homography);
+    return {mapped[0], mapped[1], mapped[2], mapped[3]};
+}
+
+Quad unturned(const Quad& onTurnedPage, cv::Size pageSize) {
+    Quad out{};
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = {pageSize.width - 1 - onTurnedPage[i].x, pageSize.height - 1 - onTurnedPage[i].y};
+    }
+    return out;
+}
+
 double fillShare(const Quad& quad, cv::Size frame) {
     return cv::contourArea(asFloats(quad)) / (static_cast<double>(frame.width) * frame.height);
 }

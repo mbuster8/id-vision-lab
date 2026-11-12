@@ -11,6 +11,7 @@ add_library(lab_core STATIC
     include/lab_core/focus_controller.h
     include/lab_core/frame_processor.h
     include/lab_core/lab_result.h
+    include/lab_core/mrz_worker.h
     include/lab_core/processors.h
     include/lab_core/result_sender.h
     include/lab_core/viewer_link.h
@@ -18,6 +19,7 @@ add_library(lab_core STATIC
     src/document_processor.cpp
     src/engine.cpp
     src/focus_controller.cpp
+    src/mrz_worker.cpp
     src/number_text.h
     src/processors.cpp
     src/result_sender.cpp

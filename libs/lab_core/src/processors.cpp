@@ -85,7 +85,15 @@ std::unique_ptr<FrameProcessor> makeProcessor(ProcessorKind kind, const Processo
                 std::string& error,
                 doc_vision::OpenFailure& failure) -> std::unique_ptr<doc_vision::PageFinder> {
                 return doc_vision::PageDetector::open(model, error, &failure);
-            });
+            },
+            doc_vision::Thresholds{},
+            ReaderSetup{.make = [detection = settings.modelFolder / kMrzDetectionModelFile,
+                                 recognition = settings.modelFolder / kMrzRecognitionModelFile](
+                                    std::string& error, doc_vision::OpenFailure& failure)
+                            -> std::unique_ptr<doc_vision::MrzReader> {
+                            return doc_vision::MrzScanner::open(detection, recognition, error, &failure);
+                        },
+                        .mode = MrzWorker::Mode::Threaded});
     case ProcessorKind::None:
         break;
     }

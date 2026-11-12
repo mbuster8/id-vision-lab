@@ -1,0 +1,21 @@
+MRZScanner weights (mrz_detection_20250222_fp32.onnx, mrz_recognition_20250221_fp32.onnx)
+
+Shipped unmodified with the Document Lab, as its MRZ reader: the band's detection, then its recognition. From
+DocsaidLab's MRZScanner release 1.0.7:
+https://github.com/DocsaidLab/MRZScanner/releases/download/1.0.7/mrz_detection_20250222_fp32.onnx
+SHA-256 0786844728d828dc68c19b844aa87e2b29fdba3a587468f2863824d116ffc269
+https://github.com/DocsaidLab/MRZScanner/releases/download/1.0.7/mrz_recognition_20250221_fp32.onnx
+SHA-256 07cef987fc1852aac12f18e1269fbaf1e2644579ca5743061d6f9cec7bef77c0
+
+Licensed under the Apache License, Version 2.0 (Apache-2.0.txt beside this file). The relevant part of DocsaidLab's
+notice (https://docsaid.org/licenses/NOTICE.txt, read 12 November 2026), verbatim:
+
+    Unmodified public ONNX weights: DocsaidLab DocAligner and MRZScanner.
+    Licensed under Apache License 2.0 by the project owner.
+    Full licenses: /licenses/docaligner-Apache-2.0.txt and
+    /licenses/mrzscanner-Apache-2.0.txt
+    Pinned revisions, source URLs and SHA-256: /api/v1/catalog
+    Training datasets are not included and retain their original providers' terms.
+
+The training data DocsaidLab names include MIDV-2020 (CC BY-SA 2.5; its faces were made with Generated Photos,
+https://generated.photos/). None of that data is shipped here.

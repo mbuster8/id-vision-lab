@@ -88,6 +88,7 @@ install(FILES
     "${PROJECT_SOURCE_DIR}/packaging/licenses/GPL-3.0.txt"
     "${PROJECT_SOURCE_DIR}/packaging/licenses/Apache-2.0.txt"
     "${PROJECT_SOURCE_DIR}/packaging/licenses/DocAligner-NOTICE.txt"
+    "${PROJECT_SOURCE_DIR}/packaging/licenses/MRZScanner-NOTICE.txt"
     DESTINATION licenses)
 foreach(port IN ITEMS opencv4 ffmpeg zeromq cppzmq nlohmann-json libjpeg-turbo libpng libwebp tiff zlib liblzma)
     install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${port}/copyright"

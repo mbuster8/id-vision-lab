@@ -694,6 +694,50 @@ the one in `System32` when the lab's own copy is gone), the banner says "The doc
 "ONNX Runtime could not be loaded" for the whole run, the status bar gives the reason, and the other processors
 work as before.
 
+### Reading the MRZ
+
+Once every check passes, the Document processor reads the **MRZ**, the two lines of letters, digits and `<` at
+the bottom of a passport's data page, on a thread of its own, with DocsaidLab's MRZScanner (two small models on
+ONNX Runtime). A read counts when every check digit passes; the scan is **accepted** when the same whole MRZ has
+been read on 3 of the last 10 frames read, never pieced together character by character. Only passports (TD3,
+document code `P`) are read for now; ID cards follow.
+
+- **Hold still:** while the MRZ is read the banner reads ✓ **Good: hold still** with **Reading the lines at the
+  bottom · 2 of 3** and a three-part bar, and the band is outlined dashed green on the canvas (not while the lab's
+  focus searches, and never over a held page). The results add `MRZ reads` (`2 of 3 agree`) and `Reader` (the
+  model and its time). The reads collected so far stay while a check fails for a moment; with no page found for a
+  second, they are forgotten.
+- **When it cannot read**, two more hints, red, in the order shown:
+
+  | # | When | Banner |
+  |---|---|---|
+  | 12 | Every check passes, but nothing accepted after 5 s | ✗ Can't read the lines at the bottom · check for glare or fingers; only passports are read for now |
+  | 11 | The last read found no band | ✗ Keep your fingers off the two lines at the bottom |
+
+- **Scanned:** on the accept the frame read best is kept and a card shows over it: **Passport scanned**, and to
+  place the passport on the chip reader, which comes in A5 (until then the card says **Chip reading arrives in
+  A5**). The camera is paused meanwhile, its session left open so going on is instant; a playing replay pauses.
+  **Skip the chip** (Enter) opens Review; **Scan again** (Esc) drops the frame and goes back to the hints. While
+  the card or Review shows, the replay controls, focusing, Capture and Send Frame are off.
+- **Review:** the captured frame with a bar above it to show the document outline, the MRZ band (dashed amber),
+  the corner numbers (1 is the page's top left as read) and the gate values; the panel beside it lists the MRZ's
+  fields with ✓ for each check digit, dates as `12 Aug 1974`, and a warning when the document has expired (the
+  scan itself still succeeded). It shows whatever **View ▸ Results** says, at least 330 px wide. **Save to
+  captures** (Enter) keeps the frame with every overlay, whatever the check boxes, and the MRZ in the capture's
+  `mrz` section; **Send to the viewer** sends it as `lab passport frame N` with the overlays as checked, asking
+  first for another computer; **Discard** and **Scan another** go back to the hints. Esc does nothing in Review:
+  it needs a choice. Closing the lab with a scan on screen does not ask: nothing is kept unless you save it.
+- **The status bar** says `State: reading` while it reads, then `Camera paused` (a replay: `Paused`) with
+  `State: scanned, waiting for the chip` or `State: review`. If the reader's models cannot be opened, the banner's
+  small line says **The MRZ reader could not be opened · reinstall the Document Lab**, the status bar adds
+  `MRZ reader: model missing` (or `ONNX Runtime refused it`), and the hints work as before.
+- **An image file** is one frame, and three reads of one picture are no evidence: the banner says **MRZ reading
+  needs a camera or a video**. A paused replay stepped frame by frame reads each step's frame, and its count
+  shows on the step after the read lands. A read that lands after a clip's last frame is never counted: an
+  accept that needed it does not come, and Play starts the clip again.
+- **Privacy:** the MRZ shows only in Review and goes only into a capture you save; findings, overlay labels, the
+  status bar, the stream and stills never hold it.
+
 ### Focus on the document
 
 A blurred page cannot be read, and many webcams leave a passport held close blurred. Where the lab can set a
@@ -773,7 +817,7 @@ recording replays through **Open Folder…**.
 
 **Capture** keeps the frame on the canvas at full resolution as a PNG, with a JSON beside it (the source, the
 frame's number, its time, its tags, the processor's findings and its overlays: where it found what it found), in
-the `Captures` folder.
+the `Captures` folder. The JSON's keys come in that order; Review's Save adds an `mrz` section after them.
 
 The lab's folder is the app's local data folder (`~/Library/Application Support/Document Lab` on a Mac,
 `%LOCALAPPDATA%\Document Lab` on Windows, `~/.local/share/Document Lab` on Linux), which iCloud and OneDrive do

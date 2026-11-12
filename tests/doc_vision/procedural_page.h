@@ -72,4 +72,32 @@ inline double quadIoU(const doc_vision::Quad& a, const doc_vision::Quad& b) {
     return sum > 0 ? inter / sum : 0.0;
 }
 
+// ICAO Doc 9303's public TD3 specimen MRZ (no real person).
+inline const std::string kSpecimenLine1 = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+inline const std::string kSpecimenLine2 = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
+
+// A flattened 1250 × 880 TD3 page (10 px/mm) with the specimen's MRZ drawn in OpenCV's Hershey SIMPLEX at
+// ICAO's 2.54 mm pitch: the page measured on 12 November, on which MRZScanner finds the band (y 765–848, x
+// 50–1183) and two lines of 44, with 2–7 characters a line misread.
+inline cv::Mat specimenPage() {
+    constexpr double kScale = 10.0; // px per mm
+    constexpr int kThickness = 2;
+    cv::Mat page(880, 1250, CV_8UC3, cv::Scalar(225, 232, 236));
+    cv::rectangle(page, cv::Rect(60, 180, 320, 400), cv::Scalar(150, 160, 170), cv::FILLED);
+    int baseline = 0;
+    const cv::Size cap = cv::getTextSize("H", cv::FONT_HERSHEY_SIMPLEX, 1.0, kThickness, &baseline);
+    const double fontScale = 2.4 * kScale / cap.height;
+    const auto line = [&](const std::string& text, double baselineMm) {
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            const cv::Point at(static_cast<int>((6.4 + 2.54 * static_cast<double>(i)) * kScale),
+                               static_cast<int>(baselineMm * kScale));
+            cv::putText(page, std::string(1, text[i]), at, cv::FONT_HERSHEY_SIMPLEX, fontScale,
+                        cv::Scalar(20, 20, 20), kThickness, cv::LINE_AA);
+        }
+    };
+    line(kSpecimenLine1, 79.0);
+    line(kSpecimenLine2, 84.0);
+    return page;
+}
+
 } // namespace test_support

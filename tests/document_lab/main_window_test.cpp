@@ -1,6 +1,8 @@
 #include "main_window.h"
 #include "model_folder.h"
+#include "review_view.h"
 #include "scan_banner.h"
+#include "scanned_card.h"
 
 #include "card_frame.h"
 #include "fake_camera_backend.h"
@@ -16,8 +18,11 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDate>
 #include <QFile>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -28,10 +33,12 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QTest>
+#include <QThreadPool>
 #include <QTreeWidget>
 #include <QWheelEvent>
 
 #include <doc_vision/guidance.h>
+#include <doc_vision/mrz.h>
 #include <doc_vision/quality_gates.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -78,7 +85,8 @@ struct Lab {
         };
         dependencies.makeLinkSender =
             [this](const std::string& endpoint) -> std::unique_ptr<visual_debug::ImageSender> {
-            auto sender = std::make_unique<test_support::RecordingSender>();
+            auto sender = std::make_unique<test_support::RecordingSender>(
+                [this](std::string_view name) { return linkAnswer(name); });
             sender->pingAnswer = [this] { return pingAnswer(); };
             sender->log = &linkLog;
             linkEndpoints.push_back(endpoint);
@@ -163,6 +171,9 @@ struct Lab {
     int streamSenders = 0;
     std::function<visual_debug::ViewerState()> pingAnswer = [] {
         return visual_debug::ViewerState::Listening;
+    };
+    std::function<visual_debug::SendResult(std::string_view)> linkAnswer = [](std::string_view) {
+        return visual_debug::SendResult::Delivered;
     };
     test_support::SendLog linkLog;
     std::vector<std::string> linkEndpoints;
@@ -1809,6 +1820,7 @@ struct GuidanceScript {
     std::vector<lab_core::ProcessorResult> results;
     std::size_t next = 0;
     int made = 0;
+    int resets = 0;
 };
 
 class ScriptedDocumentProcessor : public lab_core::FrameProcessor {
@@ -1822,7 +1834,7 @@ public:
         }
         return script.results[std::min(script.next++, script.results.size() - 1)];
     }
-    void reset() override {}
+    void reset() override { ++m_script->resets; }
 
 private:
     std::shared_ptr<GuidanceScript> m_script;
@@ -1848,6 +1860,11 @@ struct Guided {
     bool page = false;
     lab_core::Guidance::Unavailable unavailable = lab_core::Guidance::Unavailable::None;
     bool facts = false; // the page found in this frame, steady, with sharpness 10: never sharp
+    // A4: the reader reads and this many reads agree; nothing: the processor has no reader.
+    std::optional<int> agreeing{};
+    bool readerAvailable = true; // false: "model missing"
+    bool band = false;           // the MRZ band among the overlays, after the outline
+    std::shared_ptr<const lab_core::MrzScan> scan{};
 };
 
 // A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
@@ -1891,6 +1908,21 @@ lab_core::ProcessorResult guided(const Guided& wanted) {
         facts.frameHint = wanted.shown;
         guidance.page = facts;
     }
+    if (wanted.agreeing) {
+        lab_core::MrzProgress progress;
+        progress.available = wanted.readerAvailable;
+        progress.reason = wanted.readerAvailable ? "" : "model missing";
+        progress.agreeing = *wanted.agreeing;
+        guidance.reading = progress;
+    }
+    if (wanted.band) {
+        guidance.bandOverlay = result.overlays.size();
+        result.overlays.push_back(
+            visual_debug::Polygon{.points = {{120, 330}, {480, 335}, {478, 365}, {118, 360}},
+                                  .label = "MRZ band",
+                                  .colour = visual_debug::kOverlayGreen});
+    }
+    guidance.scan = wanted.scan;
     result.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
     result.guidance = guidance;
     return result;
@@ -2508,6 +2540,1048 @@ TEST(LabWindow, FKeyOnlyDuringACameraRun) {
 
     startStop(lab)->click();
     EXPECT_FALSE(focus->isEnabled());
+}
+
+// --- A4: Reading
+// ------------------------------------------------------------------------------------------------
+
+const viewer_core::Polygon* dashedOn(const Lab& lab) {
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);
+        if (polygon != nullptr && polygon->style == viewer_core::Polygon::Style::GuideDashed) {
+            return polygon;
+        }
+    }
+    return nullptr;
+}
+
+QString smallLine(const Lab& lab) {
+    const document_lab::ScanBanner* shown = banner(lab);
+    return shown != nullptr && shown->content() ? shown->content()->smallLine : QStringLiteral("(no banner)");
+}
+
+TEST(LabWindow, ReadingShowsTheCountAndBar) {
+    Lab lab(documentIs(scriptOf(
+        {guided({.shown = Hint::Good, .agreeing = 0}), guided({.shown = Hint::Good, .agreeing = 2})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("Reading the lines at the bottom · 0 of 3"));
+    EXPECT_EQ(banner(lab)->progress(), 0);
+
+    lab.pump();
+    EXPECT_EQ(smallLine(lab), QStringLiteral("Reading the lines at the bottom · 2 of 3"));
+    EXPECT_EQ(banner(lab)->progress(), 2);
+}
+
+// Good without a reader (another lab's processor, or none of A4's) keeps A3.1's banner, with no bar.
+TEST(LabWindow, GoodWithoutAReaderHasNoBar) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_EQ(smallLine(lab), document_lab::bannerFor(Hint::Good).smallLine);
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
+}
+
+// Spec §3.2: while the lab's focus searches, its banner shows over Reading's; the band is not drawn and the
+// bar hides.
+TEST(LabWindow, FocusingHidesReadingAndTheBand) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Good, .agreeing = 1, .band = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_EQ(banner(lab)->progress(), 1);
+    ASSERT_NE(dashedOn(lab), nullptr);
+
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Hold still: focusing"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_EQ(dashedOn(lab), nullptr);
+    EXPECT_NE(guideOn(lab), nullptr); // the outline stays, red
+}
+
+// The processor resolves 12 over 11; the window shows the hint it is given, with the band still drawn.
+TEST(LabWindow, HintTwelveOverEleven) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::CannotReadMrz, .agreeing = 0, .band = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Can't read the lines at the bottom"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("check for glare or fingers; only passports are read for now"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_NE(dashedOn(lab), nullptr);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: reading"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, BandIsADashedGuide) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 0, .band = true})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    ASSERT_EQ(lab.canvas()->overlays().size(), 2U);
+    const viewer_core::Polygon* band = dashedOn(lab);
+    ASSERT_NE(band, nullptr);
+    EXPECT_EQ(band->label, "");
+    EXPECT_EQ(band->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+    ASSERT_NE(guideOn(lab), nullptr);
+    EXPECT_EQ(guideOn(lab)->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+}
+
+TEST(LabWindow, StatusSaysReading) {
+    Lab lab(camerasAndDocument(scriptOf({guided({.shown = Hint::Good, .agreeing = 1})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Live · State: reading")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, ReaderUnavailableLine) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 0, .readerAvailable = false})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+    EXPECT_EQ(smallLine(lab),
+              QStringLiteral("The MRZ reader could not be opened · reinstall the Document Lab"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("MRZ reader: model missing")))
+        << lab.status().toStdString();
+}
+
+// Spec §3.1: three reads of one picture are no evidence.
+TEST(LabWindow, OneFrameSourceSaysReadingNeedsMotion) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 0})})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 1));
+
+    lab.pump();
+
+    EXPECT_EQ(smallLine(lab), QStringLiteral("MRZ reading needs a camera or a video"));
+    EXPECT_EQ(banner(lab)->progress(), std::nullopt);
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
+}
+
+// --- A4: Scanned
+// ------------------------------------------------------------------------------------------------
+
+// ICAO 9303's specimen.
+const std::vector<std::string> kSpecimen{"P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<",
+                                         "L898902C36UTO7408122F1204159ZE184226B<<<<<10"};
+
+// An accepted scan whose frame is 400 × 300, unlike the replays' 640 × 480, so the canvas shows which it
+// draws.
+std::shared_ptr<const lab_core::MrzScan> scanOf(int frameNumber = 7) {
+    auto scan = std::make_shared<lab_core::MrzScan>();
+    scan->frame = test_support::listFrame(static_cast<std::uint64_t>(frameNumber), 0ms,
+                                          cv::Mat(300, 400, CV_8UC3, cv::Scalar(40, 90, 160)));
+    scan->quad = {{{40, 30}, {360, 30}, {360, 270}, {40, 270}}};
+    scan->band = {{{50, 220}, {350, 220}, {350, 260}, {50, 260}}};
+    scan->gates = {{"Fill", "62 %", lab_core::Finding::Tone::Good},
+                   {"Sharpness", "412 (min 200)", lab_core::Finding::Tone::Good}};
+    const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(kSpecimen);
+    if (mrz) {
+        scan->mrz = *mrz;
+    }
+    scan->timeToScan = 1900ms;
+    scan->reads = 4;
+    return scan;
+}
+
+// The processor's result on the accept and after it: the scan with 04's rows.
+lab_core::ProcessorResult acceptOf(std::shared_ptr<const lab_core::MrzScan> scan, Hint shown = Hint::Good) {
+    lab_core::ProcessorResult result = guided({.shown = shown, .scan = std::move(scan)});
+    result.findings = {{"MRZ", "accepted, 3 of 3", lab_core::Finding::Tone::Good},
+                       {"Format", "TD3 passport", lab_core::Finding::Tone::Plain}};
+    return result;
+}
+
+document_lab::ScannedCard* scannedCard(const Lab& lab) {
+    return lab.window->findChild<document_lab::ScannedCard*>();
+}
+
+bool scannedShown(const Lab& lab) {
+    const document_lab::ScannedCard* card = scannedCard(lab);
+    return card != nullptr && card->isVisibleTo(lab.window.get());
+}
+
+QPushButton* cardButton(const Lab& lab, const char* name) {
+    return scannedCard(lab) != nullptr ? scannedCard(lab)->findChild<QPushButton*>(name) : nullptr;
+}
+
+TEST(LabWindow, AcceptShowsTheScannedCard) {
+    const auto scan = scanOf();
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 2}), acceptOf(scan)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_FALSE(scannedShown(lab));
+
+    lab.pump();
+
+    ASSERT_TRUE(scannedShown(lab));
+    EXPECT_EQ(scannedCard(lab)->findChild<QLabel*>("scannedTitle")->text(),
+              QStringLiteral("Passport scanned"));
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300)); // the scan's frame
+    EXPECT_TRUE(banner(lab)->isHidden());
+    EXPECT_TRUE(chips(lab)->isHidden());
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("MRZ: accepted, 3 of 3")))
+        << lab.results().join('|').toStdString();
+}
+
+// The engine keeps only the newest result: an accept replaced in its slot still scans, because every result
+// after it carries the scan too.
+TEST(LabWindow, AcceptReplacedInTheSlotStillScans) {
+    const auto scan = scanOf();
+    Lab lab(documentIs(scriptOf({acceptOf(scan), acceptOf(scan, Hint::Blurred)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+
+    lab.window->pumpEngineForTests();
+    lab.window->pumpEngineForTests();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+// Spec §3.1: reads are gated per frame, not by the steadied banner: an accept may come under any hint.
+TEST(LabWindow, AcceptWhileBlurredShows) {
+    Lab lab(documentIs(scriptOf({acceptOf(scanOf(), Hint::Blurred)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+TEST(LabWindow, CameraIsPausedWhileScanned) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab(camerasAndDocument(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+    const int stops = lab.backend->stops;
+
+    cameraFrames(lab, 3);
+
+    EXPECT_EQ(script->next, processed); // the engine was offered none
+    EXPECT_TRUE(lab.backend->running);  // the session stays open: Scan again is instant
+    EXPECT_EQ(lab.backend->stops, stops);
+}
+
+TEST(LabWindow, ReplayPausesOnTheAccept) {
+    const auto script = scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 6));
+    lab.pump(2);
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+
+    lab.pump(3);
+
+    EXPECT_EQ(script->next, processed);
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused · State: scanned, waiting for the chip")))
+        << lab.status().toStdString();
+}
+
+// Scan again plays a replay only if the window paused it playing: a user's pause stays.
+TEST(LabWindow, ScanAgainResumesOnlyAPlayingReplay) {
+    const auto script = scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    button(lab, "stepButton")->click();
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+
+    cardButton(lab, "scanAgainButton")->click();
+    lab.pump(3);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_EQ(script->next, processed);
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, EnterSkipsTheChipEscScansAgain) {
+    const auto first = scanOf(7);
+    const auto second = scanOf(9);
+    const auto script =
+        scriptOf({acceptOf(first), acceptOf(first), guided({.shown = Hint::Good}), acceptOf(second)});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 10));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    const int resets = script->resets;
+    const std::size_t processed = script->next;
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    lab.pump();
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_GT(script->resets, resets);     // the engine reset the processor
+    EXPECT_GT(script->next, processed);    // frames come again
+    EXPECT_FALSE(banner(lab)->isHidden()); // the banner is back
+    lab.pump(2);                           // the old scan once more, then Good, then the new scan
+    ASSERT_TRUE(scannedShown(lab));
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: review"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, EnterInTheEndpointFieldDoesNotSkip) {
+    Lab lab(documentIs(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    auto* endpoint = lab.window->findChild<QLineEdit*>("endpointEdit");
+    endpoint->setFocus();
+
+    QTest::keyClick(endpoint, Qt::Key_Return);
+    QTest::keyClick(endpoint, Qt::Key_Escape);
+
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+// A result still carrying the scan just left (it was in flight, or the processor had not reset yet) does not
+// bring it back.
+TEST(LabWindow, HandledScanDoesNotComeBack) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 6));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    lab.pump(3);
+
+    EXPECT_FALSE(scannedShown(lab));
+}
+
+TEST(LabWindow, ControlsDisabledWhileScanned) {
+    const auto script = scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    button(lab, "stepButton")->click();
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+
+    lab.pump(); // refreshStatus would enable them again
+    for (const char* name :
+         {"playPauseButton", "stepButton", "stepBackButton", "restartButton", "loopCheck", "asFastCheck",
+          "back10Button", "forward10Button", "captureButton", "sendFrameButton"}) {
+        EXPECT_FALSE(button(lab, name)->isEnabled()) << name;
+    }
+    EXPECT_FALSE(slider(lab)->isEnabled());
+    EXPECT_TRUE(startStop(lab)->isEnabled()); // Stop ends the scan
+    EXPECT_TRUE(button(lab, "streamButton")->isEnabled());
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Space);
+    QTest::keyClick(lab.canvas(), Qt::Key_Right);
+    lab.pump(2);
+
+    EXPECT_EQ(script->next, processed); // neither played nor stepped
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused"))) << lab.status().toStdString();
+}
+
+// Spec §3.1: results that arrive while Scanned shows (a frame offered before the pause) change nothing on
+// screen.
+TEST(LabWindow, ResultsWhileScannedChangeNothing) {
+    const auto scan = scanOf();
+    lab_core::ProcessorResult later = acceptOf(scan, Hint::Blurred);
+    later.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
+    const auto script = scriptOf({acceptOf(scan), later});
+    Lab lab(camerasAndDocument(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    lab.advance(33ms);
+    lab.backend->deliver(cameraFrame(120));
+    lab.window->pumpEngineForTests(); // the accept waits to be taken
+    lab.advance(33ms);
+    lab.backend->deliver(cameraFrame(120)); // offered before the window knows
+    QApplication::processEvents();          // the accept: Scanned
+    ASSERT_TRUE(scannedShown(lab));
+    const QStringList results = lab.results();
+
+    lab.pump(); // the second frame's result
+
+    EXPECT_EQ(script->next, 2U);
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_TRUE(banner(lab)->isHidden());
+    EXPECT_EQ(lab.results(), results);
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300));
+}
+
+TEST(LabWindow, StopDiscardsTheScan) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    startStop(lab)->click();
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_FALSE(lab.canvas()->hasImage());
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("scanned"))) << lab.status().toStdString();
+}
+
+// Another processor ends the scan, and the camera's frames come again.
+TEST(LabWindow, AnotherProcessorEndsTheScan) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab(camerasAndDocument(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    const std::uint64_t before = lab.window->canvasCountsForTests().received;
+    cameraFrames(lab, 2);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_GT(lab.window->canvasCountsForTests().received, before);
+}
+
+TEST(LabWindow, CameraFailureKeepsTheScan) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    lab.backend->fail(QStringLiteral("unplugged"));
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_TRUE(lab.canvas()->hasImage());
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("unplugged"))) << lab.status().toStdString();
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: scanned, waiting for the chip")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, ScanAgainAfterACameraFailureSaysTheCameraStopped) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    lab.backend->fail(QStringLiteral("unplugged"));
+    const std::size_t starts = lab.backend->starts.size();
+
+    cardButton(lab, "scanAgainButton")->click();
+    EXPECT_EQ(lab.backend->starts.size(), starts + 1); // the camera starts again
+    lab.backend->fail(QStringLiteral("still unplugged"));
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("The camera stopped"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("still unplugged"));
+}
+
+TEST(LabWindow, StatusSaysCameraPaused) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(
+        lab.status().startsWith(QStringLiteral("Camera paused · State: scanned, waiting for the chip")))
+        << lab.status().toStdString();
+}
+
+// Spec §3.1: nothing is saved unless chosen, so closing with a scan does not ask.
+TEST(LabWindow, CloseWithAScanDoesNotAsk) {
+    int asked = 0;
+    Lab lab([&asked](LabDependencies& dependencies) {
+        camerasAndDocument(scriptOf({acceptOf(scanOf())}))(dependencies);
+        dependencies.confirm = [&asked](const QString&) {
+            ++asked;
+            return true;
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    lab.window->close();
+    QApplication::processEvents();
+
+    EXPECT_EQ(asked, 0);
+    EXPECT_FALSE(lab.window->isVisible());
+}
+
+// --- A4: Review
+// ------------------------------------------------------------------------------------------------
+
+document_lab::ReviewPanel* reviewPanel(const Lab& lab) {
+    return lab.window->findChild<document_lab::ReviewPanel*>();
+}
+document_lab::ReviewBar* reviewBar(const Lab& lab) {
+    return lab.window->findChild<document_lab::ReviewBar*>();
+}
+
+bool shownIn(const Lab& lab, const QWidget* widget) {
+    return widget != nullptr && widget->isVisibleTo(lab.window.get());
+}
+
+QPushButton* panelButton(const Lab& lab, const char* name) {
+    return reviewPanel(lab) != nullptr ? reviewPanel(lab)->findChild<QPushButton*>(name) : nullptr;
+}
+
+QString panelText(const Lab& lab, const char* name) {
+    const QLabel* label = reviewPanel(lab) != nullptr ? reviewPanel(lab)->findChild<QLabel*>(name) : nullptr;
+    return label != nullptr ? label->text() : QStringLiteral("(no %1)").arg(QString::fromLatin1(name));
+}
+
+// A replay accepted on its first frame, with Skip the chip clicked.
+void intoReview(Lab& lab) {
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+}
+
+std::function<void(LabDependencies&)> scanning(std::function<void(LabDependencies&)> more = {}) {
+    return [more](LabDependencies& dependencies) {
+        documentIs(scriptOf({acceptOf(scanOf())}))(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        if (more) {
+            more(dependencies);
+        }
+    };
+}
+
+std::vector<std::filesystem::path> capturesOf(const Lab& lab, const std::string& extension) {
+    std::vector<std::filesystem::path> files;
+    const std::filesystem::path folder = lab.folder.path() / "Captures";
+    if (!std::filesystem::exists(folder)) {
+        return files;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        if (entry.path().extension() == extension) {
+            files.push_back(entry.path());
+        }
+    }
+    return files;
+}
+
+const viewer_core::Polygon* polygonLabelledOrStyled(const Lab& lab, viewer_core::Polygon::Style style) {
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        const auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);
+        if (polygon != nullptr && polygon->style == style) {
+            return polygon;
+        }
+    }
+    return nullptr;
+}
+
+int pointsOnCanvas(const Lab& lab) {
+    int points = 0;
+    for (const viewer_core::Overlay& overlay : lab.canvas()->overlays()) {
+        points += std::holds_alternative<viewer_core::Point>(overlay) ? 1 : 0;
+    }
+    return points;
+}
+
+// A hand check on Windows: the Review panel, hidden in the results' place, made the window's least height its
+// own, so the window grew after it was shown and the canvas was drawn again. It must leave the side's least
+// height to the results.
+TEST(LabWindow, HiddenReviewPanelLeavesTheWindowsHeight) {
+    Lab lab;
+    const auto* side = lab.window->findChild<QWidget*>("sidePanel");
+    ASSERT_NE(side, nullptr);
+    EXPECT_LE(side->minimumSizeHint().height(), lab.resultsTree()->minimumSizeHint().height());
+    EXPECT_LE(reviewPanel(lab)->minimumSizeHint().height(), 200);
+    EXPECT_EQ(lab.window->height(), 600);
+}
+
+TEST(LabWindow, ReviewAfterSkip) {
+    Lab lab(scanning());
+    intoReview(lab);
+
+    EXPECT_FALSE(scannedShown(lab));
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+    ASSERT_TRUE(shownIn(lab, reviewBar(lab)));
+    const auto* pill = lab.window->findChild<QLabel*>("reviewPill");
+    ASSERT_TRUE(shownIn(lab, pill));
+    EXPECT_EQ(pill->text(), QStringLiteral("✓ Passport scanned · chip skipped"));
+    EXPECT_EQ(panelText(lab, "surnameValue"), QStringLiteral("ERIKSSON"));
+    EXPECT_EQ(panelText(lab, "bornValue"), QStringLiteral("12 Aug 1974"));
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300)); // the scan's frame
+    EXPECT_TRUE(banner(lab)->isHidden());
+}
+
+// Spec §3.4: the panel shows whatever View ▸ Results says, and the setting is left as it was.
+TEST(LabWindow, ReviewShowsItsPanelWithResultsHidden) {
+    Lab lab(scanning());
+    QAction* results = lab.window->findChild<QAction*>("resultsAction");
+    if (results->isChecked()) {
+        results->trigger();
+    }
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    ASSERT_EQ(splitter->sizes().at(1), 0);
+
+    intoReview(lab);
+    EXPECT_GE(splitter->sizes().at(1), 330);
+    EXPECT_GE(reviewPanel(lab)->width(), 330);
+
+    panelButton(lab, "discardButton")->click();
+
+    EXPECT_EQ(splitter->sizes().at(1), 0);
+    EXPECT_FALSE(results->isChecked());
+    EXPECT_FALSE(QSettings().value(QStringLiteral("lab/resultsShown"), true).toBool());
+}
+
+TEST(LabWindow, ReviewOverlaysFollowTheBar) {
+    Lab lab(scanning());
+    intoReview(lab);
+    const auto* outline = polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::Guide);
+    const auto* band = polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::GuideDashed);
+    ASSERT_NE(outline, nullptr);
+    ASSERT_NE(band, nullptr);
+    EXPECT_EQ(outline->colour, (viewer_core::Colour{0x3D, 0xDC, 0x84}));
+    EXPECT_EQ(band->colour, (viewer_core::Colour{0xF4, 0xBF, 0x4F}));
+    EXPECT_EQ(pointsOnCanvas(lab), 0);
+    const auto* gates = lab.window->findChild<document_lab::GateValuesBox*>();
+    ASSERT_NE(gates, nullptr);
+    EXPECT_FALSE(shownIn(lab, gates));
+
+    reviewBar(lab)->findChild<QCheckBox*>("bandBox")->click();
+    reviewBar(lab)->findChild<QCheckBox*>("cornersBox")->click();
+    reviewBar(lab)->findChild<QCheckBox*>("gatesBox")->click();
+
+    EXPECT_EQ(polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::GuideDashed), nullptr);
+    EXPECT_NE(polygonLabelledOrStyled(lab, viewer_core::Polygon::Style::Guide), nullptr);
+    EXPECT_EQ(pointsOnCanvas(lab), 4);
+    EXPECT_TRUE(shownIn(lab, gates));
+}
+
+TEST(LabWindow, SaveWritesTheMrzSection) {
+    Lab lab(scanning());
+    intoReview(lab);
+    reviewBar(lab)->findChild<QCheckBox*>("bandBox")->click(); // unchecked: the save still keeps it
+
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(capturesOf(lab, ".png").size(), 1U);
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    std::ifstream stream(jsons[0]);
+    const nlohmann::json json = nlohmann::json::parse(stream);
+    ASSERT_TRUE(json.contains("mrz")) << json.dump();
+    EXPECT_EQ(json["mrz"]["line 1"], kSpecimen[0]);
+    EXPECT_EQ(json["mrz"]["line 2"], kSpecimen[1]);
+    EXPECT_NE(json["overlays"].dump().find("MRZ band"), std::string::npos) << json["overlays"].dump();
+    for (const std::string text : {"ERIKSSON", "ANNA", "L898902C3", "ZE184226B"}) {
+        EXPECT_EQ(json["findings"].dump().find(text), std::string::npos) << json["findings"].dump();
+    }
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+    EXPECT_FALSE(panelButton(lab, "saveButton")->isEnabled());
+}
+
+TEST(LabWindow, EnterSaves) {
+    Lab lab(scanning());
+    intoReview(lab);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    QTest::keyClick(lab.canvas(), Qt::Key_Return); // saved already: nothing more
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape); // Review needs an explicit choice
+
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
+    EXPECT_TRUE(shownIn(lab, reviewPanel(lab)));
+}
+
+TEST(LabWindow, SendThroughTheLink) {
+    Lab lab(scanning());
+    intoReview(lab);
+    reviewBar(lab)->findChild<QCheckBox*>("bandBox")->click(); // not sent
+
+    panelButton(lab, "sendButton")->click();
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sending…"));
+    lab.pump();
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    ASSERT_FALSE(calls.empty());
+    EXPECT_EQ(calls.back().name, "lab passport frame 8");
+    bool outline = false;
+    bool band = false;
+    for (const visual_debug::Overlay& overlay : calls.back().description.overlays) {
+        if (const auto* polygon = std::get_if<visual_debug::Polygon>(&overlay)) {
+            outline = outline || polygon->label == "Document";
+            band = band || polygon->label == "MRZ band";
+        }
+    }
+    EXPECT_TRUE(outline);
+    EXPECT_FALSE(band);
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sent to the viewer ✓"));
+    EXPECT_FALSE(panelButton(lab, "sendButton")->isEnabled());
+}
+
+// A second send waits for its own still's answer, not the first's.
+TEST(LabWindow, SendWaitsForItsOwnStill) {
+    Lab lab(scanning());
+    intoReview(lab);
+    lab.linkAnswer = [](std::string_view) { return visual_debug::SendResult::ViewerUnavailable; };
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    ASSERT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Send to the viewer"));
+    ASSERT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+    EXPECT_FALSE(panelText(lab, "sendFailure").isEmpty());
+    lab.linkAnswer = [](std::string_view) { return visual_debug::SendResult::Delivered; };
+
+    panelButton(lab, "sendButton")->click();
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sending…"));
+    lab.pump();
+
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sent to the viewer ✓"));
+}
+
+TEST(LabWindow, EndpointChangeFailsTheSend) {
+    Lab lab(scanning());
+    intoReview(lab);
+    panelButton(lab, "sendButton")->click();
+    ASSERT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Sending…"));
+
+    setEndpoint(lab, QStringLiteral("tcp://127.0.0.1:7141"));
+
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Send to the viewer"));
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+    EXPECT_EQ(panelText(lab, "sendFailure"), QStringLiteral("the viewer changed"));
+}
+
+TEST(LabWindow, SendAsksFirstForAnotherComputer) {
+    int asked = 0;
+    Lab lab(scanning([&asked](LabDependencies& dependencies) {
+        dependencies.confirm = [&asked](const QString&) {
+            ++asked;
+            return false;
+        };
+    }));
+    setEndpoint(lab, QStringLiteral("tcp://192.0.2.1:7140"));
+    intoReview(lab);
+
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+
+    EXPECT_EQ(asked, 1);
+    EXPECT_FALSE(logHas(lab.linkLog, "image lab passport frame 8"));
+    EXPECT_EQ(panelButton(lab, "sendButton")->text(), QStringLiteral("Send to the viewer"));
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+}
+
+TEST(LabWindow, DiscardReturnsToGuiding) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab([&script](LabDependencies& dependencies) { documentIs(script)(dependencies); });
+    intoReview(lab);
+    const int resets = script->resets;
+
+    panelButton(lab, "discardButton")->click();
+    lab.pump();
+
+    EXPECT_FALSE(shownIn(lab, reviewPanel(lab)));
+    EXPECT_FALSE(shownIn(lab, reviewBar(lab)));
+    EXPECT_FALSE(shownIn(lab, lab.window->findChild<QLabel*>("reviewPill")));
+    EXPECT_GT(script->resets, resets);
+    EXPECT_TRUE(shownIn(lab, lab.resultsTree()) ||
+                !lab.window->findChild<QAction*>("resultsAction")->isChecked());
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("State: review"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, ScanAnotherReturnsToGuiding) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab([&script](LabDependencies& dependencies) { documentIs(script)(dependencies); });
+    intoReview(lab);
+    panelButton(lab, "saveButton")->click();
+    const int resets = script->resets;
+
+    panelButton(lab, "scanAnotherButton")->click();
+    lab.pump();
+
+    EXPECT_FALSE(shownIn(lab, reviewPanel(lab)));
+    EXPECT_GT(script->resets, resets);
+}
+
+TEST(LabWindow, StatusSaysReview) {
+    Lab lab(scanning());
+    intoReview(lab);
+    lab.pump();
+
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused · State: review")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, ExpiredWarningWithTodayFixed) {
+    {
+        Lab lab(scanning());
+        intoReview(lab);
+        EXPECT_EQ(
+            panelText(lab, "expiredWarning"),
+            QStringLiteral("Expired on 15 Apr 2012. A5 and later steps flag this; the scan itself still "
+                           "succeeded."));
+        EXPECT_TRUE(shownIn(lab, reviewPanel(lab)->findChild<QLabel*>("expiredWarning")));
+    }
+    Lab lab(scanning(
+        [](LabDependencies& dependencies) { dependencies.today = [] { return QDate(2011, 1, 1); }; }));
+    intoReview(lab);
+    EXPECT_FALSE(shownIn(lab, reviewPanel(lab)->findChild<QLabel*>("expiredWarning")));
+}
+
+TEST(LabWindow, ReviewDarkColours) {
+    const test_support::PaletteGuard guard;
+    Lab lab(scanning());
+    intoReview(lab);
+    const auto* value = reviewPanel(lab)->findChild<QLabel*>("surnameValue");
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(value->palette().color(QPalette::WindowText), QColor(0x1E, 0x23, 0x29));
+
+    test_support::applyPalette(test_support::paletteWith(QColor(0x1E, 0x1E, 0x1E), QColor(0xF0, 0xF0, 0xF0)));
+
+    EXPECT_EQ(value->palette().color(QPalette::WindowText), QColor(0xE8, 0xEA, 0xED));
+}
+
+// --- A4: the final review's findings
+// ------------------------------------------------------------------------------------------------
+
+std::size_t savesWritten(const Lab& lab) {
+    QThreadPool::globalInstance()->waitForDone(10000);
+    QApplication::processEvents();
+    return capturesOf(lab, ".png").size();
+}
+
+// F1: a second Enter while the first save still writes starts no second save.
+TEST(LabWindow, EnterWhileSavingSavesOnce) {
+    std::vector<std::function<void()>> held; // the saves started, written when the test says
+    Lab lab(scanning([&held](LabDependencies& dependencies) {
+        dependencies.immediateCapture = false;
+        dependencies.background = [&held](std::function<void()> job) { held.push_back(std::move(job)); };
+    }));
+    intoReview(lab);
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    ASSERT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saving…"));
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+
+    EXPECT_EQ(held.size(), 1U);
+    for (const std::function<void()>& job : held) {
+        job();
+    }
+    QApplication::processEvents();
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+// F1: Enter held down in Scanned skips the chip once; its repeats save nothing in Review.
+TEST(LabWindow, HeldEnterDoesNotSave) {
+    Lab lab(scanning());
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(lab.canvas(), &press);
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+    for (int i = 0; i < 3; ++i) {
+        QKeyEvent repeat(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, QString(), true);
+        QApplication::sendEvent(lab.canvas(), &repeat);
+    }
+
+    EXPECT_EQ(savesWritten(lab), 0U);
+}
+
+// F2: Scanned and Review draw the scan's frame with its own tags (a 10-bit frame's value range), as Send
+// sends it.
+TEST(LabWindow, ScanIsDrawnWithItsTags) {
+    auto scan = std::make_shared<lab_core::MrzScan>(*scanOf());
+    scan->frame.image = cv::Mat(300, 400, CV_16UC3, cv::Scalar::all(512));
+    scan->frame.tags.valueRange = {0, 1023};
+    std::optional<viewer_core::ImageTags> drawn;
+    Lab lab([&](LabDependencies& dependencies) {
+        documentIs(scriptOf({acceptOf(scan)}))(dependencies);
+        dependencies.conversion = [&drawn](const LiveJob& job) {
+            drawn = job.tags;
+            return convertLiveFrame(job);
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    ASSERT_TRUE(drawn);
+    EXPECT_TRUE(drawn->hasValueRange());
+
+    cardButton(lab, "skipChipButton")->click();
+
+    ASSERT_TRUE(drawn);
+    EXPECT_TRUE(drawn->hasValueRange());
+}
+
+// Hands one scan over on its first frame and then forgets it, as the processor does once reset.
+class HandsOverOnce : public lab_core::FrameProcessor {
+public:
+    explicit HandsOverOnce(std::shared_ptr<const lab_core::MrzScan> scan) : m_scan(std::move(scan)) {}
+    lab_core::ProcessorResult process(const frame_io::Frame&) override {
+        if (m_scan) {
+            std::shared_ptr<const lab_core::MrzScan> scan = std::move(m_scan);
+            m_scan.reset();
+            return acceptOf(std::move(scan));
+        }
+        return guided({.shown = Hint::Good});
+    }
+
+private:
+    std::shared_ptr<const lab_core::MrzScan> m_scan;
+};
+
+// F5: a scan gone back from (Scan again, Discard) leaves no passport frame in memory: the window only
+// remembers which it was.
+TEST(LabWindow, ScanGoneBackFromIsFreed) {
+    std::weak_ptr<const lab_core::MrzScan> watch;
+    Lab lab([&watch](LabDependencies& dependencies) {
+        dependencies.makeProcessor =
+            [&watch](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+            if (kind != lab_core::ProcessorKind::Document) {
+                return lab_core::makeProcessor(kind);
+            }
+            std::shared_ptr<const lab_core::MrzScan> scan = scanOf();
+            watch = scan;
+            return std::make_unique<HandsOverOnce>(std::move(scan));
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 10));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    ASSERT_FALSE(watch.expired());
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    lab.pump(3);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(watch.expired());
+}
+
+// F6: Review's panel cannot be dragged shut or narrower than 330 px while it shows; the results' can again
+// after.
+TEST(LabWindow, ReviewPanelCannotBeShut) {
+    Lab lab(scanning());
+    auto* splitter = lab.window->findChild<QSplitter*>("resultsSplitter");
+    intoReview(lab);
+
+    EXPECT_FALSE(splitter->isCollapsible(1));
+    EXPECT_GE(lab.window->findChild<QWidget*>("sidePanel")->minimumWidth(), 330);
+    const int total = splitter->sizes().at(0) + splitter->sizes().at(1);
+    splitter->setSizes({total, 0});
+    EXPECT_GE(splitter->sizes().at(1), 330);
+
+    panelButton(lab, "discardButton")->click();
+
+    EXPECT_TRUE(splitter->isCollapsible(1));
+    EXPECT_LT(lab.window->findChild<QWidget*>("sidePanel")->minimumWidth(), 330);
+}
+
+// F7: Scan again on a replay the user had paused keeps the banner of the frame on screen, not "Show the
+// document" with the passport in view.
+TEST(LabWindow, ScanAgainOnAPausedReplayKeepsTheBanner) {
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    button(lab, "stepButton")->click();
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+
+    cardButton(lab, "scanAgainButton")->click();
+    lab.pump();
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+}
+
+// --- A4: privacy
+// ------------------------------------------------------------------------------------------------
+
+// The specimen's lines and the fields a leak would most likely show; the first it finds in `text`, or "".
+std::string mrzIn(const std::string& text) {
+    for (const std::string& secret :
+         {kSpecimen[0], kSpecimen[1], std::string("ERIKSSON"), std::string("ANNA"), std::string("L898902C3"),
+          std::string("ZE184226B")}) {
+        if (text.find(secret) != std::string::npos) {
+            return secret;
+        }
+    }
+    return {};
+}
+
+// Spec §2: the MRZ shows in Review and goes into a save the user chose, in its "mrz" section only: never the
+// status line, a still's name or overlays, nor the rest of the capture.
+TEST(LabWindow, PrivacyStatusAndStills) {
+    Lab lab(scanning());
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "Scanned";
+    EXPECT_EQ(mrzIn(lab.results().join('|').toStdString()), "") << "Scanned's rows";
+
+    cardButton(lab, "skipChipButton")->click();
+    lab.pump();
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "Review";
+
+    panelButton(lab, "saveButton")->click();
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "saved";
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_EQ(mrzIn(lab.status().toStdString()), "") << "sent";
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    ASSERT_FALSE(calls.empty());
+    for (const test_support::RecordingSender::Call& call : calls) {
+        EXPECT_EQ(mrzIn(call.name), "") << "the still's name";
+        for (const visual_debug::Overlay& overlay : call.description.overlays) {
+            const std::string label = std::visit([](const auto& shape) { return shape.label; }, overlay);
+            EXPECT_EQ(mrzIn(label), "") << "a still's overlay";
+        }
+    }
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    EXPECT_EQ(mrzIn(jsons[0].filename().string()), "") << "the capture's name";
+    std::ifstream stream(jsons[0]);
+    nlohmann::json json = nlohmann::json::parse(stream);
+    ASSERT_TRUE(json.contains("mrz"));
+    json.erase("mrz");
+    EXPECT_EQ(mrzIn(json.dump()), "") << json.dump();
+    EXPECT_EQ(mrzIn(capturesOf(lab, ".png").at(0).filename().string()), "") << "the picture's name";
 }
 
 } // namespace

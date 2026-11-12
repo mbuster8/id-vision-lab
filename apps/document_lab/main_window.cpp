@@ -9,7 +9,9 @@
 #include "model_folder.h"
 #include "outline_icons.h"
 #include "private_files.h"
+#include "review_view.h"
 #include "scan_style.h"
+#include "scanned_card.h"
 #include "shades.h"
 
 #include <doc_vision/guidance.h>
@@ -45,6 +47,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
@@ -73,6 +76,7 @@ constexpr std::array kProcessors{lab_core::ProcessorKind::None, lab_core::Proces
                                  lab_core::ProcessorKind::Outline, lab_core::ProcessorKind::Document};
 
 constexpr int kResultsMinimumWidth = 120;
+constexpr int kReviewPanelWidth = 330; // spec §3.4: at least this, whatever View ▸ Results says
 // Where a results row keeps its value's tone (lab_core::Finding::Tone), to colour it again for another
 // appearance.
 constexpr int kToneRole = Qt::UserRole + 1;
@@ -109,31 +113,98 @@ viewer_core::Colour coreColour(const QColor& colour) {
 }
 
 // The Document processor's outline as the canvas's guide (spec §3.5): a thick line on a halo, in the shown
-// hint's colour, with no label. toImageTags keeps one overlay per input and in order
-// (image_tags_conversion.cpp), so the processor's i-th overlay follows the frame's own. The viewer and
-// captures keep the plain "Document" polygon.
+// hint's colour, with no label; and A4's MRZ band as a dashed green guide, not drawn while the lab's focus
+// searches (spec §3.2). toImageTags keeps one overlay per input and in order (image_tags_conversion.cpp), so
+// the processor's i-th overlay follows the frame's own. The viewer and captures keep the plain "Document" and
+// "MRZ band" polygons.
 void markGuide(viewer_core::ImageTags& tags, const lab_core::LabResult& result) {
     const std::optional<lab_core::Guidance>& guidance = result.processed.guidance;
-    if (!guidance || !guidance->outlineOverlay ||
-        *guidance->outlineOverlay >= result.processed.overlays.size()) {
+    if (!guidance) {
         return;
     }
     std::vector<viewer_core::Overlay> overlays = tags.overlayList();
-    const std::size_t index = result.frame.tags.overlays.size() + *guidance->outlineOverlay;
-    auto* polygon = index < overlays.size() ? std::get_if<viewer_core::Polygon>(&overlays[index]) : nullptr;
-    if (polygon == nullptr) {
-        return;
-    }
-    polygon->style = viewer_core::Polygon::Style::Guide;
-    polygon->label.clear();
+    const auto polygonAt = [&](const std::optional<std::size_t>& processorIndex) -> viewer_core::Polygon* {
+        if (!processorIndex || *processorIndex >= result.processed.overlays.size()) {
+            return nullptr;
+        }
+        const std::size_t index = result.frame.tags.overlays.size() + *processorIndex;
+        return index < overlays.size() ? std::get_if<viewer_core::Polygon>(&overlays[index]) : nullptr;
+    };
     // Never green while the lab's focus searches: the lens sweeps through sharp positions (A3.3, spec §3.5).
     const bool searching = result.focus && result.focus->state == lab_core::FocusStatus::State::Searching;
-    polygon->colour =
-        coreColour(guidance->shownHint == doc_vision::Hint::Good && !searching ? kGuideGood : kGuideBad);
+    if (viewer_core::Polygon* outline = polygonAt(guidance->outlineOverlay)) {
+        outline->style = viewer_core::Polygon::Style::Guide;
+        outline->label.clear();
+        outline->colour =
+            coreColour(guidance->shownHint == doc_vision::Hint::Good && !searching ? kGuideGood : kGuideBad);
+    }
+    if (viewer_core::Polygon* band = polygonAt(guidance->bandOverlay)) {
+        if (searching) {
+            const auto index =
+                static_cast<std::ptrdiff_t>(result.frame.tags.overlays.size() + *guidance->bandOverlay);
+            overlays.erase(overlays.begin() + index);
+        } else {
+            band->style = viewer_core::Polygon::Style::GuideDashed;
+            band->label.clear();
+            band->colour = coreColour(kGuideGood);
+        }
+    }
     tags.overlays = viewer_core::makeOverlays(std::move(overlays));
 }
 
 QString timeStamp() { return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH.mm.ss")); }
+
+const char* formatName(doc_vision::MrzFormat format) {
+    switch (format) {
+    case doc_vision::MrzFormat::Td1:
+        return "TD1";
+    case doc_vision::MrzFormat::Td2:
+        return "TD2";
+    case doc_vision::MrzFormat::Td3:
+        return "TD3";
+    }
+    return "";
+}
+
+const char* checkName(doc_vision::MrzCheck check) {
+    switch (check) {
+    case doc_vision::MrzCheck::DocumentNumber:
+        return "document number check";
+    case doc_vision::MrzCheck::BirthDate:
+        return "birth date check";
+    case doc_vision::MrzCheck::ExpiryDate:
+        return "expiry date check";
+    case doc_vision::MrzCheck::OptionalData:
+        return "optional data check";
+    case doc_vision::MrzCheck::Composite:
+        return "composite check";
+    }
+    return "";
+}
+
+// A saved scan's MRZ: its lines as read, its fields and its check digits. Only a save the user chose writes
+// it (spec §3.4); nothing else the lab keeps or sends holds MRZ text.
+frame_io::CaptureSection mrzSection(const doc_vision::Mrz& mrz) {
+    frame_io::CaptureSection section{.name = "mrz", .values = {}};
+    for (std::size_t i = 0; i < mrz.lines.size(); ++i) {
+        section.values.emplace_back("line " + std::to_string(i + 1), mrz.lines[i]);
+    }
+    section.values.insert(section.values.end(), {{"format", formatName(mrz.format)},
+                                                 {"document code", mrz.documentCode},
+                                                 {"issuing state", mrz.issuingState},
+                                                 {"surname", mrz.surname},
+                                                 {"given names", mrz.givenNames},
+                                                 {"document number", mrz.documentNumber},
+                                                 {"nationality", mrz.nationality},
+                                                 {"birth date", mrz.birthDate},
+                                                 {"sex", mrz.sex},
+                                                 {"expiry date", mrz.expiryDate},
+                                                 {"optional data", mrz.optionalData}});
+    for (const doc_vision::MrzCheckResult& result : mrz.checks) {
+        section.values.emplace_back(checkName(result.check), result.passed ? "pass" : "fail");
+    }
+    return section;
+}
 
 // What the picker says. Outline finds the largest bright quadrilateral, which a wall or a window can be too:
 // it says it is simple. The settings keep lab_core's names.
@@ -483,7 +554,17 @@ void LabWindow::buildUi() {
     m_splitter = new QSplitter(Qt::Horizontal, central);
     m_splitter->setObjectName(QStringLiteral("resultsSplitter"));
     QSplitter* splitter = m_splitter;
-    auto* canvasArea = new QWidget(splitter);
+    // A4's Review puts its bar above the canvas, not among the window's rows.
+    auto* canvasColumn = new QWidget(splitter);
+    auto* canvasColumnLayout = new QVBoxLayout(canvasColumn);
+    canvasColumnLayout->setContentsMargins(0, 0, 0, 0);
+    canvasColumnLayout->setSpacing(0);
+    m_reviewBar = new ReviewBar(canvasColumn);
+    m_reviewBar->setObjectName(QStringLiteral("reviewBar"));
+    m_reviewBar->hide();
+    canvasColumnLayout->addWidget(m_reviewBar);
+    auto* canvasArea = new QWidget(canvasColumn);
+    canvasColumnLayout->addWidget(canvasArea, 1);
     auto* canvasLayout = new QGridLayout(canvasArea);
     canvasLayout->setContentsMargins(0, 0, 0, 0);
     m_canvas = new ImageView(canvasArea);
@@ -512,16 +593,59 @@ void LabWindow::buildUi() {
     canvasLayout->addWidget(m_chips, 0, 0, Qt::AlignBottom | Qt::AlignHCenter);
     m_banner->raise();
     m_chips->raise();
+    // A4's Review: the pill and the gate values top left over the scan's frame, transparent to the mouse.
+    m_reviewMarks = new QWidget(canvasArea);
+    m_reviewMarks->setObjectName(QStringLiteral("reviewMarks"));
+    m_reviewMarks->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* marksLayout = new QVBoxLayout(m_reviewMarks);
+    marksLayout->setContentsMargins(20, 20, 20, 20);
+    marksLayout->setSpacing(10);
+    m_reviewPill = new QLabel(tr("✓ Passport scanned · chip skipped"), m_reviewMarks);
+    m_reviewPill->setObjectName(QStringLiteral("reviewPill"));
+    QFont pillFont = m_reviewPill->font();
+    pillFont.setPixelSize(18);
+    pillFont.setWeight(QFont::Bold);
+    m_reviewPill->setFont(pillFont);
+    // The canvas's marks look the same in both appearances: the banner's panel and green.
+    m_reviewPill->setStyleSheet(QStringLiteral("QLabel { color: %1; background-color: rgba(8, 10, 13, 217); "
+                                               "border-radius: 10px; padding: 8px 14px; }")
+                                    .arg(kGuideGood.name()));
+    marksLayout->addWidget(m_reviewPill, 0, Qt::AlignLeft);
+    m_gateValues = new GateValuesBox(m_reviewMarks);
+    m_gateValues->setObjectName(QStringLiteral("gateValues"));
+    m_gateValues->hide();
+    marksLayout->addWidget(m_gateValues, 0, Qt::AlignLeft);
+    marksLayout->addStretch(1);
+    canvasLayout->addWidget(m_reviewMarks, 0, 0, Qt::AlignTop | Qt::AlignLeft);
+    m_reviewMarks->hide();
+    m_reviewMarks->raise();
+    // A4's Scanned: the card over the dimmed scan, above everything else in the cell.
+    m_scannedCard = new ScannedCard(canvasArea);
+    m_scannedCard->setObjectName(QStringLiteral("scannedCard"));
+    canvasLayout->addWidget(m_scannedCard, 0, 0);
+    m_scannedCard->hide();
+    m_scannedCard->raise();
+    connect(m_scannedCard, &ScannedCard::skipChip, this, [this] { applyScanEvent(ScanEvent::SkipChip); });
+    connect(m_scannedCard, &ScannedCard::scanAgain, this, [this] { applyScanEvent(ScanEvent::ScanAgain); });
     // Findings as rows of a name and a value; the panel keeps its width as the window grows, the canvas takes
     // the rest.
-    m_results = new QTreeWidget(splitter);
+    // Review's panel takes the results' place (spec §3.4); the results' own least width stays the side's.
+    m_sidePanel = new QStackedWidget(splitter);
+    m_sidePanel->setObjectName(QStringLiteral("sidePanel"));
+    m_sidePanel->setMinimumWidth(kResultsMinimumWidth);
+    m_results = new QTreeWidget(m_sidePanel);
     m_results->setObjectName(QStringLiteral("resultsList"));
     m_results->setColumnCount(2);
     m_results->setHeaderHidden(true);
     m_results->setRootIsDecorated(false);
     m_results->setMinimumWidth(kResultsMinimumWidth);
-    splitter->addWidget(canvasArea);
-    splitter->addWidget(m_results);
+    m_sidePanel->addWidget(m_results);
+    m_reviewPanel = new ReviewPanel(m_sidePanel);
+    m_reviewPanel->setObjectName(QStringLiteral("reviewPanel"));
+    m_sidePanel->addWidget(m_reviewPanel);
+    m_sidePanel->setCurrentWidget(m_results);
+    splitter->addWidget(canvasColumn);
+    splitter->addWidget(m_sidePanel);
     // The panel can be dragged shut, as View → Results shuts it; its edge stays, to drag it open again. The
     // canvas cannot.
     splitter->setCollapsible(0, false);
@@ -563,6 +687,9 @@ void LabWindow::buildUi() {
     // Dragged shut, the panel is hidden as View → Results hides it; dragged open, shown. The width kept is
     // one above the panel's least, which a drag towards shut passes through on its way.
     connect(m_splitter, &QSplitter::splitterMoved, this, [this] {
+        if (m_reviewShown) {
+            return; // Review's panel, not the results': nothing to remember
+        }
         const int panel = m_splitter->sizes().value(1);
         if (panel > kResultsMinimumWidth) {
             m_settings.setResultsWidth(panel);
@@ -607,11 +734,29 @@ void LabWindow::buildUi() {
     connect(m_canvas, &ImageView::scaleChanged, this, &LabWindow::redrawForView);
     connect(m_canvas, &ImageView::panned, this, &LabWindow::redrawForView);
     connect(m_statusTimer, &QTimer::timeout, this, &LabWindow::refreshStatus);
+    connect(m_reviewBar, &ReviewBar::overlaysChanged, this, [this](ReviewOverlays overlays) {
+        if (!m_reviewShown) {
+            return;
+        }
+        m_gateValues->setVisible(overlays.gates);
+        display(ImageView::KeepView::IfSameSize);
+    });
+    connect(m_reviewPanel, &ReviewPanel::save, this, &LabWindow::saveScan);
+    connect(m_reviewPanel, &ReviewPanel::send, this, &LabWindow::sendScan);
+    connect(m_reviewPanel, &ReviewPanel::discard, this, [this] { applyScanEvent(ScanEvent::Discard); });
+    connect(m_reviewPanel, &ReviewPanel::scanAnother, this,
+            [this] { applyScanEvent(ScanEvent::ScanAnother); });
 }
 
 // Shut to nothing, its edge left at the window's side to drag it open; shown again at the width it had.
 void LabWindow::showResultsPanel(bool shown) {
     m_settings.setResultsShown(shown);
+    if (m_reviewShown) { // Review's panel stays; the results come back as now asked when it is left
+        const int total = m_sizesBeforeReview.value(0) + m_sizesBeforeReview.value(1);
+        const int panel = shown ? m_settings.resultsWidth() : 0;
+        m_sizesBeforeReview = {std::max(1, total - panel), panel};
+        return;
+    }
     const QList<int> sizes = m_splitter->sizes();
     const int total = sizes.value(0) + sizes.value(1);
     const int panel = shown ? m_settings.resultsWidth() : 0;
@@ -644,6 +789,11 @@ void LabWindow::beginRun() {
 }
 
 void LabWindow::stop() {
+    dropScan(false);
+    endRun(false);
+}
+
+void LabWindow::endRun(bool keepScan) {
     if (!m_running) {
         return;
     }
@@ -654,6 +804,7 @@ void LabWindow::stop() {
         m_session = 0;
         m_dependencies.cameras->stop();
     }
+    m_cameraPaused = false;
     m_engine->stop(); // the recording ends with the run
     if (m_record->isChecked()) {
         const QSignalBlocker blocker(m_record);
@@ -663,10 +814,15 @@ void LabWindow::stop() {
     m_current.reset();
     m_previous.reset();
     m_onScreen.reset();
-    m_canvas->clear();
-    m_placeholder->hide();
-    m_results->clear();
     m_fitNext = true;
+    if (keepScan) {
+        display(ImageView::KeepView::IfSameSize); // a picture of it still converting was dropped
+    } else {
+        m_handledScan.reset(); // a new run's processor starts afresh
+        m_canvas->clear();
+        m_placeholder->hide();
+        m_results->clear();
+    }
     updateStartStop();
     updateScan();
     refreshStatus();
@@ -738,6 +894,8 @@ void LabWindow::chooseCamera(int index) {
     fillFormats();
     if (m_cameraRunning) {
         restartCamera();
+    } else {
+        dropScan(false); // a scan kept after its camera failed ends too (spec §3.1)
     }
 }
 
@@ -749,6 +907,8 @@ void LabWindow::chooseFormat(int index) {
     m_settings.setFormatFor(camera->id, m_formatCombo->itemText(index));
     if (m_cameraRunning) {
         restartCamera();
+    } else {
+        dropScan(false);
     }
 }
 
@@ -820,6 +980,9 @@ void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
     if (!m_cameraRunning || session != m_session) {
         return; // a frame of a camera or session that is over
     }
+    if (m_cameraPaused) {
+        return; // a scan shows (spec §3.1, D3): the session stays open, its frames go nowhere
+    }
     // From the run's first frame, as a replay's times are.
     const Clock::time_point arrived = now();
     if (!m_firstFrameAt) {
@@ -834,7 +997,7 @@ void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
 // A click on the canvas focuses there while a camera runs and the Frame shows: the canvas's image pixels are
 // then the frame's, which the engine's focusAt takes as shares.
 void LabWindow::canvasClicked(QPointF imagePoint) {
-    if (!m_cameraRunning) {
+    if (!m_cameraRunning || scanShowing()) {
         return;
     }
     if (currentShow() != kFrameEntry.toStdString()) {
@@ -846,7 +1009,7 @@ void LabWindow::canvasClicked(QPointF imagePoint) {
 }
 
 void LabWindow::focusOnTheCentre() {
-    if (!m_cameraRunning) {
+    if (!m_cameraRunning || scanShowing()) {
         return;
     }
     if (currentShow() != kFrameEntry.toStdString()) {
@@ -877,7 +1040,11 @@ void LabWindow::cameraFailed(const QString& reason) {
     if (!m_cameraRunning) {
         return;
     }
-    stop();
+    // Spec §3.1: the card and Review work without a camera, so a scan showing stays; going on starts it
+    // again.
+    const bool keepScan = scanShowing();
+    endRun(keepScan);
+    m_cameraLost = keepScan;
     m_message = reason;
     m_windowState = WindowState::CameraStopped;
     m_windowStateDetail = reason;
@@ -918,6 +1085,11 @@ void LabWindow::takeResult() {
         return;
     }
     m_taken.push_back(now());
+    // Spec §3.1: results that come while Scanned or Review shows (offered before the pause) are taken, so the
+    // engine's slot keeps moving, but change nothing on screen.
+    if (scanShowing()) {
+        return;
+    }
     m_previous = std::move(m_current);
     m_previousSequence = m_resultSequence;
     m_current = std::move(*result);
@@ -928,6 +1100,13 @@ void LabWindow::takeResult() {
         if (!focus->note.empty()) {
             noteFocus(QString::fromStdString(focus->note));
         }
+    }
+    // An accept, under whatever hint shows (spec §3.1): every result from it on carries the scan, so one
+    // replaced in the engine's slot is not missed; the one handled last never comes back.
+    if (const std::optional<lab_core::Guidance>& guidance = m_current->processed.guidance;
+        documentChosen() && m_resultSequence >= m_scanFrom && guidance && guidance->scan &&
+        (m_handledScan.owner_before(guidance->scan) || guidance->scan.owner_before(m_handledScan))) {
+        accept(guidance->scan);
     }
     updateShowEntries(*m_current);
     showResults(*m_current);
@@ -1007,24 +1186,45 @@ const cv::Mat* LabWindow::shownImage(visual_debug::ImageDescription& description
 
 // Converted on the converter's thread at the size it will be drawn, as the viewer draws a live frame.
 void LabWindow::display(ImageView::KeepView keep) {
-    if (!m_current) {
-        return;
-    }
-    visual_debug::ImageDescription description;
-    const cv::Mat* image = shownImage(description);
-    if (image == nullptr || image->empty()) {
-        if (!m_placeholder->isVisible()) {
-            viewChanged(); // nothing of the entry's earlier frames is drawn meanwhile
+    const cv::Mat* image = nullptr;
+    viewer_core::ImageTags tags;
+    if (scanShowing()) {
+        // The scan's frame, whatever the newest result holds (spec §3.1); Scanned draws nothing over it,
+        // Review what its check boxes say.
+        if (!m_scan) {
+            return;
         }
-        m_placeholder->setText(tr("%1 is not in this frame").arg(QString::fromStdString(currentShow())));
-        m_placeholder->show();
+        image = &m_scan->frame.image;
+        if (m_scanState == ScanState::Review) {
+            tags = reviewTags();
+        } else {
+            visual_debug::ImageDescription description = m_scan->frame.tags; // its range, its transfer
+            description.overlays.clear();
+            tags = toImageTags(description);
+        }
+    } else {
+        if (!m_current) {
+            return;
+        }
+        visual_debug::ImageDescription description;
+        image = shownImage(description);
+        if (image == nullptr || image->empty()) {
+            if (!m_placeholder->isVisible()) {
+                viewChanged(); // nothing of the entry's earlier frames is drawn meanwhile
+            }
+            m_placeholder->setText(tr("%1 is not in this frame").arg(QString::fromStdString(currentShow())));
+            m_placeholder->show();
+            return;
+        }
+        tags = toImageTags(description);
+        if (currentShow() == kFrameEntry.toStdString()) {
+            markGuide(tags, *m_current);
+        }
+    }
+    if (image->empty()) {
         return;
     }
     m_placeholder->hide();
-    viewer_core::ImageTags tags = toImageTags(description);
-    if (currentShow() == kFrameEntry.toStdString()) {
-        markGuide(tags, *m_current);
-    }
     // While a fit converts, the zoom on screen is about to go: a picture cut for it would show only that part
     // of the fitted view.
     if (m_fitPending) {
@@ -1090,7 +1290,8 @@ void LabWindow::redrawForView() {
         return;
     }
     visual_debug::ImageDescription description;
-    const cv::Mat* image = shownImage(description);
+    const cv::Mat* image =
+        scanShowing() ? (m_scan ? &m_scan->frame.image : nullptr) : shownImage(description);
     if (image == nullptr || image->empty()) {
         return;
     }
@@ -1113,13 +1314,19 @@ void LabWindow::refreshStatus() {
             times->pop_front();
         }
     }
-    QStringList parts{stateText(status.state)};
+    // A camera paused for a scan says so; a replay's own word is the engine's, "Paused" (spec §3.1).
+    QStringList parts{scanShowing() && m_cameraRunning ? tr("Camera paused") : stateText(status.state)};
     // The news next, before the source and the counters: a window narrower than the whole line cuts its end.
-    if (documentChosen() && m_running) {
+    if (documentChosen() && scanShowing()) {
+        parts << (m_scanState == ScanState::Scanned ? tr("State: scanned, waiting for the chip")
+                                                    : tr("State: review"));
+    } else if (documentChosen() && m_running) {
         const lab_core::Guidance* guidance = drawnGuidance();
         if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
-            parts
-                << tr("State: %1").arg(stateWord(guidance ? guidance->shownHint : doc_vision::Hint::NoPage));
+            parts << tr("State: %1").arg(scanStateWord(guidance));
+            if (guidance != nullptr && guidance->reading && !guidance->reading->available) {
+                parts << tr("MRZ reader: %1").arg(QString::fromStdString(guidance->reading->reason));
+            }
         } else {
             parts << QString::fromStdString(guidance->reason);
         }
@@ -1183,6 +1390,7 @@ void LabWindow::refreshStatus() {
         }
     }
     const lab_core::ViewerLink::State link = m_link->state();
+    updateSend(link);
     if (!link.lastStillName.empty() && link.lastStill) {
         parts << (*link.lastStill == visual_debug::SendResult::Delivered
                       ? tr("sent %1 to the viewer").arg(QString::fromStdString(link.lastStillName))
@@ -1205,6 +1413,7 @@ void LabWindow::chooseProcessor(int index) {
     if (index < 0) {
         return;
     }
+    dropScan(true); // another processor ends a scan as Discard does; the run goes on (spec §3.1)
     const auto kind = static_cast<lab_core::ProcessorKind>(m_processorCombo->itemData(index).toInt());
     m_settings.setProcessor(qtString(lab_core::nameOf(kind)));
     m_engine->setProcessor(m_dependencies.makeProcessor(kind));
@@ -1251,7 +1460,14 @@ void LabWindow::updateScan() {
         return;
     }
     m_canvas->setEmptyText(QString()); // the banner is the one message
+    if (scanShowing()) {               // the card or Review says what there is to say
+        m_banner->setContent(std::nullopt);
+        m_banner->setProgress(std::nullopt);
+        m_chips->setStates({});
+        return;
+    }
     std::optional<BannerContent> content;
+    std::optional<int> progress;
     doc_vision::ChipStates chips{};
     if (const lab_core::Guidance* guidance = drawnGuidance()) {
         if (guidance->unavailable != lab_core::Guidance::Unavailable::None) {
@@ -1273,6 +1489,18 @@ void LabWindow::updateScan() {
                                                        : FocusBanner::CannotMakeSharp);
             } else {
                 content = bannerFor(guidance->shownHint);
+                // A4's Reading (spec §3.2): hint 10 with the count and its bar, or why nothing is read.
+                if (guidance->shownHint == doc_vision::Hint::Good && guidance->reading) {
+                    if (!guidance->reading->available) {
+                        content->smallLine = readerUnavailableLine();
+                    } else if (oneFrameSource()) {
+                        content->smallLine = readingNeedsMotion();
+                    } else {
+                        const int agreeing = std::clamp(guidance->reading->agreeing, 0, 3);
+                        content->smallLine = readingLine(agreeing);
+                        progress = agreeing;
+                    }
+                }
             }
         }
     } else if (m_running) {
@@ -1283,7 +1511,322 @@ void LabWindow::updateScan() {
         content = bannerFor(m_cameras.empty() ? WindowState::NoCamera : WindowState::Idle);
     }
     m_banner->setContent(std::move(content));
+    m_banner->setProgress(progress);
     m_chips->setStates(chips);
+}
+
+bool LabWindow::oneFrameSource() const { return m_engine->status().frameCount == std::uint64_t{1}; }
+
+// --- A4: the scan
+// ------------------------------------------------------------------------------------------------
+
+bool LabWindow::scanShowing() const { return m_scanState != ScanState::Guiding; }
+
+// The accept pauses what feeds the engine and shows the card over the scan's frame (spec §3.1, D3): a
+// camera's frames stop being handed over, its session open; a playing replay pauses.
+void LabWindow::accept(std::shared_ptr<const lab_core::MrzScan> scan) {
+    const std::optional<ScanStep> step = next(m_scanState, ScanEvent::Accepted);
+    if (!step) {
+        return;
+    }
+    m_handledScan = scan;
+    m_scan = std::move(scan);
+    m_scanFindings = m_current ? m_current->processed.findings : std::vector<lab_core::Finding>{};
+    m_scanState = step->to;
+    if (m_cameraRunning) {
+        m_cameraPaused = true;
+    } else {
+        m_replayWasPlaying = m_engine->status().state == lab_core::EngineState::Playing;
+        if (m_replayWasPlaying) {
+            m_engine->pause();
+        }
+    }
+    showScanState();
+}
+
+void LabWindow::applyScanEvent(ScanEvent event) {
+    const std::optional<ScanStep> step = next(m_scanState, event);
+    if (!step) {
+        return;
+    }
+    m_scanState = step->to;
+    if (!step->keepScan) {
+        m_scan.reset();
+    }
+    if (step->resume) {
+        resumeScanning();
+    }
+    showScanState();
+}
+
+void LabWindow::resumeScanning() {
+    if (m_cameraLost) {
+        m_cameraLost = false;
+        m_canvas->clear();
+        m_results->clear();
+        startCamera(); // fails as A3.1's window state says: "The camera stopped"
+        return;
+    }
+    m_engine->resetProcessor();
+    // Frames come again: the banner waits for a new result's guidance rather than the scan's. A replay the
+    // user had paused brings none until stepped, so the banner keeps the frame on screen's.
+    if (m_cameraRunning || m_replayWasPlaying) {
+        m_scanFrom = m_resultSequence + 1;
+    }
+    m_cameraPaused = false;
+    if (m_replayWasPlaying) {
+        m_engine->play(); // only a replay the accept paused playing; a user's pause, or its end, stays
+    }
+    m_replayWasPlaying = false;
+}
+
+void LabWindow::dropScan(bool runContinues) {
+    if (!scanShowing()) {
+        return;
+    }
+    m_scanState = ScanState::Guiding;
+    m_scan.reset();
+    m_cameraPaused = false;
+    if (runContinues && m_replayWasPlaying) {
+        m_engine->play();
+    }
+    m_replayWasPlaying = false;
+    m_scannedCard->hide();
+    showReview(false);
+    if (m_cameraLost || !m_running) { // its camera failed: nothing runs to draw over it
+        m_cameraLost = false;
+        m_canvas->clear();
+        m_results->clear();
+    }
+    updateScan();
+    refreshStatus();
+}
+
+void LabWindow::showScanState() {
+    m_scannedCard->setVisible(m_scanState == ScanState::Scanned);
+    showReview(m_scanState == ScanState::Review);
+    viewChanged();
+    display(ImageView::KeepView::IfSameSize);
+    updateScan();
+    refreshStatus();
+}
+
+// Its panel shows whatever View ▸ Results says, at least kReviewPanelWidth wide, by the splitter's sizes
+// only: the Results setting is never written, and the sizes before come back on leaving (spec §3.4).
+void LabWindow::showReview(bool shown) {
+    if (shown == m_reviewShown) {
+        return;
+    }
+    m_reviewShown = shown;
+    if (shown && m_scan) {
+        ++m_reviewNumber;
+        m_scanSaved = false;
+        m_scanSaving = false;
+        m_sendingStill.reset();
+        m_reviewPanel->setScan(*m_scan, today());
+        m_gateValues->setRows(m_scan->gates);
+        m_reviewBar->reset(); // each Review starts from the defaults
+        m_gateValues->setVisible(m_reviewBar->overlays().gates);
+        m_sizesBeforeReview = m_splitter->sizes();
+        m_sidePanel->setCurrentWidget(m_reviewPanel);
+        // Its buttons are the way on: the panel cannot be dragged shut or narrower while it shows.
+        m_sidePanel->setMinimumWidth(kReviewPanelWidth);
+        m_splitter->setCollapsible(1, false);
+        const int total = m_sizesBeforeReview.value(0) + m_sizesBeforeReview.value(1);
+        const int panel = std::max(m_sizesBeforeReview.value(1), kReviewPanelWidth);
+        m_splitter->setSizes({std::max(1, total - panel), panel});
+    } else if (!shown) {
+        m_sendingStill.reset();
+        m_sidePanel->setCurrentWidget(m_results);
+        m_sidePanel->setMinimumWidth(kResultsMinimumWidth);
+        m_splitter->setCollapsible(1, true);
+        m_splitter->setSizes(m_sizesBeforeReview);
+    }
+    m_reviewBar->setVisible(shown);
+    m_reviewMarks->setVisible(shown);
+}
+
+std::vector<visual_debug::Overlay> LabWindow::reviewOverlays(bool everything) const {
+    std::vector<visual_debug::Overlay> overlays;
+    if (!m_scan) {
+        return overlays;
+    }
+    const ReviewOverlays wanted =
+        everything ? ReviewOverlays{.outline = true, .band = true, .corners = true} : m_reviewBar->overlays();
+    const auto points = [](const doc_vision::Quad& quad) {
+        return std::vector<cv::Point2d>(quad.begin(), quad.end());
+    };
+    if (wanted.outline) {
+        overlays.push_back(visual_debug::Polygon{
+            .points = points(m_scan->quad), .label = "Document", .colour = visual_debug::kOverlayGreen});
+    }
+    if (wanted.band) {
+        overlays.push_back(visual_debug::Polygon{.points = points(m_scan->band),
+                                                 .label = "MRZ band",
+                                                 .colour = {static_cast<std::uint8_t>(kBandAmber.red()),
+                                                            static_cast<std::uint8_t>(kBandAmber.green()),
+                                                            static_cast<std::uint8_t>(kBandAmber.blue())}});
+    }
+    // 1 is the page's top left as read, after any turn (spec §3.4).
+    if (wanted.corners) {
+        for (std::size_t i = 0; i < m_scan->quad.size(); ++i) {
+            overlays.push_back(visual_debug::Point{.at = m_scan->quad[i],
+                                                   .label = std::to_string(i + 1),
+                                                   .colour = visual_debug::kOverlayGreen});
+        }
+    }
+    return overlays;
+}
+
+viewer_core::ImageTags LabWindow::reviewTags() const {
+    // The frame's own tags (a 10-bit frame's value range, an HDR transfer), as Send sends them.
+    visual_debug::ImageDescription description =
+        m_scan ? m_scan->frame.tags : visual_debug::ImageDescription{};
+    description.overlays = reviewOverlays(false);
+    viewer_core::ImageTags tags = toImageTags(description);
+    std::vector<viewer_core::Overlay> overlays = tags.overlayList();
+    for (viewer_core::Overlay& overlay : overlays) {
+        auto* polygon = std::get_if<viewer_core::Polygon>(&overlay);
+        if (polygon == nullptr) {
+            continue;
+        }
+        if (polygon->label == "Document") {
+            polygon->style = viewer_core::Polygon::Style::Guide;
+            polygon->colour = coreColour(kGuideGood);
+        } else if (polygon->label == "MRZ band") {
+            polygon->style = viewer_core::Polygon::Style::GuideDashed;
+            polygon->colour = coreColour(kBandAmber);
+        }
+        polygon->label.clear();
+    }
+    tags.overlays = viewer_core::makeOverlays(std::move(overlays));
+    return tags;
+}
+
+// Spec §3.4: the scan's frame, never drawn on, with every overlay of Review whatever its check boxes, 04's
+// rows and the gate values as findings (no MRZ text), and the MRZ itself in its own "mrz" section.
+void LabWindow::saveScan() {
+    if (!m_scan || !m_reviewShown || m_scanSaved || m_scanSaving) {
+        return; // saved, or being written: Enter pressed twice saves once
+    }
+    const QString folder = QDir(labFolder()).filePath(QStringLiteral("Captures"));
+    if (!makePrivateFolder(folder)) {
+        m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Failed,
+                                      tr("Could not make the Captures folder in %1.").arg(labFolder()));
+        return;
+    }
+    std::vector<std::string> findings;
+    for (const std::vector<lab_core::Finding>* rows :
+         std::initializer_list<const std::vector<lab_core::Finding>*>{&m_scanFindings, &m_scan->gates}) {
+        for (const lab_core::Finding& finding : *rows) {
+            findings.push_back(lab_core::toText(finding));
+        }
+    }
+    const frame_io::CaptureInfo info{.source = m_engine->status().source,
+                                     .findings = std::move(findings),
+                                     .overlays = reviewOverlays(true),
+                                     .sections = {mrzSection(m_scan->mrz)}};
+    const frame_io::Frame frame = m_scan->frame; // shares the pixels, which nothing changes
+    const std::string baseName = timeStamp().toStdString();
+    const std::filesystem::path path = toPath(folder);
+    auto write = [path, baseName, frame, info]() -> std::pair<std::filesystem::path, std::string> {
+        std::string error;
+        std::filesystem::path written = frame_io::writeCapture(path, baseName, frame, info, error);
+        return {std::move(written), std::move(error)};
+    };
+    m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Busy);
+    m_scanSaving = true;
+    const std::uint64_t review = m_reviewNumber;
+    if (m_dependencies.immediateCapture) {
+        const auto [written, error] = write();
+        savedScan(review, written, error);
+        return;
+    }
+    std::function<void()> job = [write, review, window = QPointer<LabWindow>(this)] {
+        auto [written, error] = write();
+        QMetaObject::invokeMethod(
+            QCoreApplication::instance(),
+            [window, review, written, error] {
+                if (window) {
+                    window->savedScan(review, written, error);
+                }
+            },
+            Qt::QueuedConnection);
+    };
+    if (m_dependencies.background) {
+        m_dependencies.background(std::move(job));
+    } else {
+        QThreadPool::globalInstance()->start(std::move(job));
+    }
+}
+
+void LabWindow::savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error) {
+    m_message = file.empty() ? tr("Could not save the scan: %1").arg(QString::fromStdString(error))
+                             : tr("saved %1").arg(fromPath(file));
+    if (review == m_reviewNumber && m_reviewShown) {
+        m_scanSaving = false;
+        m_scanSaved = !file.empty();
+        if (m_scanSaved) {
+            m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Done);
+        } else {
+            m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Failed,
+                                          tr("Could not save: %1").arg(QString::fromStdString(error)));
+        }
+    }
+    refreshStatus();
+}
+
+// Into the viewer's history, as Send Frame sends (asking first for another computer), named by fixed words
+// and the frame's number only, with Review's overlays as checked; the gate values box is a widget, not sent.
+void LabWindow::sendScan() {
+    endpointChanged(); // the address as typed, as for ▶
+    if (!m_scan || !m_reviewShown || m_sendingStill) {
+        return;
+    }
+    if (!confirmFor(endpointText())) {
+        m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Idle);
+        refreshStatus();
+        return;
+    }
+    visual_debug::ImageDescription description = m_scan->frame.tags;
+    const std::vector<visual_debug::Overlay> overlays = reviewOverlays(false);
+    description.overlays.insert(description.overlays.end(), overlays.begin(), overlays.end());
+    m_sendingStill = m_link->sendStill(m_scan->frame.image, stillName(m_scan->frame.number).toStdString(),
+                                       std::move(description));
+    m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Busy);
+    refreshStatus(); // a still refused at once ends here
+}
+
+// The still Review sent has ended when the link names its number: answered, refused, or dropped.
+void LabWindow::updateSend(const lab_core::ViewerLink::State& link) {
+    if (!m_sendingStill || link.lastStillNumber != *m_sendingStill) {
+        return;
+    }
+    m_sendingStill.reset();
+    if (link.lastStill == visual_debug::SendResult::Delivered) {
+        m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Done);
+        return;
+    }
+    m_reviewPanel->setSendOutcome(ReviewPanel::Outcome::Failed,
+                                  link.lastStill ? qtString(visual_debug::toString(*link.lastStill))
+                                                 : QString::fromStdString(link.lastStillReason));
+}
+
+doc_vision::MrzDate LabWindow::today() const {
+    const QDate date = m_dependencies.today ? m_dependencies.today() : QDate::currentDate();
+    return {.year = date.year(), .month = date.month(), .day = date.day()};
+}
+
+QString LabWindow::scanStateWord(const lab_core::Guidance* guidance) const {
+    if (guidance == nullptr) {
+        return stateWord(doc_vision::Hint::NoPage);
+    }
+    // Hint 10 says "reading" while the reader reads; "good" when it cannot (spec §3.2).
+    const bool reads = guidance->reading && guidance->reading->available && !oneFrameSource();
+    if (guidance->shownHint == doc_vision::Hint::Good && reads) {
+        return stateWord(doc_vision::Hint::NoMrzBand); // "reading"
+    }
+    return stateWord(guidance->shownHint);
 }
 
 // Show lists the pictures of the processor chosen: the earlier one's go, the frame shows until the choice
@@ -1419,8 +1962,11 @@ void LabWindow::updatePosition(const lab_core::EngineStatus& status) {
     m_position->setText(formatPosition(at, length));
 }
 
+// While a scan shows, nothing moves the replay or focuses the camera, and Capture gives way to Review's Save
+// (spec §3.1); this runs with every refresh, so nothing else may enable them meanwhile.
 void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
-    const bool replay = m_running && !m_cameraRunning;
+    const bool scan = scanShowing();
+    const bool replay = m_running && !m_cameraRunning && !scan;
     const bool jumps = replay && status.canSeek && status.frameRate.has_value();
     m_back10->setEnabled(jumps);
     m_forward10->setEnabled(jumps);
@@ -1441,8 +1987,12 @@ void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
     m_stepBack->setEnabled(replay && status.canStepBack);
     m_stepBackAction->setEnabled(replay && status.canStepBack);
     m_restart->setEnabled(replay);
+    m_loop->setEnabled(!scan);
+    m_asFast->setEnabled(!scan);
+    m_slider->setEnabled(!scan);
+    m_focusAction->setEnabled(m_cameraRunning && !scan);
     m_record->setEnabled(m_running || m_record->isChecked());
-    m_capture->setEnabled(m_onScreen.has_value());
+    m_capture->setEnabled(m_onScreen.has_value() && !scan);
 }
 
 // --- Recording and capture
@@ -1618,6 +2168,36 @@ void LabWindow::changeEvent(QEvent* event) {
 // Space plays and pauses unless a button has the focus, which Space then presses. In the address field too:
 // an address never holds a space.
 bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
+    // A4's keys while a scan shows (spec §3.4's table): in Scanned, Enter skips the chip and Esc scans again.
+    // Not while a text field has the focus (its Enter finishes its editing; a key it ignores reaches its
+    // parents here too), nor while a list's popup is open.
+    if (event->type() == QEvent::KeyPress && scanShowing()) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const auto* widget = qobject_cast<QWidget*>(watched);
+        const bool enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
+        const bool escape = key->key() == Qt::Key_Escape;
+        const bool plain = (key->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier;
+        if ((enter || escape) && plain && widget != nullptr && widget->window() == this &&
+            qobject_cast<QLineEdit*>(focusWidget()) == nullptr &&
+            QApplication::activePopupWidget() == nullptr) {
+            // A key held down acts once: its repeats would carry Scanned's Enter on into Review's Save.
+            if (key->isAutoRepeat()) {
+                return true;
+            }
+            if (const std::optional<ScanEvent> scanEvent =
+                    eventFor(m_scanState, enter ? ScanKey::Enter : ScanKey::Escape)) {
+                applyScanEvent(*scanEvent);
+                return true;
+            }
+            // Review: Enter saves, once; Esc does nothing, since Review needs an explicit choice.
+            if (m_scanState == ScanState::Review) {
+                if (enter) {
+                    saveScan();
+                }
+                return true;
+            }
+        }
+    }
     if (event->type() == QEvent::KeyPress && watched == m_endpoint) {
         const auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
@@ -1834,7 +2414,7 @@ void LabWindow::updateViewerRow(const lab_core::EngineStatus& status) {
     m_streamButton->setEnabled(!m_closing && hasAddress && m_stream != Stream::On && !status.endingChannels);
     m_pauseStream->setEnabled(m_stream == Stream::On);
     m_stopStream->setEnabled(m_stream != Stream::Off);
-    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value());
+    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value() && !scanShowing());
 }
 
 } // namespace document_lab

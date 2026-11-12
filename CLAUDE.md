@@ -71,9 +71,10 @@ macOS, so the camera prompt names the Document Lab rather than the terminal.
 
 `libs/visual_debug` (transport, no Qt) · `libs/viewer_core` (viewer logic, no Qt) · `libs/frame_io` (videos,
 image folders, recordings and captures; YUV conversion; no Qt) · `libs/doc_vision` (ONNX Runtime, the page model,
-page geometry, quality gates, hint timers; no Qt) · `libs/lab_core` (the Document Lab's engine, processors,
-the Document processor, the focus controller, and sender; no Qt) · `apps/viewer` · `apps/example_sender` ·
-`apps/document_lab` · `apps/qt_common`
+page geometry, quality gates, hint timers, the MRZ's parsing, agreement and reader; no Qt) · `libs/lab_core` (the
+Document Lab's engine, processors, the Document processor and its MRZ worker, the focus controller, and sender; no
+Qt) · `apps/viewer` · `apps/example_sender` · `apps/document_lab` (the window; A4's scan flow, Scanned card and
+Review in `scan_flow`, `scanned_card`, `review_view`) · `apps/qt_common`
 (what the apps share, the canvas among it: `ImageView`, `LiveConverter`, `live_drawing`, `overlay_painter`) ·
 `examples/{pipeline_demo,minimal_sender,overlay_sender,live_sender}` ·
 `python/` (the Python sender: `visual_debug.py`, its pytest tests, `pyproject.toml`, a demo) ·
@@ -135,7 +136,15 @@ identifiers): [`docs/former-names.md`](docs/former-names.md).
   `FocusController` and its `FocusControl` (the camera's own focus: IOKit on macOS, DirectShow on Windows,
   ADR-005) live on the processing thread too: native calls only there, bounded by timeouts on macOS; a move
   counts only frames offered after it; every end of a camera run puts the camera's focus back there, and window
-  tests give a fake control, so no test reaches a real camera.
+  tests give a fake control, so no test reaches a real camera. The MRZ reader (A4) runs on the Document
+  processor's `MrzWorker` thread: a job (the page and its frame's record) waits in a slot of one, a newer replaces
+  it, and its read is collected at the next `process()`; the reader opens its two models lazily there; the
+  worker's destructor cancels a read in progress (`RunOptions::SetTerminate`) and joins. `Engine::resetProcessor()`
+  forgets the scan without a new generation (Scan again, Discard). While Scanned or Review shows, the window hands
+  the engine no camera frames (the session stays open) and pauses a replay it found playing; results that still
+  arrive are taken and change nothing. Processor tests run the worker `Manual` with `pumpReaderForTests()` and a
+  scripted reader. The `ViewerLink` numbers its stills, and says when each ended, so Review's Send never waits
+  for ever.
 - **Wire-format changes:** a new optional header field keeps `version` 2, and so does a new message `type` (an
   older viewer refuses it with `unsupported message type`, which still answers); changing or removing a field
   bumps it. Update `docs/wire-format.md` and `docs/user-guide.md` in the same change, and the Python sender

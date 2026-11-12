@@ -1,11 +1,14 @@
+#include "lab_core/document_processor.h"
 #include "lab_core/engine.h"
 #include "lab_core/focus_controller.h"
 
 #include "fake_focus_control.h"
+#include "fake_mrz_reader.h"
 #include "fake_sender.h"
 #include "latch.h"
 #include "list_source.h"
 #include "scratch_folder.h"
+#include "scripted_finder.h"
 
 #include <frame_io/recording.h>
 
@@ -1407,6 +1410,64 @@ TEST(Engine, FailedLetGoRestoreSurvivesTheStop) {
     h.engine.stop();
     h.engine.pump();
     EXPECT_EQ(h.engine.status().message, lab_core::kFocusRestoreFailed);
+}
+
+// --- A4: Scan again, Discard and Scan another
+// ---------------------------------------------------------------------------------------------------
+
+// The processor starts reading afresh; the run, its recording and its generation go on.
+TEST(Engine, ResetProcessorKeepsTheRun) {
+    const test_support::ScratchFolder folder;
+    Harness h;
+    CountingProcessor::Calls calls;
+    h.engine.setProcessor(std::make_unique<CountingProcessor>(calls));
+    h.engine.startReplay(openerOf(framesApart(10, 40ms)));
+    h.engine.startRecording(recorderIn(folder.path()));
+    pausedAt(h, 2);
+    const int resets = calls.resets;
+    const std::uint64_t generation = h.engine.status().generation;
+
+    h.engine.resetProcessor();
+    h.engine.pump();
+
+    EXPECT_EQ(calls.resets, resets + 1);
+    EXPECT_EQ(h.engine.status().generation, generation);
+    EXPECT_TRUE(h.engine.status().recording);
+    EXPECT_EQ(h.engine.status().state, EngineState::Paused);
+}
+
+// The plan review: a processor swap while its MRZ reader is busy cancels the read, so the next command is
+// served at once rather than after a whole read.
+TEST(Engine, ProcessorSwapDuringASlowReadServesTheNextCommand) {
+    auto finder = std::make_shared<test_support::Script>();
+    finder->steps = {test_support::page(test_support::kPageQuad)};
+    auto reader = std::make_shared<test_support::ReaderScript>();
+    reader->blockReads = true;
+    Engine engine(Engine::Mode::Threaded, {.resultReady = nullptr, .statusChanged = nullptr, .now = nullptr});
+    engine.setProcessor(std::make_unique<lab_core::DocumentProcessor>(
+        test_support::scripted(finder), doc_vision::Thresholds{},
+        lab_core::DocumentProcessor::Reader{.make = test_support::scriptedReader(reader),
+                                            .mode = lab_core::MrzWorker::Mode::Threaded}));
+    engine.startLive("Test camera");
+    const cv::Mat good = test_support::goodFrame();
+    for (int n = 0; n < 200; ++n) {
+        engine.offer({[good, n](std::string&) -> std::optional<frame_io::Frame> {
+            return test_support::frameAt(good, n);
+        }});
+        if (reader->waitFor([&] { return reader->readStarted; })) {
+            break;
+        }
+    }
+    ASSERT_TRUE(reader->readStarted);
+
+    engine.setProcessor(nullptr);
+    engine.stop();
+    const auto until = Clock::now() + 2s;
+    while (engine.status().state != EngineState::Stopped && Clock::now() < until) {
+        std::this_thread::sleep_for(5ms);
+    }
+    EXPECT_EQ(engine.status().state, EngineState::Stopped);
+    EXPECT_GE(reader->cancels, 1);
 }
 
 } // namespace

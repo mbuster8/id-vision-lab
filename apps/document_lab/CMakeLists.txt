@@ -30,12 +30,18 @@ add_library(document_lab_ui STATIC
     main_window.h
     model_folder.cpp
     model_folder.h
+    review_view.cpp
+    review_view.h
     scan_banner.cpp
     scan_banner.h
+    scan_flow.cpp
+    scan_flow.h
     scan_style.cpp
     scan_style.h
     scan_words.cpp
     scan_words.h
+    scanned_card.cpp
+    scanned_card.h
     uvc_descriptor.cpp
     uvc_descriptor.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

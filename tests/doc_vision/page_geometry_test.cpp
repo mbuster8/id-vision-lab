@@ -102,6 +102,37 @@ TEST(PageGeometry, FlattenMapsTheQuadOntoThePage) {
     EXPECT_FALSE(far[0] < 60 && far[1] < 60 && far[2] > 200);
 }
 
+// A4: the MRZ band found on the flattened page, drawn back on the frame; flatten's own correspondence.
+TEST(PageGeometry, PageToFrameMapsThePagesCornersOntoTheQuad) {
+    const Quad quad{{{200, 100}, {1000, 140}, {980, 640}, {220, 600}}};
+    const Quad pageCorners{{{0, 0}, {1249, 0}, {1249, 879}, {0, 879}}};
+    const Quad mapped = doc_vision::pageToFrame(pageCorners, quad, doc_vision::kPageSize);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_NEAR(mapped[i].x, quad[i].x, 1e-6) << i;
+        EXPECT_NEAR(mapped[i].y, quad[i].y, 1e-6) << i;
+    }
+    // A point and its flattened twin: a marker drawn on the page lands where pageToFrame says.
+    const Quad marker{{{600, 400}, {600, 400}, {600, 400}, {600, 400}}};
+    const cv::Point2d onFrame = doc_vision::pageToFrame(marker, quad, doc_vision::kPageSize)[0];
+    cv::Mat page(doc_vision::kPageSize, CV_8UC1, cv::Scalar::all(0));
+    cv::circle(page, cv::Point(600, 400), 6, cv::Scalar::all(255), cv::FILLED);
+    const std::vector<cv::Point2f> from{{0, 0}, {1249, 0}, {1249, 879}, {0, 879}};
+    const std::vector<cv::Point2f> to(quad.begin(), quad.end());
+    cv::Mat frame;
+    cv::warpPerspective(page, frame, cv::getPerspectiveTransform(from, to), cv::Size(1280, 720));
+    const cv::Moments m = cv::moments(frame, true);
+    ASSERT_GT(m.m00, 0);
+    EXPECT_NEAR(m.m10 / m.m00, onFrame.x, 1.0);
+    EXPECT_NEAR(m.m01 / m.m00, onFrame.y, 1.0);
+}
+
+TEST(PageGeometry, UnturnedPutsAQuadBackTheRightWayUp) {
+    const Quad onTurned{{{60, 30}, {1190, 30}, {1190, 120}, {60, 120}}};
+    const Quad back = doc_vision::unturned(onTurned, doc_vision::kPageSize);
+    EXPECT_EQ(back[0], cv::Point2d(1249 - 60, 879 - 30));
+    EXPECT_EQ(back[2], cv::Point2d(1249 - 1190, 879 - 120));
+}
+
 TEST(PageGeometry, FlattenIsAnIdentityOnItsOwnCorners) {
     cv::Mat frame(doc_vision::kGatePageSize, CV_8UC3);
     cv::RNG rng(7);

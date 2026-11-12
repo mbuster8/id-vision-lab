@@ -126,6 +126,75 @@ void paintGuide(QPainter& painter, const QPolygonF& points, const QRectF& bounds
     }
 }
 
+// A convex polygon moved `distance` outwards: each edge's line pushed away from the centroid, the corners
+// where neighbouring lines meet. Fewer than three points come back as they are.
+QPolygonF offsetOutwards(const QPolygonF& points, double distance) {
+    const qsizetype n = points.size();
+    if (n < 3) {
+        return points;
+    }
+    QPointF centroid;
+    for (const QPointF& point : points) {
+        centroid += point;
+    }
+    centroid /= static_cast<double>(n);
+    // Each edge's line, moved: a point on it and its direction.
+    std::vector<std::pair<QPointF, QPointF>> lines;
+    lines.reserve(static_cast<std::size_t>(n));
+    for (qsizetype i = 0; i < n; ++i) {
+        const QPointF from = points[i];
+        const QPointF direction = points[(i + 1) % n] - from;
+        const double length = std::hypot(direction.x(), direction.y());
+        if (length == 0) {
+            lines.push_back({from, QPointF(1, 0)});
+            continue;
+        }
+        QPointF normal(direction.y() / length, -direction.x() / length);
+        const QPointF middle = from + direction / 2;
+        if (QPointF::dotProduct(normal, middle - centroid) < 0) {
+            normal = -normal;
+        }
+        lines.push_back({from + normal * distance, direction});
+    }
+    QPolygonF out;
+    for (qsizetype i = 0; i < n; ++i) {
+        const auto& [a, da] = lines[static_cast<std::size_t>((i + n - 1) % n)];
+        const auto& [b, db] = lines[static_cast<std::size_t>(i)];
+        const double cross = da.x() * db.y() - da.y() * db.x();
+        if (std::abs(cross) < 1e-9) {
+            out.append(b);
+            continue;
+        }
+        const QPointF ab = b - a;
+        const double t = (ab.x() * db.y() - ab.y() * db.x()) / cross;
+        out.append(a + da * t);
+    }
+    return out;
+}
+
+// A GuideDashed polygon: outside the shape, dashes on a halo of the same dashes, flat caps (a square cap
+// would lengthen every dash by the pen's width), no fill and no tab.
+void paintDashedGuide(QPainter& painter, const QPolygonF& points, const QRectF& bounds,
+                      viewer_core::Colour colour) {
+    const QPolygonF outside = offsetOutwards(points, kDashedGuideOffset);
+    if (!outside.boundingRect().adjusted(-1, -1, 1, 1).intersects(bounds)) {
+        return;
+    }
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setBrush(Qt::NoBrush);
+    for (const auto& [shade, width] : {std::pair{QColor(0, 0, 0, kGuideHaloAlpha), kDashedGuideHaloWidth},
+                                       std::pair{colourOf(colour), kDashedGuideWidth}}) {
+        QPen pen(shade, width);
+        pen.setCosmetic(true);
+        pen.setCapStyle(Qt::FlatCap);
+        pen.setJoinStyle(Qt::MiterJoin);
+        // In units of the pen's width, so the halo's dashes lie under the line's.
+        pen.setDashPattern({kDashedGuideDash / width, kDashedGuideGap / width});
+        painter.setPen(pen);
+        painter.drawPolygon(outside);
+    }
+}
+
 void paintPoint(QPainter& painter, QPointF at, const QRectF& bounds, const QRectF& visible,
                 const OverlayPainter::Label* label, viewer_core::Colour colour) {
     if (!bounds.contains(at)) {
@@ -194,6 +263,10 @@ void OverlayPainter::paint(QPainter& painter, const std::vector<viewer_core::Ove
                            }
                            if (polygon.style == viewer_core::Polygon::Style::Guide) {
                                paintGuide(painter, points, bounds, polygon.colour);
+                               return;
+                           }
+                           if (polygon.style == viewer_core::Polygon::Style::GuideDashed) {
+                               paintDashedGuide(painter, points, bounds, polygon.colour);
                                return;
                            }
                            paintShape(painter, {.kind = Outline::Kind::Polygon, .points = std::move(points)},

@@ -557,6 +557,28 @@ TEST(FocusController, HoldingLetsGoWhenTheSizeChanges) {
     EXPECT_TRUE(run.log->autoFocus);
 }
 
+// A4: Scanned and Review stop the camera's frames for a while; when they come again A3.3's rules apply
+// unchanged (spec §4.2). The passport back under the camera keeps the focus found for it...
+TEST(FocusController, HoldSurvivesAGapWithThePageInView) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.at += 30s; // the chip step and Review
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Holding);
+    EXPECT_FALSE(run.log->autoFocus);
+}
+
+// ...and frames without it give the camera its own focus back.
+TEST(FocusController, HoldLetsGoAfterAGapWithoutThePage) {
+    CameraRun run;
+    ASSERT_EQ(run.searchToTheEnd(), State::Holding);
+    run.at += 30s;
+    run.page = false;
+    run.frame();
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_TRUE(run.log->autoFocus);
+}
+
 TEST(FocusController, HoldingResearchesLocallyFirst) {
     CameraRun run;
     ASSERT_EQ(run.searchToTheEnd(), State::Holding);

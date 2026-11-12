@@ -33,6 +33,12 @@ Quad alignTo(const Quad& next, const Quad& previous);
 // The quad's page warped flat to `size`: TL, TR, BR, BL onto (0,0), (w−1,0), (w−1,h−1), (0,h−1), so a frame
 // whose quad is its own corners comes back unchanged. Bilinear, the frame's edge replicated.
 cv::Mat flatten(const cv::Mat& image, const Quad& quad, cv::Size size);
+// Points on a page flattened to `pageSize` from `pageQuad`, back in the frame: flatten's correspondence
+// inverted (A4: the MRZ band, drawn over the frame).
+Quad pageToFrame(const Quad& onPage, const Quad& pageQuad, cv::Size pageSize);
+// Points on a page turned 180° (as an upside-down page is read), on the page the right way up: (x, y) becomes
+// (w−1−x, h−1−y).
+Quad unturned(const Quad& onTurnedPage, cv::Size pageSize);
 
 // The quad's area over the frame's.
 double fillShare(const Quad& quad, cv::Size frame);

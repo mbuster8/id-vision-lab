@@ -103,6 +103,9 @@ target_include_directories(frame_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt
 id_vision_lab_add_test_executable(doc_vision_tests
     SOURCES
         doc_vision/guidance_test.cpp
+        doc_vision/mrz_agreement_test.cpp
+        doc_vision/mrz_reader_test.cpp
+        doc_vision/mrz_test.cpp
         doc_vision/onnx_model_test.cpp
         doc_vision/page_detector_test.cpp
         doc_vision/page_geometry_test.cpp
@@ -112,10 +115,12 @@ id_vision_lab_add_test_executable(doc_vision_tests
         doc_vision::doc_vision
         opencv_imgproc
         GTest::gtest_main)
-# The model resolved at configure time, and the ONNX Runtime version built against; scratch_folder.h. With the
+# The models resolved at configure time, and the ONNX Runtime version built against; scratch_folder.h. With the
 # UTF-8 code page on Windows, so a model under a non-ASCII user folder opens.
 target_compile_definitions(doc_vision_tests PRIVATE
     ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}"
+    ID_VISION_LAB_MRZ_DETECTION_MODEL="${ID_VISION_LAB_MRZ_DETECTION_MODEL}"
+    ID_VISION_LAB_MRZ_RECOGNITION_MODEL="${ID_VISION_LAB_MRZ_RECOGNITION_MODEL}"
     ID_VISION_LAB_ONNXRUNTIME_VERSION="${onnxruntime_VERSION}")
 target_include_directories(doc_vision_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frame_io)
 id_vision_lab_use_utf8_code_page(doc_vision_tests)
@@ -132,13 +137,18 @@ id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
         lab_core/document_outline_test.cpp
+        lab_core/document_processor_mrz_test.cpp
         lab_core/document_processor_test.cpp
         lab_core/engine_test.cpp
         lab_core/fake_focus_control.h
+        lab_core/fake_mrz_reader.h
         lab_core/focus_controller_test.cpp
         lab_core/fake_sender.h
         lab_core/list_source.h
+        lab_core/mrz_privacy_test.cpp
+        lab_core/mrz_worker_test.cpp
         lab_core/processors_test.cpp
+        lab_core/scripted_finder.h
         lab_core/result_sender_test.cpp
         lab_core/viewer_link_test.cpp
     LIBRARIES
@@ -152,7 +162,9 @@ target_include_directories(lab_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qt
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/frame_io
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/doc_vision)
 # The model the Document processor's end-to-end test opens, under the UTF-8 code page on Windows as in the lab.
-target_compile_definitions(lab_core_tests PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}")
+target_compile_definitions(lab_core_tests PRIVATE ID_VISION_LAB_LC100_MODEL="${ID_VISION_LAB_LC100_MODEL}"
+                                                  ID_VISION_LAB_MRZ_DETECTION_MODEL="${ID_VISION_LAB_MRZ_DETECTION_MODEL}"
+                                                  ID_VISION_LAB_MRZ_RECOGNITION_MODEL="${ID_VISION_LAB_MRZ_RECOGNITION_MODEL}")
 id_vision_lab_use_utf8_code_page(lab_core_tests)
 id_vision_lab_copy_runtime_dlls(lab_core_tests)
 
@@ -274,8 +286,11 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
                 document_lab/fake_camera_backend.h
                 document_lab/main_window_test.cpp
                 document_lab/measurement_test.cpp
+                document_lab/review_view_test.cpp
                 document_lab/scan_banner_test.cpp
+                document_lab/scan_flow_test.cpp
                 document_lab/scan_style_test.cpp
+                document_lab/scanned_card_test.cpp
                 document_lab/uvc_descriptor_test.cpp
             LIBRARIES
                 document_lab_ui
@@ -310,14 +325,16 @@ if(ID_VISION_LAB_BUILD_QT_APPS)
         # its own so that it also runs from the installed Windows package.
         add_test(NAME media_smoke COMMAND media_smoke)
         set_tests_properties(media_smoke PROPERTIES TIMEOUT 120)
-        # The page model inside the Document Lab, where it looks for it: the bundle's Resources on macOS, a models
-        # folder beside the program elsewhere.
+        # The page model and MRZScanner's two inside the Document Lab, where it looks for them: the bundle's
+        # Resources on macOS, a models folder beside the program elsewhere.
         if(APPLE)
             set(lab_models "$<TARGET_BUNDLE_CONTENT_DIR:document_lab>/Resources/models")
         else()
             set(lab_models "$<TARGET_FILE_DIR:document_lab>/models")
         endif()
         add_test(NAME document_lab_ships_its_model
-            COMMAND "${CMAKE_COMMAND}" -E sha256sum "${lab_models}/lcnet100_h_e_bifpn_256_fp32.onnx")
+            COMMAND "${CMAKE_COMMAND}" -E sha256sum "${lab_models}/lcnet100_h_e_bifpn_256_fp32.onnx"
+                    "${lab_models}/mrz_detection_20250222_fp32.onnx"
+                    "${lab_models}/mrz_recognition_20250221_fp32.onnx")
     endif()
 endif()

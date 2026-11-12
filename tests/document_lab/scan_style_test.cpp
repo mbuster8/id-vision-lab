@@ -54,4 +54,60 @@ TEST(ScanStyle, BannerColoursAreTheSpecs) {
     EXPECT_EQ(document_lab::kBannerPanel, QColor(8, 10, 13, 217));
 }
 
+// A4: spec §3.5's table, pair by pair, in both appearances: each at least 4.5:1, each the table's ratio.
+TEST(ScanStyle, ReviewPairsMeetFourPointFive) {
+    using document_lab::contrastRatio;
+    const document_lab::ReviewColours light = document_lab::reviewColours(false);
+    const document_lab::ReviewColours dark = document_lab::reviewColours(true);
+    struct Pair {
+        const char* what;
+        QColor foreground;
+        QColor background;
+        double ratio;
+    };
+    const Pair pairs[] = {
+        {"light title", light.title, light.cardBackground, 5.15},
+        {"light text on the pill", light.text, light.pillBackground, 14.35},
+        {"light secondary on the pill", light.secondary, light.pillBackground, 6.64},
+        {"light discard", light.discardText, light.discardBackground, 7.10},
+        {"light warning", light.warnText, light.warnBackground, 6.80},
+        {"light link", light.link, light.cardBackground, 7.34},
+        {"light check", light.checkMark, light.checkCircle, 4.60},
+        {"dark title", dark.title, dark.cardBackground, 8.30},
+        {"dark text", dark.text, dark.cardBackground, 12.29},
+        {"dark secondary", dark.secondary, dark.cardBackground, 6.84},
+        {"dark secondary on the pill", dark.secondary, dark.pillBackground, 5.88},
+        {"dark text on the pill", dark.text, dark.pillBackground, 10.57},
+        {"dark discard on the pill", dark.discardText, dark.pillBackground, 5.58},
+        {"dark discard", dark.discardText, dark.discardBackground, 6.43},
+        {"dark warning", dark.warnText, dark.warnBackground, 8.85},
+        {"dark link", dark.link, dark.cardBackground, 7.09},
+        {"dark check", dark.checkMark, dark.checkCircle, 6.95},
+        {"primary", light.primaryText, light.primary, 4.55},
+        {"primary, dark", dark.primaryText, dark.primary, 4.55},
+        {"amber band", document_lab::kBandAmber, document_lab::over(document_lab::kBannerPanel, Qt::white),
+         7.94},
+    };
+    for (const Pair& pair : pairs) {
+        const double ratio = contrastRatio(pair.foreground, pair.background);
+        EXPECT_GE(ratio, 4.5) << pair.what;
+        EXPECT_NEAR(ratio, pair.ratio, 0.01) << pair.what;
+    }
+}
+
+TEST(ScanStyle, ReviewColoursAreTheSpecs) {
+    const document_lab::ReviewColours light = document_lab::reviewColours(false);
+    const document_lab::ReviewColours dark = document_lab::reviewColours(true);
+    EXPECT_EQ(light.title, QColor(0x1E, 0x7D, 0x45));
+    EXPECT_EQ(dark.title, QColor(0x3D, 0xDC, 0x84));
+    EXPECT_EQ(light.primary, QColor(0x2F, 0x6F, 0xED));
+    EXPECT_EQ(light.buttonBorder, QColor(0xC6, 0xCB, 0xD2));
+    EXPECT_EQ(dark.buttonBorder, QColor(0x4A, 0x50, 0x58));
+    EXPECT_EQ(light.discardBorder, QColor(0xE3, 0xB2, 0xAC));
+    EXPECT_EQ(dark.discardBorder, QColor(0x6B, 0x3A, 0x35));
+    EXPECT_EQ(document_lab::kScannedDim, QColor(8, 10, 13, 158)); // rgba(8, 10, 13, 0.62)
+    EXPECT_EQ(document_lab::kProgressFilled, QColor(0x3D, 0xDC, 0x84));
+    EXPECT_EQ(document_lab::kProgressEmpty, QColor(0x3E, 0x4A, 0x44));
+}
+
 } // namespace
