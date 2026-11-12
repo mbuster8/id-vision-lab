@@ -19,6 +19,7 @@
 #include <visual_debug/image_sender.h>
 
 #include <QDate>
+#include <QDateTime>
 #include <QList>
 #include <QMainWindow>
 #include <QSet>
@@ -98,6 +99,8 @@ struct LabDependencies {
     QString modelFolder;                      // empty: defaultModelFolder(), beside the program
     std::function<Clock::time_point()> clock; // null: steady_clock::now
     std::function<QDate()> today;             // Review's expiry warning; null: QDate::currentDate()
+    // Names recordings, captures and saves; null: QDateTime::currentDateTime().
+    std::function<QDateTime()> currentTime;
 };
 
 // The Document Lab: a camera or a replay, run through a processor on the engine's thread, the result drawn on
@@ -193,10 +196,17 @@ private:
     std::vector<visual_debug::Overlay> reviewOverlays(bool everything, CardSide side = CardSide::Back) const;
     viewer_core::ImageTags reviewTags() const; // the canvas's: the outline and the band as guides
     void saveScan();
-    void savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error);
+    // The file a save wrote for one side, or why it could not; no side for a passport or a TD2 (A4.1).
+    struct SavedSide {
+        std::optional<CardSide> side;
+        std::filesystem::path file;
+        std::string error;
+    };
+    void savedScan(std::uint64_t review, const std::vector<SavedSide>& sides);
     void sendScan();
     void updateSend(const lab_core::ViewerLink::State& link);
     doc_vision::MrzDate today() const;
+    QString timeStamp() const; // the local time, as recordings', captures' and saves' names begin
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
@@ -381,8 +391,11 @@ private:
     bool m_reviewShown = false;
     QList<int> m_sizesBeforeReview;   // the splitter's, given back on leaving Review
     std::uint64_t m_reviewNumber = 0; // a save that ends after its Review was left changes nothing
-    bool m_scanSaved = false;
-    bool m_scanSaving = false;                   // a save is being written: Enter and Save start no other
+    bool m_scanSaved = false;         // every side written
+    bool m_scanSaving = false;        // a save is being written: Enter and Save start no other
+    // A4.1 (spec §6.8): the stamp the Review's first Save took, which a retry reuses, and each side written.
+    std::optional<std::string> m_saveStamp;
+    std::array<bool, 2> m_sideSaved{};           // Back first
     std::optional<std::uint64_t> m_sendingStill; // Review's still, until the link says it ended
 
     // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop

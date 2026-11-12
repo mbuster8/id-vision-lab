@@ -3283,6 +3283,8 @@ TEST(LabWindow, SaveWritesTheMrzSection) {
     EXPECT_EQ(json["mrz"]["line 1"], kSpecimen[0]);
     EXPECT_EQ(json["mrz"]["line 2"], kSpecimen[1]);
     EXPECT_NE(json["overlays"].dump().find("MRZ band"), std::string::npos) << json["overlays"].dump();
+    EXPECT_FALSE(json.contains("card")) << "A4.1: a passport has no sides";
+    EXPECT_EQ(jsons[0].filename().string().find(" back"), std::string::npos) << jsons[0];
     for (const std::string text : {"ERIKSSON", "ANNA", "L898902C3", "ZE184226B"}) {
         EXPECT_EQ(json["findings"].dump().find(text), std::string::npos) << json["findings"].dump();
     }
@@ -4086,6 +4088,227 @@ TEST(LabWindow, CameraFailureInTurnOverKeepsTheBack) {
     EXPECT_EQ(smallLine(lab), QStringLiteral("start it again, open the front's clip, or skip the front"));
     turnOverButton(lab, "skipFrontButton")->click();
     EXPECT_TRUE(scannedShown(lab));
+}
+
+// --- A4.1: Save with two sides (spec §6.8)
+
+// A TD1 card's back accepted as the processor gives it, Screen 04's rows ending with the frame captured, then
+// `front` kept (none: the turn-over waits).
+std::function<void(LabDependencies&)> savingCard(std::shared_ptr<const lab_core::FrontShot> front,
+                                                 std::function<void(LabDependencies&)> more = {}) {
+    return [front, more](LabDependencies& dependencies) {
+        lab_core::ProcessorResult accept = acceptOf(idScanOf(kTd1Card));
+        accept.findings.push_back({"Captured", "frame 8", lab_core::Finding::Tone::Plain});
+        camerasAndDocument(scriptOf(
+            {accept, turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, front)}))(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        if (more) {
+            more(dependencies);
+        }
+    };
+}
+
+nlohmann::json captureJson(const std::filesystem::path& file) {
+    std::ifstream stream(file);
+    return nlohmann::json::parse(stream);
+}
+
+std::filesystem::path captureNamed(const Lab& lab, const std::string& part, const std::string& extension) {
+    for (const std::filesystem::path& file : capturesOf(lab, extension)) {
+        if (file.filename().string().find(part) != std::string::npos) {
+            return file;
+        }
+    }
+    return {};
+}
+
+bool findingStartsWith(const nlohmann::json& json, const std::string& start) {
+    for (const auto& finding : json["findings"]) {
+        if (finding.get<std::string>().rfind(start, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST(LabWindow, SaveWritesBothSides) {
+    Lab lab(savingCard(frontOf()));
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(capturesOf(lab, ".png").size(), 2U);
+    const std::filesystem::path backFile = captureNamed(lab, " back frame 8", ".json");
+    const std::filesystem::path frontFile = captureNamed(lab, " front frame 10", ".json");
+    ASSERT_FALSE(backFile.empty());
+    ASSERT_FALSE(frontFile.empty());
+    // The pair shares the stamp.
+    const std::string backName = backFile.filename().string();
+    const std::string frontName = frontFile.filename().string();
+    EXPECT_EQ(backName.substr(0, backName.find(" back")), frontName.substr(0, frontName.find(" front")));
+
+    const nlohmann::json back = captureJson(backFile);
+    ASSERT_TRUE(back.contains("mrz")) << back.dump();
+    EXPECT_EQ(back["mrz"]["line 3"], kTd1Card[2]);
+    EXPECT_FALSE(back["mrz"].contains("optional data check"));
+    EXPECT_EQ(back["card"]["side"], "back");
+    EXPECT_TRUE(findingStartsWith(back, "Captured")) << back["findings"].dump();
+    EXPECT_TRUE(findingStartsWith(back, "Fill: 62 %")) << back["findings"].dump();
+    EXPECT_NE(back["overlays"].dump().find("MRZ band"), std::string::npos);
+
+    const nlohmann::json front = captureJson(frontFile);
+    EXPECT_FALSE(front.contains("mrz")) << front.dump();
+    EXPECT_EQ(front["card"]["side"], "front");
+    EXPECT_FALSE(findingStartsWith(front, "Captured")) << front["findings"].dump();
+    EXPECT_TRUE(findingStartsWith(front, "Fill: 58 %")) << front["findings"].dump();
+    EXPECT_FALSE(findingStartsWith(front, "Fill: 62 %")) << front["findings"].dump();
+    const std::string overlays = front["overlays"].dump();
+    EXPECT_NE(overlays.find("Document"), std::string::npos) << overlays;
+    EXPECT_NE(overlays.find("\"4\""), std::string::npos) << overlays; // the corners
+    EXPECT_EQ(overlays.find("MRZ band"), std::string::npos) << overlays;
+
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+    EXPECT_FALSE(panelButton(lab, "saveButton")->isEnabled());
+    EXPECT_TRUE(lab.status().contains(QStringLiteral(" back frame 8.png and ")) &&
+                lab.status().contains(QStringLiteral(" front frame 10.png")))
+        << lab.status().toStdString();
+}
+
+// Review Focus 5: the disk refusing the front. Failed names it; Save again writes only it, under the same
+// stamp.
+TEST(LabWindow, SaveRetryWritesOnlyTheMissingSide) {
+    std::vector<std::string> bases;
+    bool frontFails = true;
+    QDateTime wallTime(QDate(2026, 11, 12), QTime(10, 0, 0));
+    Lab lab(savingCard(frontOf(), [&bases, &frontFails, &wallTime](LabDependencies& dependencies) {
+        dependencies.currentTime = [&wallTime] { return wallTime; };
+        dependencies.writeCapture =
+            [&bases, &frontFails](const std::filesystem::path& folder, const std::string& baseName,
+                                  const frame_io::Frame& frame, const frame_io::CaptureInfo& info,
+                                  std::string& error) -> std::filesystem::path {
+            bases.push_back(baseName);
+            if (frontFails && baseName.ends_with(" front")) {
+                error = "disk full";
+                return {};
+            }
+            return frame_io::writeCapture(folder, baseName, frame, info, error);
+        };
+    }));
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(bases.size(), 2U);
+    EXPECT_TRUE(bases[0].ends_with(" back"));
+    EXPECT_TRUE(bases[1].ends_with(" front"));
+    EXPECT_TRUE(panelButton(lab, "saveButton")->isEnabled());
+    EXPECT_EQ(reviewPanel(lab)->findChild<QLabel*>("saveFailure")->text(),
+              QStringLiteral("Could not save the front: disk full"));
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
+
+    frontFails = false;
+    wallTime = wallTime.addSecs(5); // a later second: the stamp is still the first Save's
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(bases.size(), 3U);
+    EXPECT_EQ(bases[2], "2026-11-12 10.00.00 front");
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 2U);
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+TEST(LabWindow, SaveWithBothSidesFailingNamesBoth) {
+    Lab lab(savingCard(frontOf(), [](LabDependencies& dependencies) {
+        dependencies.writeCapture = [](const std::filesystem::path&, const std::string&,
+                                       const frame_io::Frame&, const frame_io::CaptureInfo&,
+                                       std::string& error) -> std::filesystem::path {
+            error = "disk full";
+            return {};
+        };
+    }));
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "saveButton")->click();
+
+    EXPECT_EQ(reviewPanel(lab)->findChild<QLabel*>("saveFailure")->text(),
+              QStringLiteral("Could not save the back and the front: disk full"));
+}
+
+TEST(LabWindow, SaveWithTheFrontSkipped) {
+    Lab lab(savingCard(nullptr));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    turnOverButton(lab, "skipFrontButton")->click();
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+
+    panelButton(lab, "saveButton")->click();
+
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    EXPECT_NE(jsons[0].filename().string().find(" back frame 8"), std::string::npos) << jsons[0];
+    EXPECT_EQ(captureJson(jsons[0])["card"]["side"], "back");
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+// A TD2 document's save is as a passport's: no side.
+TEST(LabWindow, SaveOfATd2HasNoSide) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(idScanOf(kTd2Card))})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+
+    panelButton(lab, "saveButton")->click();
+
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    EXPECT_EQ(jsons[0].filename().string().find(" back"), std::string::npos) << jsons[0];
+    const nlohmann::json json = captureJson(jsons[0]);
+    EXPECT_FALSE(json.contains("card")) << json.dump();
+    EXPECT_TRUE(json.contains("mrz"));
+}
+
+std::string cardMrzIn(const std::string& text) {
+    for (const std::string& secret : {kTd1Card[0], kTd1Card[1], kTd1Card[2], std::string("ERIKSSON"),
+                                      std::string("ANNA"), std::string("D23145890")}) {
+        if (text.find(secret) != std::string::npos) {
+            return secret;
+        }
+    }
+    return {};
+}
+
+// Spec §6.9: A4's privacy with the TD1 specimen. The back's "mrz" section is the only place its MRZ is
+// written.
+TEST(LabWindow, PrivacyWithACard) {
+    Lab lab(savingCard(frontOf()));
+    intoTwoSidedReview(lab);
+    EXPECT_EQ(cardMrzIn(lab.status().toStdString()), "") << "Review";
+
+    panelButton(lab, "saveButton")->click();
+    EXPECT_EQ(cardMrzIn(lab.status().toStdString()), "") << "saved";
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    reviewBar(lab)->findChild<QPushButton*>("frontSideButton")->click();
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_EQ(cardMrzIn(lab.status().toStdString()), "") << "sent";
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    for (const test_support::RecordingSender::Call& call : lab.linkSender->calls()) {
+        EXPECT_EQ(cardMrzIn(call.name), "") << "the still's name";
+    }
+    const std::vector<std::filesystem::path> files = capturesOf(lab, ".json");
+    ASSERT_EQ(files.size(), 2U);
+    for (const std::filesystem::path& file : files) {
+        EXPECT_EQ(cardMrzIn(file.filename().string()), "") << "the capture's name";
+        nlohmann::json json = captureJson(file);
+        json.erase("mrz");
+        EXPECT_EQ(cardMrzIn(json.dump()), "") << json.dump();
+    }
+    for (const std::filesystem::path& file : capturesOf(lab, ".png")) {
+        EXPECT_EQ(cardMrzIn(file.filename().string()), "") << "the picture's name";
+    }
 }
 
 } // namespace

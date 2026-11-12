@@ -155,8 +155,6 @@ void markGuide(viewer_core::ImageTags& tags, const lab_core::LabResult& result) 
     tags.overlays = viewer_core::makeOverlays(std::move(overlays));
 }
 
-QString timeStamp() { return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH.mm.ss")); }
-
 const char* formatName(doc_vision::MrzFormat format) {
     switch (format) {
     case doc_vision::MrzFormat::Td1:
@@ -1791,6 +1789,8 @@ void LabWindow::showReview(bool shown) {
         ++m_reviewNumber;
         m_scanSaved = false;
         m_scanSaving = false;
+        m_saveStamp.reset();
+        m_sideSaved.fill(false);
         m_sendingStill.reset();
         m_reviewPanel->setScan(*m_scan, today());
         m_reviewPill->setText(reviewPill(lab_core::documentKind(m_scan->mrz), m_frontSkipped));
@@ -1915,38 +1915,86 @@ void LabWindow::saveScan() {
                                       tr("Could not make the Captures folder in %1.").arg(labFolder()));
         return;
     }
-    std::vector<std::string> findings;
-    for (const std::vector<lab_core::Finding>* rows :
-         std::initializer_list<const std::vector<lab_core::Finding>*>{&m_scanFindings, &m_scan->gates}) {
-        for (const lab_core::Finding& finding : *rows) {
+    // 04's rows, then the side's gate values; the front's without "Captured", which names the back's frame.
+    const auto findingsOf = [this](const std::vector<lab_core::Finding>& gates, bool captured) {
+        std::vector<std::string> findings;
+        for (const lab_core::Finding& finding : m_scanFindings) {
+            if (captured || finding.name != "Captured") {
+                findings.push_back(lab_core::toText(finding));
+            }
+        }
+        for (const lab_core::Finding& finding : gates) {
             findings.push_back(lab_core::toText(finding));
         }
+        return findings;
+    };
+    const auto cardSection = [](const char* side) {
+        return frame_io::CaptureSection{.name = "card", .values = {{"side", side}}};
+    };
+    // A4.1 (spec §6.8): a TD1 card's back and front, under one stamp per Review, each written once.
+    struct SideFile {
+        std::optional<CardSide> side;
+        std::string baseName;
+        frame_io::Frame frame; // shares the pixels, which nothing changes
+        frame_io::CaptureInfo info;
+    };
+    if (!m_saveStamp) {
+        m_saveStamp = timeStamp().toStdString();
     }
-    const frame_io::CaptureInfo info{.source = m_engine->status().source,
-                                     .findings = std::move(findings),
-                                     .overlays = reviewOverlays(true),
-                                     .sections = {mrzSection(m_scan->mrz)}};
-    const frame_io::Frame frame = m_scan->frame; // shares the pixels, which nothing changes
-    const std::string baseName = timeStamp().toStdString();
+    const std::string source = m_engine->status().source;
+    std::vector<SideFile> files;
+    if (m_scan->mrz.format != doc_vision::MrzFormat::Td1) {
+        files.push_back({.side = std::nullopt,
+                         .baseName = *m_saveStamp,
+                         .frame = m_scan->frame,
+                         .info = {.source = source,
+                                  .findings = findingsOf(m_scan->gates, true),
+                                  .overlays = reviewOverlays(true),
+                                  .sections = {mrzSection(m_scan->mrz)}}});
+    } else {
+        if (!m_sideSaved[static_cast<std::size_t>(CardSide::Back)]) {
+            files.push_back({.side = CardSide::Back,
+                             .baseName = *m_saveStamp + " back",
+                             .frame = m_scan->frame,
+                             .info = {.source = source,
+                                      .findings = findingsOf(m_scan->gates, true),
+                                      .overlays = reviewOverlays(true),
+                                      .sections = {mrzSection(m_scan->mrz), cardSection("back")}}});
+        }
+        if (m_front && !m_sideSaved[static_cast<std::size_t>(CardSide::Front)]) {
+            files.push_back({.side = CardSide::Front,
+                             .baseName = *m_saveStamp + " front",
+                             .frame = m_front->frame,
+                             .info = {.source = source,
+                                      .findings = findingsOf(m_front->gates, false),
+                                      .overlays = reviewOverlays(true, CardSide::Front),
+                                      .sections = {cardSection("front")}}});
+        }
+    }
     const std::filesystem::path path = toPath(folder);
-    auto write = [writer = m_dependencies.writeCapture, path, baseName, frame, info] {
-        return writeCaptureFile(writer, path, baseName, frame, info);
+    // One job: the back, then the front, which is tried even if the back was not written.
+    auto write = [writer = m_dependencies.writeCapture, path, files] {
+        std::vector<SavedSide> sides;
+        for (const SideFile& file : files) {
+            auto [written, error] = writeCaptureFile(writer, path, file.baseName, file.frame, file.info);
+            sides.push_back({.side = file.side, .file = std::move(written), .error = std::move(error)});
+        }
+        return sides;
     };
     m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Busy);
     m_scanSaving = true;
     const std::uint64_t review = m_reviewNumber;
     if (m_dependencies.immediateCapture) {
-        const auto [written, error] = write();
-        savedScan(review, written, error);
+        savedScan(review, write());
         return;
     }
     std::function<void()> job = [write, review, window = QPointer<LabWindow>(this)] {
-        auto [written, error] = write();
+        std::vector<SavedSide> sides = write();
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
-            [window, review, written, error] {
+            [window, review, sides = std::move(sides)] {
                 if (window) {
-                    window->savedScan(review, written, error);
+                    window->savedScan(review, sides);
                 }
             },
             Qt::QueuedConnection);
@@ -1958,18 +2006,44 @@ void LabWindow::saveScan() {
     }
 }
 
-void LabWindow::savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error) {
-    m_message = file.empty() ? tr("Could not save the scan: %1").arg(QString::fromStdString(error))
-                             : tr("saved %1").arg(fromPath(file));
+void LabWindow::savedScan(std::uint64_t review, const std::vector<SavedSide>& sides) {
+    QStringList written;
+    QStringList notWritten; // a TD1 card's sides, in words
+    QString error;          // the first side's that was not written
+    bool failed = false;
+    for (const SavedSide& side : sides) {
+        if (!side.file.empty()) {
+            written.push_back(fromPath(side.file));
+            continue;
+        }
+        failed = true;
+        if (side.side) {
+            notWritten.push_back(*side.side == CardSide::Back ? tr("the back") : tr("the front"));
+        }
+        if (error.isEmpty()) {
+            error = QString::fromStdString(side.error);
+        }
+    }
+    // Spec §6.8: a failure names every side not written ("Could not save the back and the front: …").
+    const QString panelFailure = notWritten.isEmpty()
+                                     ? tr("Could not save: %1").arg(error)
+                                     : tr("Could not save %1: %2").arg(notWritten.join(tr(" and ")), error);
+    const QString statusFailure =
+        notWritten.isEmpty() ? tr("Could not save the scan: %1").arg(error) : panelFailure;
+    m_message = written.isEmpty() ? QString() : tr("saved %1").arg(written.join(tr(" and ")));
+    if (failed) {
+        m_message = m_message.isEmpty() ? statusFailure : tr("%1. %2").arg(m_message, statusFailure);
+    }
     if (review == m_reviewNumber && m_reviewShown) {
         m_scanSaving = false;
-        m_scanSaved = !file.empty();
-        if (m_scanSaved) {
-            m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Done);
-        } else {
-            m_reviewPanel->setSaveOutcome(ReviewPanel::Outcome::Failed,
-                                          tr("Could not save: %1").arg(QString::fromStdString(error)));
+        for (const SavedSide& side : sides) {
+            if (side.side && !side.file.empty()) {
+                m_sideSaved[static_cast<std::size_t>(*side.side)] = true;
+            }
         }
+        m_scanSaved = !failed; // a retry writes only the sides not written before
+        m_reviewPanel->setSaveOutcome(failed ? ReviewPanel::Outcome::Failed : ReviewPanel::Outcome::Done,
+                                      failed ? panelFailure : QString());
     }
     refreshStatus();
 }
@@ -2022,6 +2096,12 @@ void LabWindow::updateSend(const lab_core::ViewerLink::State& link) {
                                                : QString::fromStdString(link.lastStillReason);
     }
     applySendOutcome();
+}
+
+QString LabWindow::timeStamp() const {
+    const QDateTime at =
+        m_dependencies.currentTime ? m_dependencies.currentTime() : QDateTime::currentDateTime();
+    return at.toString(QStringLiteral("yyyy-MM-dd HH.mm.ss"));
 }
 
 doc_vision::MrzDate LabWindow::today() const {
