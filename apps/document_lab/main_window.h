@@ -6,6 +6,7 @@
 #include "lab_settings.h"
 #include "live_converter.h"
 #include "scan_banner.h"
+#include "scan_flow.h"
 #include "scan_words.h"
 
 #include <frame_io/recording.h>
@@ -42,6 +43,8 @@ class QTimer;
 class QTreeWidget;
 
 namespace document_lab {
+
+class ScannedCard;
 
 using Clock = std::chrono::steady_clock;
 
@@ -136,6 +139,18 @@ private:
     bool oneFrameSource() const;
     // The status line's "State:" word for the drawn guidance.
     QString scanStateWord(const lab_core::Guidance* guidance) const;
+
+    // A4's scan (spec §3.1): Scanned or Review shows the kept scan, and the camera or the replay is paused.
+    bool scanShowing() const;
+    void accept(std::shared_ptr<const lab_core::MrzScan> scan);
+    void applyScanEvent(ScanEvent event); // the user's: Skip the chip, Scan again, Discard, Scan another
+    void resumeScanning();                // frames come again, to a processor that has forgotten the scan
+    // Stop, another camera, format, source or processor end the scan as Discard does; `runContinues` plays a
+    // replay the accept paused.
+    void dropScan(bool runContinues);
+    void showScanState();
+    // Stops the run; `keepScan` (a camera failure while a scan shows) keeps the scan, its picture and rows.
+    void endRun(bool keepScan);
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
@@ -240,6 +255,7 @@ private:
     QLabel* m_placeholder = nullptr;
     ScanBanner* m_banner = nullptr;
     GateChips* m_chips = nullptr;
+    ScannedCard* m_scannedCard = nullptr;
     QSplitter* m_splitter = nullptr;
     QTreeWidget* m_results = nullptr;
     QAction* m_resultsAction = nullptr;
@@ -283,6 +299,16 @@ private:
     CanvasCounts m_canvasCounts;
     std::deque<Clock::time_point> m_taken; // results taken in the last second
     std::deque<Clock::time_point> m_drawn; // pictures drawn in the last second
+
+    // A4's scan.
+    ScanState m_scanState = ScanState::Guiding;
+    std::shared_ptr<const lab_core::MrzScan> m_scan; // while Scanned or Review shows
+    // The scan accepted last in this run: results still carrying it (in flight, or before the processor's
+    // reset) never bring it back.
+    std::shared_ptr<const lab_core::MrzScan> m_handledScan;
+    bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
+    bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
+    bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
 
     // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop
     // before anything they call back into goes.

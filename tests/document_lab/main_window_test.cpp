@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "model_folder.h"
 #include "scan_banner.h"
+#include "scanned_card.h"
 
 #include "card_frame.h"
 #include "fake_camera_backend.h"
@@ -32,6 +33,7 @@
 #include <QWheelEvent>
 
 #include <doc_vision/guidance.h>
+#include <doc_vision/mrz.h>
 #include <doc_vision/quality_gates.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -1809,6 +1811,7 @@ struct GuidanceScript {
     std::vector<lab_core::ProcessorResult> results;
     std::size_t next = 0;
     int made = 0;
+    int resets = 0;
 };
 
 class ScriptedDocumentProcessor : public lab_core::FrameProcessor {
@@ -1822,7 +1825,7 @@ public:
         }
         return script.results[std::min(script.next++, script.results.size() - 1)];
     }
-    void reset() override {}
+    void reset() override { ++m_script->resets; }
 
 private:
     std::shared_ptr<GuidanceScript> m_script;
@@ -2665,6 +2668,366 @@ TEST(LabWindow, OneFrameSourceSaysReadingNeedsMotion) {
     EXPECT_EQ(smallLine(lab), QStringLiteral("MRZ reading needs a camera or a video"));
     EXPECT_EQ(banner(lab)->progress(), std::nullopt);
     EXPECT_TRUE(lab.status().contains(QStringLiteral("State: good"))) << lab.status().toStdString();
+}
+
+// --- A4: Scanned
+// ------------------------------------------------------------------------------------------------
+
+// ICAO 9303's specimen.
+const std::vector<std::string> kSpecimen{"P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<",
+                                         "L898902C36UTO7408122F1204159ZE184226B<<<<<10"};
+
+// An accepted scan whose frame is 400 × 300, unlike the replays' 640 × 480, so the canvas shows which it
+// draws.
+std::shared_ptr<const lab_core::MrzScan> scanOf(int frameNumber = 7) {
+    auto scan = std::make_shared<lab_core::MrzScan>();
+    scan->frame = test_support::listFrame(static_cast<std::uint64_t>(frameNumber), 0ms,
+                                          cv::Mat(300, 400, CV_8UC3, cv::Scalar(40, 90, 160)));
+    scan->quad = {{{40, 30}, {360, 30}, {360, 270}, {40, 270}}};
+    scan->band = {{{50, 220}, {350, 220}, {350, 260}, {50, 260}}};
+    scan->gates = {{"Fill", "62 %", lab_core::Finding::Tone::Good},
+                   {"Sharpness", "412 (min 200)", lab_core::Finding::Tone::Good}};
+    const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(kSpecimen);
+    if (mrz) {
+        scan->mrz = *mrz;
+    }
+    scan->timeToScan = 1900ms;
+    scan->reads = 4;
+    return scan;
+}
+
+// The processor's result on the accept and after it: the scan with 04's rows.
+lab_core::ProcessorResult acceptOf(std::shared_ptr<const lab_core::MrzScan> scan, Hint shown = Hint::Good) {
+    lab_core::ProcessorResult result = guided({.shown = shown, .scan = std::move(scan)});
+    result.findings = {{"MRZ", "accepted, 3 of 3", lab_core::Finding::Tone::Good},
+                       {"Format", "TD3 passport", lab_core::Finding::Tone::Plain}};
+    return result;
+}
+
+document_lab::ScannedCard* scannedCard(const Lab& lab) {
+    return lab.window->findChild<document_lab::ScannedCard*>();
+}
+
+bool scannedShown(const Lab& lab) {
+    const document_lab::ScannedCard* card = scannedCard(lab);
+    return card != nullptr && card->isVisibleTo(lab.window.get());
+}
+
+QPushButton* cardButton(const Lab& lab, const char* name) {
+    return scannedCard(lab) != nullptr ? scannedCard(lab)->findChild<QPushButton*>(name) : nullptr;
+}
+
+TEST(LabWindow, AcceptShowsTheScannedCard) {
+    const auto scan = scanOf();
+    Lab lab(documentIs(scriptOf({guided({.shown = Hint::Good, .agreeing = 2}), acceptOf(scan)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_FALSE(scannedShown(lab));
+
+    lab.pump();
+
+    ASSERT_TRUE(scannedShown(lab));
+    EXPECT_EQ(scannedCard(lab)->findChild<QLabel*>("scannedTitle")->text(),
+              QStringLiteral("Passport scanned"));
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300)); // the scan's frame
+    EXPECT_TRUE(banner(lab)->isHidden());
+    EXPECT_TRUE(chips(lab)->isHidden());
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("MRZ: accepted, 3 of 3")))
+        << lab.results().join('|').toStdString();
+}
+
+// The engine keeps only the newest result: an accept replaced in its slot still scans, because every result
+// after it carries the scan too.
+TEST(LabWindow, AcceptReplacedInTheSlotStillScans) {
+    const auto scan = scanOf();
+    Lab lab(documentIs(scriptOf({acceptOf(scan), acceptOf(scan, Hint::Blurred)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+
+    lab.window->pumpEngineForTests();
+    lab.window->pumpEngineForTests();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+// Spec §3.1: reads are gated per frame, not by the steadied banner: an accept may come under any hint.
+TEST(LabWindow, AcceptWhileBlurredShows) {
+    Lab lab(documentIs(scriptOf({acceptOf(scanOf(), Hint::Blurred)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+
+    lab.pump();
+
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+TEST(LabWindow, CameraIsPausedWhileScanned) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab(camerasAndDocument(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+    const int stops = lab.backend->stops;
+
+    cameraFrames(lab, 3);
+
+    EXPECT_EQ(script->next, processed); // the engine was offered none
+    EXPECT_TRUE(lab.backend->running);  // the session stays open: Scan again is instant
+    EXPECT_EQ(lab.backend->stops, stops);
+}
+
+TEST(LabWindow, ReplayPausesOnTheAccept) {
+    const auto script = scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 6));
+    lab.pump(2);
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+
+    lab.pump(3);
+
+    EXPECT_EQ(script->next, processed);
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused · State: scanned, waiting for the chip")))
+        << lab.status().toStdString();
+}
+
+// Scan again plays a replay only if the window paused it playing: a user's pause stays.
+TEST(LabWindow, ScanAgainResumesOnlyAPlayingReplay) {
+    const auto script = scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    button(lab, "stepButton")->click();
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+
+    cardButton(lab, "scanAgainButton")->click();
+    lab.pump(3);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_EQ(script->next, processed);
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, EnterSkipsTheChipEscScansAgain) {
+    const auto first = scanOf(7);
+    const auto second = scanOf(9);
+    const auto script =
+        scriptOf({acceptOf(first), acceptOf(first), guided({.shown = Hint::Good}), acceptOf(second)});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 10));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    const int resets = script->resets;
+    const std::size_t processed = script->next;
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    lab.pump();
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_GT(script->resets, resets);     // the engine reset the processor
+    EXPECT_GT(script->next, processed);    // frames come again
+    EXPECT_FALSE(banner(lab)->isHidden()); // the banner is back
+    lab.pump(2);                           // the old scan once more, then Good, then the new scan
+    ASSERT_TRUE(scannedShown(lab));
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: review"))) << lab.status().toStdString();
+}
+
+TEST(LabWindow, EnterInTheEndpointFieldDoesNotSkip) {
+    Lab lab(documentIs(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    auto* endpoint = lab.window->findChild<QLineEdit*>("endpointEdit");
+    endpoint->setFocus();
+
+    QTest::keyClick(endpoint, Qt::Key_Return);
+    QTest::keyClick(endpoint, Qt::Key_Escape);
+
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+// A result still carrying the scan just left (it was in flight, or the processor had not reset yet) does not
+// bring it back.
+TEST(LabWindow, HandledScanDoesNotComeBack) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 6));
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    lab.pump(3);
+
+    EXPECT_FALSE(scannedShown(lab));
+}
+
+TEST(LabWindow, ControlsDisabledWhileScanned) {
+    const auto script = scriptOf({guided({.shown = Hint::Good}), acceptOf(scanOf())});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    pausedReplay(lab, 10, nullptr);
+    button(lab, "stepButton")->click();
+    lab.pump();
+    ASSERT_TRUE(scannedShown(lab));
+    const std::size_t processed = script->next;
+
+    lab.pump(); // refreshStatus would enable them again
+    for (const char* name :
+         {"playPauseButton", "stepButton", "stepBackButton", "restartButton", "loopCheck", "asFastCheck",
+          "back10Button", "forward10Button", "captureButton", "sendFrameButton"}) {
+        EXPECT_FALSE(button(lab, name)->isEnabled()) << name;
+    }
+    EXPECT_FALSE(slider(lab)->isEnabled());
+    EXPECT_TRUE(startStop(lab)->isEnabled()); // Stop ends the scan
+    EXPECT_TRUE(button(lab, "streamButton")->isEnabled());
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Space);
+    QTest::keyClick(lab.canvas(), Qt::Key_Right);
+    lab.pump(2);
+
+    EXPECT_EQ(script->next, processed); // neither played nor stepped
+    EXPECT_TRUE(lab.status().startsWith(QStringLiteral("Paused"))) << lab.status().toStdString();
+}
+
+// Spec §3.1: results that arrive while Scanned shows (a frame offered before the pause) change nothing on
+// screen.
+TEST(LabWindow, ResultsWhileScannedChangeNothing) {
+    const auto scan = scanOf();
+    lab_core::ProcessorResult later = acceptOf(scan, Hint::Blurred);
+    later.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
+    const auto script = scriptOf({acceptOf(scan), later});
+    Lab lab(camerasAndDocument(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    lab.advance(33ms);
+    lab.backend->deliver(cameraFrame(120));
+    lab.window->pumpEngineForTests(); // the accept waits to be taken
+    lab.advance(33ms);
+    lab.backend->deliver(cameraFrame(120)); // offered before the window knows
+    QApplication::processEvents();          // the accept: Scanned
+    ASSERT_TRUE(scannedShown(lab));
+    const QStringList results = lab.results();
+
+    lab.pump(); // the second frame's result
+
+    EXPECT_EQ(script->next, 2U);
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_TRUE(banner(lab)->isHidden());
+    EXPECT_EQ(lab.results(), results);
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300));
+}
+
+TEST(LabWindow, StopDiscardsTheScan) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    startStop(lab)->click();
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_FALSE(lab.canvas()->hasImage());
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("scanned"))) << lab.status().toStdString();
+}
+
+// Another processor ends the scan, and the camera's frames come again.
+TEST(LabWindow, AnotherProcessorEndsTheScan) {
+    const auto script = scriptOf({acceptOf(scanOf())});
+    Lab lab(camerasAndDocument(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    const std::uint64_t before = lab.window->canvasCountsForTests().received;
+    cameraFrames(lab, 2);
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_GT(lab.window->canvasCountsForTests().received, before);
+}
+
+TEST(LabWindow, CameraFailureKeepsTheScan) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    lab.backend->fail(QStringLiteral("unplugged"));
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_TRUE(lab.canvas()->hasImage());
+    EXPECT_EQ(lab.canvas()->visibleArea(), QRect(0, 0, 400, 300));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("unplugged"))) << lab.status().toStdString();
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: scanned, waiting for the chip")))
+        << lab.status().toStdString();
+}
+
+TEST(LabWindow, ScanAgainAfterACameraFailureSaysTheCameraStopped) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    lab.backend->fail(QStringLiteral("unplugged"));
+    const std::size_t starts = lab.backend->starts.size();
+
+    cardButton(lab, "scanAgainButton")->click();
+    EXPECT_EQ(lab.backend->starts.size(), starts + 1); // the camera starts again
+    lab.backend->fail(QStringLiteral("still unplugged"));
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("The camera stopped"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("still unplugged"));
+}
+
+TEST(LabWindow, StatusSaysCameraPaused) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(scanOf())})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+
+    cameraFrames(lab, 1);
+
+    EXPECT_TRUE(
+        lab.status().startsWith(QStringLiteral("Camera paused · State: scanned, waiting for the chip")))
+        << lab.status().toStdString();
+}
+
+// Spec §3.1: nothing is saved unless chosen, so closing with a scan does not ask.
+TEST(LabWindow, CloseWithAScanDoesNotAsk) {
+    int asked = 0;
+    Lab lab([&asked](LabDependencies& dependencies) {
+        camerasAndDocument(scriptOf({acceptOf(scanOf())}))(dependencies);
+        dependencies.confirm = [&asked](const QString&) {
+            ++asked;
+            return true;
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+
+    lab.window->close();
+    QApplication::processEvents();
+
+    EXPECT_EQ(asked, 0);
+    EXPECT_FALSE(lab.window->isVisible());
 }
 
 } // namespace

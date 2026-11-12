@@ -10,6 +10,7 @@
 #include "outline_icons.h"
 #include "private_files.h"
 #include "scan_style.h"
+#include "scanned_card.h"
 #include "shades.h"
 
 #include <doc_vision/guidance.h>
@@ -527,6 +528,14 @@ void LabWindow::buildUi() {
     canvasLayout->addWidget(m_chips, 0, 0, Qt::AlignBottom | Qt::AlignHCenter);
     m_banner->raise();
     m_chips->raise();
+    // A4's Scanned: the card over the dimmed scan, above everything else in the cell.
+    m_scannedCard = new ScannedCard(canvasArea);
+    m_scannedCard->setObjectName(QStringLiteral("scannedCard"));
+    canvasLayout->addWidget(m_scannedCard, 0, 0);
+    m_scannedCard->hide();
+    m_scannedCard->raise();
+    connect(m_scannedCard, &ScannedCard::skipChip, this, [this] { applyScanEvent(ScanEvent::SkipChip); });
+    connect(m_scannedCard, &ScannedCard::scanAgain, this, [this] { applyScanEvent(ScanEvent::ScanAgain); });
     // Findings as rows of a name and a value; the panel keeps its width as the window grows, the canvas takes
     // the rest.
     m_results = new QTreeWidget(splitter);
@@ -659,6 +668,11 @@ void LabWindow::beginRun() {
 }
 
 void LabWindow::stop() {
+    dropScan(false);
+    endRun(false);
+}
+
+void LabWindow::endRun(bool keepScan) {
     if (!m_running) {
         return;
     }
@@ -669,6 +683,7 @@ void LabWindow::stop() {
         m_session = 0;
         m_dependencies.cameras->stop();
     }
+    m_cameraPaused = false;
     m_engine->stop(); // the recording ends with the run
     if (m_record->isChecked()) {
         const QSignalBlocker blocker(m_record);
@@ -678,10 +693,15 @@ void LabWindow::stop() {
     m_current.reset();
     m_previous.reset();
     m_onScreen.reset();
-    m_canvas->clear();
-    m_placeholder->hide();
-    m_results->clear();
     m_fitNext = true;
+    if (keepScan) {
+        display(ImageView::KeepView::IfSameSize); // a picture of it still converting was dropped
+    } else {
+        m_handledScan.reset(); // a new run's processor starts afresh
+        m_canvas->clear();
+        m_placeholder->hide();
+        m_results->clear();
+    }
     updateStartStop();
     updateScan();
     refreshStatus();
@@ -753,6 +773,8 @@ void LabWindow::chooseCamera(int index) {
     fillFormats();
     if (m_cameraRunning) {
         restartCamera();
+    } else {
+        dropScan(false); // a scan kept after its camera failed ends too (spec §3.1)
     }
 }
 
@@ -764,6 +786,8 @@ void LabWindow::chooseFormat(int index) {
     m_settings.setFormatFor(camera->id, m_formatCombo->itemText(index));
     if (m_cameraRunning) {
         restartCamera();
+    } else {
+        dropScan(false);
     }
 }
 
@@ -835,6 +859,9 @@ void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
     if (!m_cameraRunning || session != m_session) {
         return; // a frame of a camera or session that is over
     }
+    if (m_cameraPaused) {
+        return; // a scan shows (spec §3.1, D3): the session stays open, its frames go nowhere
+    }
     // From the run's first frame, as a replay's times are.
     const Clock::time_point arrived = now();
     if (!m_firstFrameAt) {
@@ -849,7 +876,7 @@ void LabWindow::cameraFrame(const QVideoFrame& frame, quint64 session) {
 // A click on the canvas focuses there while a camera runs and the Frame shows: the canvas's image pixels are
 // then the frame's, which the engine's focusAt takes as shares.
 void LabWindow::canvasClicked(QPointF imagePoint) {
-    if (!m_cameraRunning) {
+    if (!m_cameraRunning || scanShowing()) {
         return;
     }
     if (currentShow() != kFrameEntry.toStdString()) {
@@ -861,7 +888,7 @@ void LabWindow::canvasClicked(QPointF imagePoint) {
 }
 
 void LabWindow::focusOnTheCentre() {
-    if (!m_cameraRunning) {
+    if (!m_cameraRunning || scanShowing()) {
         return;
     }
     if (currentShow() != kFrameEntry.toStdString()) {
@@ -892,7 +919,11 @@ void LabWindow::cameraFailed(const QString& reason) {
     if (!m_cameraRunning) {
         return;
     }
-    stop();
+    // Spec §3.1: the card and Review work without a camera, so a scan showing stays; going on starts it
+    // again.
+    const bool keepScan = scanShowing();
+    endRun(keepScan);
+    m_cameraLost = keepScan;
     m_message = reason;
     m_windowState = WindowState::CameraStopped;
     m_windowStateDetail = reason;
@@ -933,6 +964,11 @@ void LabWindow::takeResult() {
         return;
     }
     m_taken.push_back(now());
+    // Spec §3.1: results that come while Scanned or Review shows (offered before the pause) are taken, so the
+    // engine's slot keeps moving, but change nothing on screen.
+    if (scanShowing()) {
+        return;
+    }
     m_previous = std::move(m_current);
     m_previousSequence = m_resultSequence;
     m_current = std::move(*result);
@@ -943,6 +979,13 @@ void LabWindow::takeResult() {
         if (!focus->note.empty()) {
             noteFocus(QString::fromStdString(focus->note));
         }
+    }
+    // An accept, under whatever hint shows (spec §3.1): every result from it on carries the scan, so one
+    // replaced in the engine's slot is not missed; the one handled last never comes back.
+    if (const std::optional<lab_core::Guidance>& guidance = m_current->processed.guidance;
+        documentChosen() && m_resultSequence >= m_scanFrom && guidance && guidance->scan &&
+        guidance->scan != m_handledScan) {
+        accept(guidance->scan);
     }
     updateShowEntries(*m_current);
     showResults(*m_current);
@@ -1022,24 +1065,38 @@ const cv::Mat* LabWindow::shownImage(visual_debug::ImageDescription& description
 
 // Converted on the converter's thread at the size it will be drawn, as the viewer draws a live frame.
 void LabWindow::display(ImageView::KeepView keep) {
-    if (!m_current) {
-        return;
-    }
-    visual_debug::ImageDescription description;
-    const cv::Mat* image = shownImage(description);
-    if (image == nullptr || image->empty()) {
-        if (!m_placeholder->isVisible()) {
-            viewChanged(); // nothing of the entry's earlier frames is drawn meanwhile
+    const cv::Mat* image = nullptr;
+    viewer_core::ImageTags tags;
+    if (scanShowing()) {
+        // The scan's frame, whatever the newest result holds (spec §3.1); Scanned draws nothing over it.
+        if (!m_scan) {
+            return;
         }
-        m_placeholder->setText(tr("%1 is not in this frame").arg(QString::fromStdString(currentShow())));
-        m_placeholder->show();
+        image = &m_scan->frame.image;
+        tags = toImageTags(visual_debug::ImageDescription{});
+    } else {
+        if (!m_current) {
+            return;
+        }
+        visual_debug::ImageDescription description;
+        image = shownImage(description);
+        if (image == nullptr || image->empty()) {
+            if (!m_placeholder->isVisible()) {
+                viewChanged(); // nothing of the entry's earlier frames is drawn meanwhile
+            }
+            m_placeholder->setText(tr("%1 is not in this frame").arg(QString::fromStdString(currentShow())));
+            m_placeholder->show();
+            return;
+        }
+        tags = toImageTags(description);
+        if (currentShow() == kFrameEntry.toStdString()) {
+            markGuide(tags, *m_current);
+        }
+    }
+    if (image->empty()) {
         return;
     }
     m_placeholder->hide();
-    viewer_core::ImageTags tags = toImageTags(description);
-    if (currentShow() == kFrameEntry.toStdString()) {
-        markGuide(tags, *m_current);
-    }
     // While a fit converts, the zoom on screen is about to go: a picture cut for it would show only that part
     // of the fitted view.
     if (m_fitPending) {
@@ -1105,7 +1162,8 @@ void LabWindow::redrawForView() {
         return;
     }
     visual_debug::ImageDescription description;
-    const cv::Mat* image = shownImage(description);
+    const cv::Mat* image =
+        scanShowing() ? (m_scan ? &m_scan->frame.image : nullptr) : shownImage(description);
     if (image == nullptr || image->empty()) {
         return;
     }
@@ -1128,9 +1186,13 @@ void LabWindow::refreshStatus() {
             times->pop_front();
         }
     }
-    QStringList parts{stateText(status.state)};
+    // A camera paused for a scan says so; a replay's own word is the engine's, "Paused" (spec §3.1).
+    QStringList parts{scanShowing() && m_cameraRunning ? tr("Camera paused") : stateText(status.state)};
     // The news next, before the source and the counters: a window narrower than the whole line cuts its end.
-    if (documentChosen() && m_running) {
+    if (documentChosen() && scanShowing()) {
+        parts << (m_scanState == ScanState::Scanned ? tr("State: scanned, waiting for the chip")
+                                                    : tr("State: review"));
+    } else if (documentChosen() && m_running) {
         const lab_core::Guidance* guidance = drawnGuidance();
         if (guidance == nullptr || guidance->unavailable == lab_core::Guidance::Unavailable::None) {
             parts << tr("State: %1").arg(scanStateWord(guidance));
@@ -1222,6 +1284,7 @@ void LabWindow::chooseProcessor(int index) {
     if (index < 0) {
         return;
     }
+    dropScan(true); // another processor ends a scan as Discard does; the run goes on (spec §3.1)
     const auto kind = static_cast<lab_core::ProcessorKind>(m_processorCombo->itemData(index).toInt());
     m_settings.setProcessor(qtString(lab_core::nameOf(kind)));
     m_engine->setProcessor(m_dependencies.makeProcessor(kind));
@@ -1268,6 +1331,12 @@ void LabWindow::updateScan() {
         return;
     }
     m_canvas->setEmptyText(QString()); // the banner is the one message
+    if (scanShowing()) {               // the card or Review says what there is to say
+        m_banner->setContent(std::nullopt);
+        m_banner->setProgress(std::nullopt);
+        m_chips->setStates({});
+        return;
+    }
     std::optional<BannerContent> content;
     std::optional<int> progress;
     doc_vision::ChipStates chips{};
@@ -1318,6 +1387,94 @@ void LabWindow::updateScan() {
 }
 
 bool LabWindow::oneFrameSource() const { return m_engine->status().frameCount == std::uint64_t{1}; }
+
+// --- A4: the scan
+// ------------------------------------------------------------------------------------------------
+
+bool LabWindow::scanShowing() const { return m_scanState != ScanState::Guiding; }
+
+// The accept pauses what feeds the engine and shows the card over the scan's frame (spec §3.1, D3): a
+// camera's frames stop being handed over, its session open; a playing replay pauses.
+void LabWindow::accept(std::shared_ptr<const lab_core::MrzScan> scan) {
+    const std::optional<ScanStep> step = next(m_scanState, ScanEvent::Accepted);
+    if (!step) {
+        return;
+    }
+    m_handledScan = scan;
+    m_scan = std::move(scan);
+    m_scanState = step->to;
+    if (m_cameraRunning) {
+        m_cameraPaused = true;
+    } else {
+        m_replayWasPlaying = m_engine->status().state == lab_core::EngineState::Playing;
+        if (m_replayWasPlaying) {
+            m_engine->pause();
+        }
+    }
+    showScanState();
+}
+
+void LabWindow::applyScanEvent(ScanEvent event) {
+    const std::optional<ScanStep> step = next(m_scanState, event);
+    if (!step) {
+        return;
+    }
+    m_scanState = step->to;
+    if (!step->keepScan) {
+        m_scan.reset();
+    }
+    if (step->resume) {
+        resumeScanning();
+    }
+    showScanState();
+}
+
+void LabWindow::resumeScanning() {
+    if (m_cameraLost) {
+        m_cameraLost = false;
+        m_canvas->clear();
+        m_results->clear();
+        startCamera(); // fails as A3.1's window state says: "The camera stopped"
+        return;
+    }
+    m_engine->resetProcessor();
+    // The guidance on screen is of the scan's frames: the banner waits for a new result's.
+    m_scanFrom = m_resultSequence + 1;
+    m_cameraPaused = false;
+    if (m_replayWasPlaying) {
+        m_engine->play(); // only a replay the accept paused playing; a user's pause, or its end, stays
+    }
+    m_replayWasPlaying = false;
+}
+
+void LabWindow::dropScan(bool runContinues) {
+    if (!scanShowing()) {
+        return;
+    }
+    m_scanState = ScanState::Guiding;
+    m_scan.reset();
+    m_cameraPaused = false;
+    if (runContinues && m_replayWasPlaying) {
+        m_engine->play();
+    }
+    m_replayWasPlaying = false;
+    m_scannedCard->hide();
+    if (m_cameraLost || !m_running) { // its camera failed: nothing runs to draw over it
+        m_cameraLost = false;
+        m_canvas->clear();
+        m_results->clear();
+    }
+    updateScan();
+    refreshStatus();
+}
+
+void LabWindow::showScanState() {
+    m_scannedCard->setVisible(m_scanState == ScanState::Scanned);
+    viewChanged();
+    display(ImageView::KeepView::IfSameSize);
+    updateScan();
+    refreshStatus();
+}
 
 QString LabWindow::scanStateWord(const lab_core::Guidance* guidance) const {
     if (guidance == nullptr) {
@@ -1464,8 +1621,11 @@ void LabWindow::updatePosition(const lab_core::EngineStatus& status) {
     m_position->setText(formatPosition(at, length));
 }
 
+// While a scan shows, nothing moves the replay or focuses the camera, and Capture gives way to Review's Save
+// (spec §3.1); this runs with every refresh, so nothing else may enable them meanwhile.
 void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
-    const bool replay = m_running && !m_cameraRunning;
+    const bool scan = scanShowing();
+    const bool replay = m_running && !m_cameraRunning && !scan;
     const bool jumps = replay && status.canSeek && status.frameRate.has_value();
     m_back10->setEnabled(jumps);
     m_forward10->setEnabled(jumps);
@@ -1486,8 +1646,12 @@ void LabWindow::updateReplayControls(const lab_core::EngineStatus& status) {
     m_stepBack->setEnabled(replay && status.canStepBack);
     m_stepBackAction->setEnabled(replay && status.canStepBack);
     m_restart->setEnabled(replay);
+    m_loop->setEnabled(!scan);
+    m_asFast->setEnabled(!scan);
+    m_slider->setEnabled(!scan);
+    m_focusAction->setEnabled(m_cameraRunning && !scan);
     m_record->setEnabled(m_running || m_record->isChecked());
-    m_capture->setEnabled(m_onScreen.has_value());
+    m_capture->setEnabled(m_onScreen.has_value() && !scan);
 }
 
 // --- Recording and capture
@@ -1663,6 +1827,25 @@ void LabWindow::changeEvent(QEvent* event) {
 // Space plays and pauses unless a button has the focus, which Space then presses. In the address field too:
 // an address never holds a space.
 bool LabWindow::eventFilter(QObject* watched, QEvent* event) {
+    // A4's keys while a scan shows (spec §3.4's table): in Scanned, Enter skips the chip and Esc scans again.
+    // Not while a text field has the focus (its Enter finishes its editing; a key it ignores reaches its
+    // parents here too), nor while a list's popup is open.
+    if (event->type() == QEvent::KeyPress && scanShowing()) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const auto* widget = qobject_cast<QWidget*>(watched);
+        const bool enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
+        const bool escape = key->key() == Qt::Key_Escape;
+        const bool plain = (key->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier;
+        if ((enter || escape) && plain && widget != nullptr && widget->window() == this &&
+            qobject_cast<QLineEdit*>(focusWidget()) == nullptr &&
+            QApplication::activePopupWidget() == nullptr) {
+            if (const std::optional<ScanEvent> scanEvent =
+                    eventFor(m_scanState, enter ? ScanKey::Enter : ScanKey::Escape)) {
+                applyScanEvent(*scanEvent);
+                return true;
+            }
+        }
+    }
     if (event->type() == QEvent::KeyPress && watched == m_endpoint) {
         const auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
@@ -1879,7 +2062,7 @@ void LabWindow::updateViewerRow(const lab_core::EngineStatus& status) {
     m_streamButton->setEnabled(!m_closing && hasAddress && m_stream != Stream::On && !status.endingChannels);
     m_pauseStream->setEnabled(m_stream == Stream::On);
     m_stopStream->setEnabled(m_stream != Stream::Off);
-    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value());
+    m_sendFrame->setEnabled(!m_closing && hasAddress && m_onScreen.has_value() && !scanShowing());
 }
 
 } // namespace document_lab
