@@ -72,6 +72,7 @@ public:
     bool numbered = false;        // each frame's sharpness 1000 + its number
     bool sharpFlicker = false;    // the next frame alone passes Sharp, as a noisy one may
     std::uint64_t offerAhead = 1; // nextOffer answers this frame's number plus this: 2 when one frame waits
+    bool offerThrows = false;     // nextOffer throws, as a full memory might part-way through a step
     std::uint64_t number = 0;
     std::chrono::nanoseconds at{};
     int searches = 0; // transitions into Searching
@@ -201,7 +202,12 @@ public:
     }
 
 private:
-    std::uint64_t nextOffer() const { return number + offerAhead; }
+    std::uint64_t nextOffer() const {
+        if (offerThrows) {
+            throw std::bad_alloc();
+        }
+        return number + offerAhead;
+    }
     std::optional<int> m_startPosition;
     bool m_sharpPassing = true;
 };
@@ -629,6 +635,29 @@ TEST(FocusController, AFailingCallGivesUp) {
     run.frame();
     EXPECT_FALSE(run.last.controllable);
     EXPECT_EQ(run.last.note, "the camera's focus could not be set");
+    EXPECT_EQ(run.log->count("auto on"), 1);
+    const std::size_t calls = run.log->calls.size();
+    run.framesFor(5s);
+    EXPECT_EQ(run.log->calls.size(), calls);
+}
+
+// A3.3's F5: a throw part-way through a step (memory exhausted) gives up as a failing call does, rather than
+// leave a search half-begun with the camera's autofocus off: the camera's focus is put back, the state says
+// so, and the lab leaves the focus alone for the rest of the run.
+TEST(FocusController, ThrowPartWayGivesUp) {
+    CameraRun run;
+    run.framesFor(1s); // sharp: the camera's own focus
+    ASSERT_EQ(run.last.state, State::Camera);
+
+    run.offerThrows = true;
+    run.controller->requestAt(0.5, 0.5);
+    run.frame(); // the click turns autofocus off and moves the lens; the throw comes after the move
+    run.offerThrows = false;
+
+    EXPECT_EQ(run.last.state, State::Camera);
+    EXPECT_FALSE(run.last.controllable);
+    EXPECT_EQ(run.last.position, std::nullopt);
+    EXPECT_TRUE(run.log->autoFocus);
     EXPECT_EQ(run.log->count("auto on"), 1);
     const std::size_t calls = run.log->calls.size();
     run.framesFor(5s);

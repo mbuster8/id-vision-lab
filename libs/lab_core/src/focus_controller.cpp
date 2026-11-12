@@ -66,7 +66,18 @@ FocusStatus FocusController::next(const frame_io::Frame& frame, const std::optio
     try {
         step(frame, page);
     } catch (...) {
-        // Nothing leaves the processing thread: the status stays as it was.
+        // Nothing leaves the processing thread. A throw part-way through a step (memory exhausted) may have
+        // left a search half-begun or the camera's autofocus off, so the lab gives up as when a call fails:
+        // the camera's focus is put back, and the lab leaves it alone for the rest of the run.
+        try {
+            giveUp();
+        } catch (...) {
+            m_search.reset();
+            m_reachable = false;
+            m_status.state = FocusStatus::State::Camera;
+            m_status.position.reset();
+            m_status.countingFrom = 0;
+        }
     }
     m_status.controllable = canFocus();
     m_status.blurredFirstSince = m_blurredSince;
