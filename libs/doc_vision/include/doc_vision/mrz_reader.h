@@ -27,10 +27,13 @@ struct MrzReading {
     std::chrono::nanoseconds recogniseTime{};
 };
 
-// "A band found" (spec §4.1): Otsu thresholds any heatmap, so the largest blob alone means nothing. Starting
-// values, to be set by measurement (the plan's Task 22).
+// "A band found" (spec §4.1): Otsu thresholds any heatmap, so the largest blob alone means nothing. Measured
+// with doc_vision_eval --band-stats on 12 November: every read of a passport's MRZ (MIDV-2020's passport
+// clips and the owner's) passed at a width share of 0.85; of 200 ID card fronts with no MRZ (MIDV-2020's
+// Estonian and Slovak photos), none passed at 0.80 with the peak and aspect limits below, which alone
+// separate nothing more.
 inline constexpr double kBandPeak = 0.5;
-inline constexpr double kBandWidthShare = 0.6;
+inline constexpr double kBandWidthShare = 0.8;
 inline constexpr double kBandAspect = 5.0;
 
 // What reads an MRZ from a flattened page: MrzScanner in the lab; a scripted one in the tests.
@@ -43,10 +46,11 @@ public:
     virtual void cancel() {}
 };
 
-// The reader's ONNX Runtime intra-op threads (LC100 keeps the runtime's default). Measured alone on the Mac
-// on 12 November: 909 ms a read at 1, 480 at 2, 275 at 4, 162 at 8, 184 at the default; set by the plan's
-// Task 22.
-inline constexpr int kReaderIntraOpThreads = 4;
+// The reader's ONNX Runtime intra-op threads (LC100 keeps the runtime's default). Set by doc_vision_eval
+// --read paced on 12 November: more threads read faster but slow the page model beside them, and on a Windows
+// 11 laptop (Core i9-13900HX) only 2 kept the processor's per-frame p95 under a 30 fps frame (33 ms) while
+// the reader was busy; the Mac (M4 Pro) stayed under it at every count tried.
+inline constexpr int kReaderIntraOpThreads = 2;
 
 // DocsaidLab MRZScanner 1.0.7 (Apache-2.0 weights), as the spike measured it: detection on the page padded to
 // a square with black, 256 × 256 / 255, CHW, BGR as it is; the heatmap resized to the padded page, Otsu, the
