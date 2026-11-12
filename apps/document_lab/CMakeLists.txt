@@ -32,6 +32,8 @@ add_library(document_lab_ui STATIC
     model_folder.h
     scan_banner.cpp
     scan_banner.h
+    scan_flow.cpp
+    scan_flow.h
     scan_style.cpp
     scan_style.h
     scan_words.cpp
