@@ -361,6 +361,14 @@ public:
             };
             m_run.reads.emplace_back();
             m_truth = std::move(truth);
+            // Compared as the parser writes a read: an empty personal number's check digit as '<', say.
+            if (m_truth) {
+                const std::string line1 = m_truth->substr(0, 44);
+                const std::string line2 = m_truth->substr(45);
+                if (const std::optional<doc_vision::Mrz> parsed = doc_vision::parseMrz({line1, line2})) {
+                    m_truth = parsed->text();
+                }
+            }
             m_pacer.restart();
             const std::lock_guard lock(m_log.mutex);
             m_log.ending = false;
@@ -847,8 +855,61 @@ struct BandStats {
     std::vector<double> peak, widthShare, aspect;
 };
 
-// Pages with no MRZ, each resized to the flattened page's size and read once: where a band's candidate
-// falls when there is none.
+// How many candidates pass as a band (peak, width share and aspect all at or above their limits) at each of a
+// few width-share limits, the others at doc_vision's: the joint count the limits are set by.
+std::string bandPasses(const std::vector<double>& peak, const std::vector<double>& widthShare,
+                       const std::vector<double>& aspect) {
+    std::string out;
+    for (const double limit : {0.60, 0.70, 0.75, 0.80, 0.85}) {
+        int passes = 0;
+        for (std::size_t i = 0; i < peak.size(); ++i) {
+            passes += peak[i] >= doc_vision::kBandPeak && widthShare[i] >= limit &&
+                              aspect[i] >= doc_vision::kBandAspect
+                          ? 1
+                          : 0;
+        }
+        char text[48];
+        std::snprintf(text, sizeof text, "%s≥%.2f: %d", out.empty() ? "" : ", ", limit, passes);
+        out += text;
+    }
+    return out + " (of " + std::to_string(peak.size()) + ")";
+}
+
+// MIDV-2020's photo annotations for a folder of its photos (photo/images/<type>): file name → doc_quad.
+std::map<std::string, Quad> photoQuads(const std::filesystem::path& folder) {
+    std::map<std::string, Quad> quads;
+    std::ifstream in(folder.parent_path().parent_path() / "annotations" /
+                     (folder.filename().string() + ".json"));
+    if (!in) {
+        return quads;
+    }
+    const nlohmann::json annotations = nlohmann::json::parse(in, nullptr, false);
+    if (annotations.is_discarded() || !annotations.contains("_via_img_metadata")) {
+        return quads;
+    }
+    for (const auto& [key, meta] : annotations["_via_img_metadata"].items()) {
+        for (const auto& region : meta["regions"]) {
+            if (region["region_attributes"].value("field_name", "") != "doc_quad") {
+                continue;
+            }
+            const auto& xs = region["shape_attributes"]["all_points_x"];
+            const auto& ys = region["shape_attributes"]["all_points_y"];
+            if (xs.size() != 4 || ys.size() != 4) {
+                continue;
+            }
+            std::array<cv::Point2d, 4> points{};
+            for (std::size_t i = 0; i < 4; ++i) {
+                points[i] = {xs[i].get<double>(), ys[i].get<double>()};
+            }
+            quads[meta.value("filename", "")] = doc_vision::orderedCorners(points);
+        }
+    }
+    return quads;
+}
+
+// Pages with no MRZ (an ID card's front, say), each read once: where a band's candidate falls when there is
+// none. A MIDV-2020 photo is flattened by its annotated doc_quad to the page's size, as the lab flattens the
+// page it finds; any other image is taken as a page and resized.
 BandStats readNegatives(const Options& options) {
     BandStats stats;
     std::string error;
@@ -864,13 +925,18 @@ BandStats readNegatives(const Options& options) {
         }
     }
     std::sort(files.begin(), files.end());
+    const std::map<std::string, Quad> quads = photoQuads(*options.negatives);
     for (const std::filesystem::path& file : files) {
         const cv::Mat image = cv::imread(file.string(), cv::IMREAD_COLOR);
         if (image.empty()) {
             continue;
         }
         cv::Mat page;
-        cv::resize(image, page, doc_vision::kPageSize, 0, 0, cv::INTER_AREA);
+        if (const auto quad = quads.find(file.filename().string()); quad != quads.end()) {
+            page = doc_vision::flatten(image, quad->second, doc_vision::kPageSize);
+        } else {
+            cv::resize(image, page, doc_vision::kPageSize, 0, 0, cv::INTER_AREA);
+        }
         error.clear();
         const doc_vision::MrzReading reading = scanner->read(page, error);
         if (!error.empty()) {
@@ -967,6 +1033,8 @@ void reportReading(const Options& options, const Run& run, const ReadLog& log) {
     if (options.bandStats) {
         std::printf("band candidates of the reads:\n  peak        %s\n  width share %s\n  aspect      %s\n",
                     spread(run.peak).c_str(), spread(run.widthShare).c_str(), spread(run.aspect).c_str());
+        std::printf("  pass as a band, width share %s\n",
+                    bandPasses(run.peak, run.widthShare, run.aspect).c_str());
     }
     if (options.negatives) {
         const BandStats negatives = readNegatives(options);
@@ -974,6 +1042,8 @@ void reportReading(const Options& options, const Run& run, const ReadLog& log) {
             "band candidates of the negatives:\n  peak        %s\n  width share %s\n  aspect      %s\n",
             spread(negatives.peak).c_str(), spread(negatives.widthShare).c_str(),
             spread(negatives.aspect).c_str());
+        std::printf("  pass as a band, width share %s\n",
+                    bandPasses(negatives.peak, negatives.widthShare, negatives.aspect).c_str());
     }
 }
 
