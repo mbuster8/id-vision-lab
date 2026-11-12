@@ -88,14 +88,21 @@ private:
     QColor m_mark;
 };
 
-// The passport on the reader, as screen 04 draws it: the reader, the passport sheared −12°, a green LED.
+// The document on the reader, as screen 04 draws it: the reader, the document sheared −12°, a green LED. An
+// ID card (A4.1's D10) is drawn at the passport's scale, an ID-1 card being about 0.68 of a closed passport's
+// width and 0.61 of its height, with its chip.
 class ReaderIllustration : public QWidget {
 public:
     explicit ReaderIllustration(QWidget* parent) : QWidget(parent) {
+        setObjectName(QStringLiteral("readerIllustration"));
         setFixedSize(kIllustrationWidth, kIllustrationHeight);
     }
     void setReaderColour(const QColor& colour) {
         m_reader = colour;
+        update();
+    }
+    void setKind(lab_core::DocumentKind kind) {
+        m_kind = kind;
         update();
     }
 
@@ -110,7 +117,13 @@ protected:
         painter.translate(30, 0);
         painter.setTransform(QTransform().shear(-0.2126, 0), true); // tan(12°)
         painter.setBrush(kIllustrationPassport);
-        painter.drawRoundedRect(QRectF(20, 4, 160, 62), 4, 4);
+        if (m_kind == lab_core::DocumentKind::Passport) {
+            painter.drawRoundedRect(QRectF(20, 4, 160, 62), 4, 4);
+        } else {
+            painter.drawRoundedRect(QRectF(46, 28, 109, 38), 4, 4);
+            painter.setBrush(m_reader);
+            painter.drawRoundedRect(QRectF(58, 38, 16, 12), 2, 2); // the chip
+        }
         painter.restore();
         painter.setBrush(kIllustrationLed);
         painter.drawEllipse(QPointF(196, 79), 5, 5);
@@ -118,6 +131,7 @@ protected:
 
 private:
     QColor m_reader;
+    lab_core::DocumentKind m_kind = lab_core::DocumentKind::Passport;
 };
 
 // The reader line's dot.
@@ -251,6 +265,21 @@ ScannedCard::ScannedCard(QWidget* parent) : QWidget(parent) {
     // card.
     holder->setAutoFillBackground(false);
     applyColours();
+}
+
+void ScannedCard::setKind(lab_core::DocumentKind kind) {
+    static_cast<ReaderIllustration*>(m_illustration)->setKind(kind);
+    if (kind == lab_core::DocumentKind::Passport) {
+        m_title->setText(tr("Passport scanned"));
+        m_headline->setText(tr("Now place the passport on the chip reader"));
+        m_explanation->setText(
+            tr("Close it and lay the cover flat on the reader. For most passports the chip is "
+               "in the cover or the data page."));
+    } else {
+        m_title->setText(tr("ID card scanned"));
+        m_headline->setText(tr("Now place the card on the chip reader"));
+        m_explanation->setText(tr("Lay the card flat on the reader."));
+    }
 }
 
 void ScannedCard::applyColours() {

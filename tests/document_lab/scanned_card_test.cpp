@@ -49,6 +49,48 @@ TEST(ScannedCard, TextsAsDrawn) {
     EXPECT_EQ(button(card, "scanAgainButton")->text(), "Scan again");
 }
 
+// A4.1's D5 and D10: an ID card's words, and back to a passport's.
+TEST(ScannedCard, IdCardWords) {
+    ScannedCard card;
+    card.setKind(lab_core::DocumentKind::IdCard);
+    EXPECT_EQ(textOf(card, "scannedTitle"), "ID card scanned");
+    EXPECT_EQ(textOf(card, "scannedHeadline"), "Now place the card on the chip reader");
+    EXPECT_EQ(textOf(card, "scannedExplanation"), "Lay the card flat on the reader.");
+    card.setKind(lab_core::DocumentKind::Passport);
+    EXPECT_EQ(textOf(card, "scannedTitle"), "Passport scanned");
+    EXPECT_EQ(textOf(card, "scannedHeadline"), "Now place the passport on the chip reader");
+}
+
+// The reader drawn with a card on it rather than a passport: the card is narrower than the passport's cover,
+// so the illustration paints fewer pixels in the document's colour.
+TEST(ScannedCard, DrawsACardOnTheReader) {
+    const auto documentPixels = [](lab_core::DocumentKind kind) {
+        ScannedCard card;
+        card.setKind(kind);
+        showAt(card, {1000, 760});
+        auto* illustration = card.findChild<QWidget*>("readerIllustration");
+        EXPECT_TRUE(illustration);
+        if (illustration == nullptr) {
+            return 0;
+        }
+        QImage image(illustration->size(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        illustration->render(&image);
+        int count = 0;
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                count += image.pixelColor(x, y) == document_lab::kIllustrationPassport ? 1 : 0;
+            }
+        }
+        return count;
+    };
+    const int passport = documentPixels(lab_core::DocumentKind::Passport);
+    const int idCard = documentPixels(lab_core::DocumentKind::IdCard);
+    EXPECT_GT(passport, 0);
+    EXPECT_GT(idCard, 0);
+    EXPECT_LT(idCard, passport);
+}
+
 TEST(ScannedCard, ButtonsSignal) {
     ScannedCard card;
     QSignalSpy skipped(&card, &ScannedCard::skipChip);

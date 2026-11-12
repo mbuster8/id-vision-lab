@@ -1,5 +1,7 @@
 #pragma once
 
+#include <lab_core/document_kind.h>
+
 #include <QWidget>
 
 class QEvent;
@@ -19,6 +21,9 @@ class ScannedCard : public QWidget {
 
 public:
     explicit ScannedCard(QWidget* parent = nullptr);
+
+    // A4.1: the words and the drawing for what the accepted MRZ says the document is; a passport's until set.
+    void setKind(lab_core::DocumentKind kind);
 
 signals:
     void skipChip();
