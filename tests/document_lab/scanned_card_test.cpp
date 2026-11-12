@@ -108,6 +108,22 @@ TEST(ScannedCard, DarkColours) {
     EXPECT_EQ(title->palette().color(QPalette::WindowText), QColor(0x3D, 0xDC, 0x84));
 }
 
+// The owner's camera check (A4): around the card, inside its scroll area, the frame showed through dimmed
+// only at the edges; the rest was a flat fill. QScrollArea::setWidget turns its widget's autoFillBackground
+// on.
+TEST(ScannedCard, DimsTheCanvasAroundTheCardToo) {
+    ScannedCard card;
+    showAt(card, {1000, 760});
+    QImage image(card.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    card.render(&image, QPoint(), QRegion(), QWidget::DrawChildren);
+    const QColor expected = document_lab::over(document_lab::kScannedDim, Qt::white);
+    const QColor beside = image.pixelColor(100, 380); // inside the scroll area, left of the 620 px card
+    EXPECT_NEAR(beside.red(), expected.red(), 1);
+    EXPECT_NEAR(beside.green(), expected.green(), 1);
+    EXPECT_NEAR(beside.blue(), expected.blue(), 1);
+}
+
 TEST(ScannedCard, DimsTheCanvas) {
     ScannedCard card;
     showAt(card, {1000, 760});

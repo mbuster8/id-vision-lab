@@ -222,6 +222,27 @@ TEST(ReviewPanel, DarkColours) {
     EXPECT_EQ(check->palette().color(QPalette::WindowText), QColor(0x3D, 0xDC, 0x84));
 }
 
+// The owner's camera check (A4): after a switch from dark to light, the panel stayed dark under light-mode
+// text. QScrollArea::setWidget turned its content's autoFillBackground on, so the content painted the palette
+// it started with over the panel's own card colour.
+TEST(ReviewPanel, BackgroundFollowsAnAppearanceSwitch) {
+    const test_support::PaletteGuard guard;
+    test_support::applyPalette(test_support::paletteWith(QColor(0x1E, 0x1E, 0x1E), QColor(0xF0, 0xF0, 0xF0)));
+    ReviewPanel panel;
+    panel.setScan(specimenScan(), kToday);
+    panel.resize(360, 640);
+    panel.show();
+    QApplication::processEvents();
+    test_support::applyPalette(test_support::paletteWith(QColor(0xEC, 0xEC, 0xEC), QColor(0x1E, 0x1E, 0x1E)));
+    QApplication::processEvents();
+
+    QImage image(panel.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::magenta);
+    panel.render(&image, QPoint(), QRegion(), QWidget::DrawChildren);
+    const QColor light = document_lab::reviewColours(false).cardBackground;
+    EXPECT_EQ(image.pixelColor(8, 8), light); // in the content's padding, above the title
+}
+
 TEST(ReviewBar, DefaultsAndToggles) {
     ReviewBar bar;
     EXPECT_EQ(textOf(bar, "reviewBarTitle"), "Captured frame");

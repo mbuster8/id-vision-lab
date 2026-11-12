@@ -146,11 +146,9 @@ ScannedCard::ScannedCard(QWidget* parent) : QWidget(parent) {
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->setAttribute(Qt::WA_TranslucentBackground);
     m_scroll->viewport()->setAutoFillBackground(false);
-    m_scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
     outer->addWidget(m_scroll);
 
     auto* holder = new QWidget;
-    holder->setAutoFillBackground(false);
     auto* column = new QVBoxLayout(holder);
     column->setContentsMargins(0, 0, 0, 0);
     auto* row = new QHBoxLayout;
@@ -249,6 +247,9 @@ ScannedCard::ScannedCard(QWidget* parent) : QWidget(parent) {
     items->addWidget(m_note);
 
     m_scroll->setWidget(holder);
+    // After setWidget, which turns it on: the holder would paint a flat fill over the dimmed frame around the
+    // card.
+    holder->setAutoFillBackground(false);
     applyColours();
 }
 
