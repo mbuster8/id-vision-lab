@@ -241,7 +241,8 @@ public:
             ++m_run.switches;
         }
         m_shown = shown;
-        if (shown == Hint::Good && !m_run.firstGood.back()) {
+        // A4's hints 11 and 12 also mean every gate passes: A3.1's counts keep their meaning.
+        if (doc_vision::gatesPass(shown) && !m_run.firstGood.back()) {
             m_run.firstGood.back() = seconds;
         }
         std::optional<doc_vision::Verdicts> verdicts;
@@ -275,8 +276,8 @@ public:
             ++group->withTruth;
             group->iou90 += m_finder.raw && quadIoU(*truth, *m_finder.raw) > 0.9 ? 1 : 0;
         }
-        group->frameGood += result.guidance->frameHint == Hint::Good ? 1 : 0;
-        group->shownGood += shown == Hint::Good ? 1 : 0;
+        group->frameGood += doc_vision::gatesPass(result.guidance->frameHint) ? 1 : 0;
+        group->shownGood += doc_vision::gatesPass(shown) ? 1 : 0;
     }
 
 private:

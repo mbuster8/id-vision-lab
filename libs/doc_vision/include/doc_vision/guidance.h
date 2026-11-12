@@ -23,6 +23,9 @@ enum class Hint {
     TooDark,
     TooBright,
     Good,
+    // A4: every gate passes, and the MRZ reader says more (the Document processor sets these, never hintFor).
+    NoMrzBand,     // hint 11: the last read found no MRZ band
+    CannotReadMrz, // hint 12: 5 s without an accept
 };
 
 // Neutral: no page yet. Bad: something to change. Good: hold still.
@@ -31,6 +34,8 @@ enum class Tone { Neutral, Bad, Good };
 Tone toneOf(Hint hint);
 // The gate a Bad hint is about, whose chip shows ✗ while the hint shows.
 std::optional<Gate> gateOf(Hint hint);
+// Every gate passes with this hint: Good, and the MRZ's hints 11 and 12.
+bool gatesPass(Hint hint);
 // The frame's hint: NoPage without verdicts, else the first gate that fails, else Good.
 Hint hintFor(const std::optional<Verdicts>& verdicts);
 

@@ -91,6 +91,19 @@ TEST(ScanWords, FocusWords) {
                              QStringLiteral("Try more light, or another camera")}));
 }
 
+// A4: hints 11 and 12 (ADR-004's table; hint 12's small line as the owner chose, D2).
+TEST(ScanWords, MrzHints) {
+    EXPECT_EQ(
+        document_lab::bannerFor(Hint::NoMrzBand),
+        (BannerContent{Tone::Bad, false, QStringLiteral("Keep your fingers off the two lines at the bottom"),
+                       QString()}));
+    EXPECT_EQ(document_lab::bannerFor(Hint::CannotReadMrz),
+              (BannerContent{Tone::Bad, false, QStringLiteral("Can't read the lines at the bottom"),
+                             QStringLiteral("check for glare or fingers; only passports are read for now")}));
+    EXPECT_EQ(document_lab::stateWord(Hint::NoMrzBand), "reading");
+    EXPECT_EQ(document_lab::stateWord(Hint::CannotReadMrz), "reading");
+}
+
 TEST(ScanWords, WindowStates) {
     EXPECT_EQ(document_lab::bannerFor(WindowState::NoCamera),
               (BannerContent{Tone::Bad, false, "No camera found",

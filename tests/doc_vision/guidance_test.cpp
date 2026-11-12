@@ -189,4 +189,56 @@ TEST(Guidance, ChipFollowsItsGateAfterThreeTenths) {
     EXPECT_FALSE(chips.next(failing(Gate::Glare), Hint::Blurred, milliseconds(400)).passed[at(Gate::Glare)]);
 }
 
+// A4: hints 11 and 12 come when every gate passes; something to change, about no gate.
+TEST(Guidance, MrzHintsAreBadWithNoGate) {
+    for (const Hint hint : {Hint::NoMrzBand, Hint::CannotReadMrz}) {
+        EXPECT_EQ(doc_vision::toneOf(hint), doc_vision::Tone::Bad);
+        EXPECT_FALSE(doc_vision::gateOf(hint));
+    }
+}
+
+TEST(Guidance, GatesPassForGoodAndTheMrzHints) {
+    EXPECT_TRUE(doc_vision::gatesPass(Hint::Good));
+    EXPECT_TRUE(doc_vision::gatesPass(Hint::NoMrzBand));
+    EXPECT_TRUE(doc_vision::gatesPass(Hint::CannotReadMrz));
+    for (const Hint hint : {Hint::NoPage, Hint::CutByEdge, Hint::MoveToMiddle, Hint::TooFar, Hint::TooClose,
+                            Hint::Tilted, Hint::Blurred, Hint::Glare, Hint::TooDark, Hint::TooBright}) {
+        EXPECT_FALSE(doc_vision::gatesPass(hint));
+    }
+}
+
+// Good shown at 800 ms; NoMrzBand from 833 ms, every 33 ms: a hint replaces a shown Good once it has held 100
+// ms, so frames at +0, +33, +66 and +99 ms still show Good and the one at +132 ms shows NoMrzBand.
+TEST(HintTimer, MrzHintReplacesGoodAfterATenthOfASecond) {
+    doc_vision::HintTimer timer;
+    timer.next(Hint::NoPage, milliseconds(0));
+    timer.next(Hint::Good, milliseconds(100));
+    ASSERT_EQ(timer.next(Hint::Good, milliseconds(800)), Hint::Good);
+    for (int k = 0; k <= 3; ++k) {
+        EXPECT_EQ(timer.next(Hint::NoMrzBand, milliseconds(833 + 33 * k)), Hint::Good) << k;
+    }
+    EXPECT_EQ(timer.next(Hint::NoMrzBand, milliseconds(833 + 132)), Hint::NoMrzBand);
+}
+
+TEST(HintTimer, MrzHintStaysEightTenths) {
+    doc_vision::HintTimer timer;
+    timer.next(Hint::NoPage, milliseconds(0));
+    timer.next(Hint::Good, milliseconds(100));
+    timer.next(Hint::Good, milliseconds(800));
+    timer.next(Hint::NoMrzBand, milliseconds(900));
+    ASSERT_EQ(timer.next(Hint::NoMrzBand, milliseconds(1000)), Hint::NoMrzBand);
+    EXPECT_EQ(timer.next(Hint::CannotReadMrz, milliseconds(1400)), Hint::NoMrzBand);
+    EXPECT_EQ(timer.next(Hint::CannotReadMrz, milliseconds(1799)), Hint::NoMrzBand);
+    EXPECT_EQ(timer.next(Hint::CannotReadMrz, milliseconds(1800)), Hint::CannotReadMrz);
+}
+
+TEST(ChipTimer, AllPassWhileAnMrzHintShows) {
+    doc_vision::ChipTimer chips;
+    const doc_vision::ChipStates shown = chips.next(allPass(), Hint::NoMrzBand, milliseconds(0));
+    EXPECT_TRUE(shown.visible);
+    for (const bool passed : shown.passed) {
+        EXPECT_TRUE(passed);
+    }
+}
+
 } // namespace

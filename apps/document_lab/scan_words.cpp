@@ -45,6 +45,12 @@ BannerContent bannerFor(doc_vision::Hint hint) {
         return bad("Too dark", "add more light");
     case Hint::TooBright:
         return bad("Too bright", "move out of direct light");
+    case Hint::NoMrzBand:
+        return bad("Keep your fingers off the two lines at the bottom");
+    case Hint::CannotReadMrz:
+        // Wider than screen 07's (the owner, A4's D2): an ID card's front has no MRZ to read.
+        return bad("Can't read the lines at the bottom",
+                   "check for glare or fingers; only passports are read for now");
     case Hint::Good:
         break;
     }
@@ -127,6 +133,9 @@ QString stateWord(doc_vision::Hint shown) {
     case Hint::TooDark:
     case Hint::TooBright:
         return tr("adjust (light)");
+    case Hint::NoMrzBand:
+    case Hint::CannotReadMrz:
+        return tr("reading");
     case Hint::Good:
         break;
     }
