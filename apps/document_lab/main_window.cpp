@@ -2102,9 +2102,18 @@ void LabWindow::sendScan() {
     description.overlays.insert(description.overlays.end(), overlays.begin(), overlays.end());
     const std::optional<CardSide> side =
         m_scan->mrz.format == doc_vision::MrzFormat::Td1 ? std::optional<CardSide>(shown) : std::nullopt;
-    m_sendingStill = m_link->sendStill(
+    std::string refused;
+    const std::uint64_t number = m_link->sendStill(
         frame.image, stillName(lab_core::documentKind(m_scan->mrz), side, frame.number).toStdString(),
-        std::move(description));
+        std::move(description), &refused);
+    if (!refused.empty()) { // refused at once: ended here, whatever the link's last still is by now
+        m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Failed);
+        m_sendFailures[index] = QString::fromStdString(refused);
+        applySendOutcome();
+        refreshStatus();
+        return;
+    }
+    m_sendingStill = number;
     m_sendingSide = shown;
     m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Busy);
     m_sendFailures[index].clear();

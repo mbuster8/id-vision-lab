@@ -289,4 +289,23 @@ TEST(ViewerLink, RefusedStillIsReported) {
     EXPECT_EQ(none.link.state().lastStillReason, "refused: no viewer address");
 }
 
+// Deep review F3: a still refused at once tells its caller so, however soon an older still's answer replaces
+// the state's last still (lastStillNumber is the one that ended last, not the newest).
+TEST(ViewerLink, RefusalIsToldToTheCaller) {
+    Harness h;
+    h.link.setEndpoint(kFirst);
+    std::string refused;
+    h.link.sendStill(still(), "waits", {}, &refused);
+    EXPECT_EQ(refused, "") << "taken";
+    for (int i = 0; i < 3; ++i) {
+        h.link.sendStill(still(), "waits", {});
+    }
+
+    const std::uint64_t fifth = h.link.sendStill(still(), "fifth", {}, &refused);
+    ASSERT_TRUE(h.link.pump()); // the first still is answered: it is now the last to end
+    ASSERT_NE(h.link.state().lastStillNumber, fifth);
+
+    EXPECT_EQ(refused, "refused: too many stills waiting");
+}
+
 } // namespace

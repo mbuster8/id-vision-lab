@@ -44,8 +44,11 @@ void ViewerLink::setEndpoint(std::string endpoint) {
 }
 
 std::uint64_t ViewerLink::sendStill(cv::Mat image, std::string name,
-                                    visual_debug::ImageDescription description) {
+                                    visual_debug::ImageDescription description, std::string* refused) {
     std::uint64_t number = 0;
+    if (refused != nullptr) {
+        refused->clear();
+    }
     {
         const std::lock_guard lock(m_mutex);
         number = ++m_stillsNumbered;
@@ -55,6 +58,9 @@ std::uint64_t ViewerLink::sendStill(cv::Mat image, std::string name,
             m_state.lastStillNumber = number;
             m_state.lastStillReason =
                 m_state.endpoint.empty() ? "refused: no viewer address" : "refused: too many stills waiting";
+            if (refused != nullptr) {
+                *refused = m_state.lastStillReason;
+            }
             return number;
         }
         m_stills.push_back({std::move(image), std::move(name), std::move(description), number});
