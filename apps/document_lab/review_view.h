@@ -84,6 +84,8 @@ public:
     // Shows `scan`'s MRZ; dates in the century `today` puts them in, and the warning when it expired before
     // `today`. Both outcomes go back to Idle.
     void setScan(const lab_core::MrzScan& scan, doc_vision::MrzDate today);
+    // Every field's value and check emptied, and the warning: Review left keeps none of the MRZ.
+    void clear();
     // Done disables the button and says so on it; Failed shows `failure` under the buttons and enables it
     // again.
     void setSaveOutcome(Outcome outcome, const QString& failure = {});

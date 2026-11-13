@@ -51,6 +51,24 @@ TEST(Capture, WritesPngAndJson) {
     EXPECT_EQ(json["findings"][1], "edges: 4.2 %");
 }
 
+// Deep review F8: a capture whose JSON cannot be written leaves no picture behind, so a retry is not left
+// beside an orphan the user was told was not saved. A name of 255 bytes for the PNG makes the JSON's 256,
+// over the file systems' limit.
+TEST(Capture, FailedJsonLeavesNoPicture) {
+    const ScratchFolder folder;
+    std::string error;
+    const std::string baseName(255 - std::string(" frame 7.png").size(), 'a');
+
+    const std::filesystem::path png =
+        frame_io::writeCapture(folder.path(), baseName, frameNumberSix(), {}, error);
+
+    EXPECT_TRUE(png.empty());
+    EXPECT_FALSE(error.empty());
+    for (const auto& entry : std::filesystem::directory_iterator(folder.path())) {
+        ADD_FAILURE() << "left behind: " << entry.path().filename().string().size() << " bytes of name";
+    }
+}
+
 TEST(Capture, TakenNameGetsANumber) {
     const ScratchFolder folder;
     std::string error;

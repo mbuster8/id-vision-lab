@@ -346,6 +346,18 @@ void ReviewPanel::setScan(const lab_core::MrzScan& scan, doc_vision::MrzDate tod
     applyColours();
 }
 
+void ReviewPanel::clear() {
+    for (Row& row : m_rows) {
+        row.value->clear();
+        row.check->clear();
+        row.failed = false;
+    }
+    m_warning->clear();
+    m_warning->hide();
+    setSaveOutcome(Outcome::Idle);
+    setSendOutcome(Outcome::Idle);
+}
+
 void ReviewPanel::applyOutcome(QPushButton* button, QLabel* failureLabel, Outcome outcome,
                                const QString& failure, const QString& idle, const QString& busy,
                                const QString& done) {

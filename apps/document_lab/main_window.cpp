@@ -1357,8 +1357,11 @@ void LabWindow::redrawForView() {
         return;
     }
     visual_debug::ImageDescription description;
-    const cv::Mat* image =
-        scanShowing() ? (m_scan ? &m_scan->frame.image : nullptr) : shownImage(description);
+    // In Review, the side on screen, as display() draws it: a front from another source has another size.
+    const cv::Mat* image = !scanShowing()                     ? shownImage(description)
+                           : !m_scan                          ? nullptr
+                           : m_scanState == ScanState::Review ? &reviewFrame(m_reviewSide).image
+                                                              : &m_scan->frame.image;
     if (image == nullptr || image->empty()) {
         return;
     }
@@ -1836,6 +1839,7 @@ void LabWindow::showReview(bool shown) {
         m_splitter->setSizes({std::max(1, total - panel), panel});
     } else if (!shown) {
         m_sendingStill.reset();
+        m_reviewPanel->clear(); // its hidden labels would keep the MRZ
         m_sidePanel->setCurrentWidget(m_results);
         m_sidePanel->setMinimumWidth(kResultsMinimumWidth);
         m_splitter->setCollapsible(1, true);
@@ -2079,6 +2083,12 @@ void LabWindow::sendScan() {
     }
     const CardSide shown = m_reviewSide;
     const auto index = static_cast<std::size_t>(shown);
+    if (endpointText().isEmpty()) { // Send Frame is off without one; this button says why it sends nothing
+        m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Failed);
+        m_sendFailures[index] = tr("No viewer address: type one in the Viewer row.");
+        applySendOutcome();
+        return;
+    }
     if (!confirmFor(endpointText())) {
         m_sendOutcomes[index] = static_cast<int>(ReviewPanel::Outcome::Idle);
         applySendOutcome();

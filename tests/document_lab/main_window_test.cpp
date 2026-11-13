@@ -3304,6 +3304,21 @@ TEST(LabWindow, EnterSaves) {
     EXPECT_TRUE(shownIn(lab, reviewPanel(lab)));
 }
 
+// Deep review F4: with no viewer address, Review's Send says why it sends nothing.
+TEST(LabWindow, SendWithNoAddressSaysSo) {
+    Lab lab(scanning());
+    intoReview(lab);
+    lab.window->findChild<QLineEdit*>("endpointEdit")->clear();
+
+    panelButton(lab, "sendButton")->click();
+
+    const QLabel* failure = reviewPanel(lab)->findChild<QLabel*>("sendFailure");
+    ASSERT_NE(failure, nullptr);
+    EXPECT_TRUE(failure->isVisibleTo(lab.window.get()));
+    EXPECT_EQ(failure->text(), QStringLiteral("No viewer address: type one in the Viewer row."));
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled());
+}
+
 TEST(LabWindow, SendThroughTheLink) {
     Lab lab(scanning());
     intoReview(lab);
@@ -3690,6 +3705,19 @@ TEST(LabWindow, PrivacyStatusAndStills) {
     json.erase("mrz");
     EXPECT_EQ(mrzIn(json.dump()), "") << json.dump();
     EXPECT_EQ(mrzIn(capturesOf(lab, ".png").at(0).filename().string()), "") << "the picture's name";
+}
+
+// Deep review F10: Review left, its panel's hidden labels keep none of the document's MRZ.
+TEST(LabWindow, ReviewLeftKeepsNoMrzInItsPanel) {
+    Lab lab(scanning());
+    intoReview(lab);
+    ASSERT_EQ(reviewPanel(lab)->findChild<QLabel*>("surnameValue")->text(), QStringLiteral("ERIKSSON"));
+
+    panelButton(lab, "discardButton")->click();
+
+    for (const QLabel* label : reviewPanel(lab)->findChildren<QLabel*>()) {
+        EXPECT_EQ(mrzIn(label->text().toStdString()), "") << label->objectName().toStdString();
+    }
 }
 
 // --- A4.1: ID cards, and a TD1 card's turn-over
@@ -4227,6 +4255,34 @@ TEST(LabWindow, ReviewShowsEachSide) {
 
     EXPECT_TRUE(gatesShown(QStringLiteral("Fill: 58 %"))); // the front's
     EXPECT_FALSE(gatesShown(QStringLiteral("Fill: 62 %")));
+}
+
+// Deep review F5: on Review's Front, zoom decides the redraw by the front's own size: a front of another size
+// than the back (another source, D11) is drawn again for the view.
+TEST(LabWindow, ZoomOnTheFrontRedrawsForTheFront) {
+    auto big = std::make_shared<lab_core::FrontShot>(*frontOf());
+    big->frame.image = fourK();
+    Lab lab([big](LabDependencies& dependencies) {
+        camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, big)}))(
+            dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+    });
+    intoTwoSidedReview(lab);
+    reviewBar(lab)->findChild<QPushButton*>("frontSideButton")->click();
+    const QPointF centre = QRectF(lab.canvas()->rect()).center();
+    zoomIn(*lab.canvas(), centre);
+    ASSERT_NE(lab.canvas()->pictureArea(), QRect(0, 0, 4000, 3000));
+    int conversions = lab.conversions;
+
+    pan(*lab.canvas(), centre, centre - QPointF(10, 0)); // within the margin drawn
+
+    EXPECT_EQ(lab.conversions, conversions);
+    conversions = lab.conversions;
+
+    pan(*lab.canvas(), centre, centre - QPointF(lab.canvas()->width() / 2.0, 0)); // out of it
+
+    EXPECT_GT(lab.conversions, conversions);
+    EXPECT_TRUE(lab.canvas()->pictureArea().contains(lab.canvas()->visibleArea()));
 }
 
 // Spec §6.7: Send sends the side on screen, each with its own outcome.
