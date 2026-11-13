@@ -1738,6 +1738,8 @@ void LabWindow::carryTurnOverOn() {
 }
 
 void LabWindow::resumeScanning() {
+    // First: a camera that cannot start again would start no run whose reset frees the scan (spec §6.9).
+    m_engine->resetProcessor();
     if (m_cameraLost) {
         m_cameraLost = false;
         m_canvas->clear();
@@ -1745,7 +1747,6 @@ void LabWindow::resumeScanning() {
         startCamera(); // fails as A3.1's window state says: "The camera stopped"
         return;
     }
-    m_engine->resetProcessor();
     // Frames come again: the banner waits for a new result's guidance rather than the scan's. A replay the
     // user had paused brings none until stepped, so the banner keeps the frame on screen's.
     if (m_cameraRunning || m_replayWasPlaying) {

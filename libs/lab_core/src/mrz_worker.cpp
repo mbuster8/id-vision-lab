@@ -1,5 +1,6 @@
 #include "lab_core/mrz_worker.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <utility>
 
@@ -57,6 +58,18 @@ std::vector<MrzDone> MrzWorker::take() {
     const std::lock_guard lock(m_mutex);
     done.swap(m_done);
     return done;
+}
+
+void MrzWorker::forget(std::uint64_t resetCount) {
+    std::optional<MrzJob> waiting;
+    std::vector<MrzDone> done;
+    {
+        const std::lock_guard lock(m_mutex);
+        waiting.swap(m_waiting);
+        done.swap(m_done);
+        m_keepFrom = std::max(m_keepFrom, resetCount);
+    }
+    // Their frames go here, outside the lock.
 }
 
 bool MrzWorker::pump() {
@@ -156,6 +169,9 @@ void MrzWorker::work(MrzJob job) {
     }
     done.record = std::move(job.record);
     const std::lock_guard lock(m_mutex);
+    if (done.resetCount < m_keepFrom) {
+        return; // forgotten while it was read; its frame goes after the lock
+    }
     m_done.push_back(std::move(done));
     while (m_done.size() > kDoneKept) {
         m_done.erase(m_done.begin());

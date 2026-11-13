@@ -143,6 +143,26 @@ TEST(DocumentProcessorMrz, ReplacedJobsFreeTheirFrames) {
     }
 }
 
+// Deep review F1: a reset frees the frames the reader still holds, a read finished but not taken and a job
+// waiting: after Stop or Discard no process() comes to take them (A4.1 spec §6.9).
+TEST(DocumentProcessorMrz, ResetFreesTheReadersFrames) {
+    Reading lab;
+    const cv::Mat read = goodFrame();
+    lab.processor->process(frameAt(read, 0));
+    ASSERT_TRUE(lab.processor->pumpReaderForTests()); // read, not yet taken
+
+    lab.processor->reset();
+
+    EXPECT_EQ(read.u->refcount, 1);
+
+    const cv::Mat waiting = goodFrame();
+    lab.processor->process(frameAt(waiting, 1)); // a job waiting: no pump
+
+    lab.processor->reset();
+
+    EXPECT_EQ(waiting.u->refcount, 1);
+}
+
 TEST(DocumentProcessorMrz, ResetKeepsTheReaderOpen) {
     Reading lab;
     lab.step(frameAt(goodFrame(), 0));

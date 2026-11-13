@@ -4146,6 +4146,26 @@ TEST(LabWindow, AwaitingTheTurnOutranksFocusing) {
     EXPECT_EQ(bannerLine(lab), QStringLiteral("Turn the card over"));
 }
 
+// Deep review F2: Scan again after a camera failure frees the scan in the processor too, also when the camera
+// cannot start again (no new run resets it).
+TEST(LabWindow, ScanAgainAfterACameraFailureFreesTheScan) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    turnOverButton(lab, "skipFrontButton")->click();
+    ASSERT_TRUE(scannedShown(lab));
+    lab.backend->fail(QStringLiteral("unplugged"));
+    lab.backend->permission = false; // the camera does not start again
+
+    cardButton(lab, "scanAgainButton")->click();
+    lab.pump();
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(scan.expired());
+}
+
 // Review Focus 3, with Esc: a front's clip that fails to open leaves the back held, and Esc scans again.
 TEST(LabWindow, FrontClipThatFailsThenEscScansAgain) {
     Lab lab(documentIs(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));

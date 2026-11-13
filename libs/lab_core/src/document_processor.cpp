@@ -196,6 +196,9 @@ void DocumentProcessor::accept(const doc_vision::Mrz& mrz, const MrzDone& accept
 // Reads still coming belong to the window before: dropped by their count, as after a reset.
 void DocumentProcessor::clearReadWindow() {
     ++m_resetCount;
+    if (m_worker) {
+        m_worker->forget(m_resetCount);
+    }
     m_agreement.clear();
     m_kept.clear();
     m_reads = 0;
@@ -437,8 +440,12 @@ void DocumentProcessor::reset() {
         m_unavailable = Guidance::Unavailable::None;
         m_reason.clear();
     }
-    // Reads still coming are of the run before: dropped by their count. The reader stays open.
+    // Reads still coming are of the run before: dropped by their count. The reader stays open. The frames it
+    // still holds go now: no process() may come to take them (Stop, Discard).
     ++m_resetCount;
+    if (m_worker) {
+        m_worker->forget(m_resetCount);
+    }
     m_agreement.clear();
     m_kept.clear();
     m_reads = 0;
