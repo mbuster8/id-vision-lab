@@ -27,6 +27,11 @@
 //   its template's mrz_line0 and mrz_line1; with --read, MIDV's clips are 00, 04, …, 96), --band-stats (p5,
 //   p50 and p95 of the band's peak, width share and aspect over the reads), --negatives <folder> (pages with
 //   no MRZ, read once each, for the same statistics). The MRZ models are looked for beside --model.
+//
+// A4.1, a TD1 card's front stage (with --replay): --front turned runs each clip with the stage on and its
+// reset counting as the turn, as a clip of the front opened in the turn-over; --front awaiting (with --read)
+// turns the stage on at the back's accept and plays on, as a camera does, to see whether turning the card
+// loses the page long enough to count as the turn. Each says when a front would be kept.
 
 #include "mrz_truth.h"
 
@@ -235,6 +240,14 @@ struct Run {
     // first time how long after sharpness began to fail first.
     int cannotFocus = 0;
     std::optional<double> firstCannotFocusAfter;
+    // A4.1's front stage, per clip: when the stage went on, when it saw the turn, when it kept a front (the
+    // clip's times, s).
+    struct FrontClip {
+        std::optional<double> stageOnAt;
+        std::optional<double> turnSeenAt;
+        std::optional<double> keptAt;
+    };
+    std::vector<FrontClip> fronts;
     // A4's reading.
     std::vector<ClipReads> reads;
     std::vector<double> detect, recognise, busyFrame; // ms
@@ -259,6 +272,8 @@ struct Options {
     std::optional<std::filesystem::path> midvTemplates;
     bool bandStats = false;
     std::optional<std::filesystem::path> negatives;
+    // A4.1: the Document processor's front stage, "turned" or "awaiting".
+    std::optional<std::string> front;
 };
 
 // MIDV-2020's template for clip `clip` of `type`: its mrz_line0 and mrz_line1.
@@ -346,6 +361,16 @@ public:
                 return std::make_unique<Forwarding>(m_finder);
             },
             m_thresholds, std::move(reader));
+        if (m_options.front) {
+            m_run.fronts.emplace_back();
+            // As the window turns it on: "turned", a clip opened in TurnOver, its run's reset counting as the
+            // turn; "awaiting", at the back's accept (frame() below), as on a camera.
+            if (*m_options.front == "turned") {
+                m_processor->setFrontStage(true);
+                m_processor->reset();
+                m_run.fronts.back().stageOnAt = 0.0;
+            }
+        }
         m_shown.reset();
         m_run.firstGood.emplace_back();
         // No control: the rule for a camera the lab cannot focus. Every frame of a replay counts at once.
@@ -396,7 +421,22 @@ public:
                                                     : ClipReads::Accept::Wrong;
             clip.acceptedAt = seconds;
             clip.timeToScan = std::chrono::duration<double>(result.guidance->scan->timeToScan).count();
-            accepted = true;
+            if (m_options.front && *m_options.front == "awaiting") {
+                // A TD1 card's back: the window turns the stage on, and the clip plays on for the front.
+                m_processor->setFrontStage(true);
+                m_run.fronts.back().stageOnAt = seconds;
+            } else {
+                accepted = true;
+            }
+        }
+        if (m_options.front && !m_run.fronts.empty() && m_run.fronts.back().stageOnAt) {
+            Run::FrontClip& clip = m_run.fronts.back();
+            if (!clip.turnSeenAt && result.guidance->frontStage == lab_core::FrontStage::Looking) {
+                clip.turnSeenAt = seconds;
+            }
+            if (!clip.keptAt && result.guidance->front) {
+                clip.keptAt = seconds;
+            }
         }
         m_number = number;
         const lab_core::FocusStatus focus = m_focus->next(frame, result.guidance->page);
@@ -919,6 +959,39 @@ BandStats readNegatives(const Options& options) {
     return stats;
 }
 
+// A4.1's front stage per clip: whether the turn was seen and a front kept, and when. Nothing of the frames.
+void reportFront(const Options& options, const Run& run) {
+    const bool awaiting = *options.front == "awaiting";
+    std::printf("\nFront stage · %s\n", awaiting
+                                            ? "on at the back's accept, awaiting the turn"
+                                            : "on from the clip's start, its reset counting as the turn");
+    int kept = 0;
+    for (std::size_t c = 0; c < run.fronts.size(); ++c) {
+        const Run::FrontClip& clip = run.fronts[c];
+        std::printf("  clip %zu: ", c + 1);
+        if (!clip.stageOnAt) {
+            std::printf("no back accepted: the stage never went on\n");
+            continue;
+        }
+        if (awaiting) {
+            std::printf("stage on at %.2f s; ", *clip.stageOnAt);
+            if (clip.turnSeenAt) {
+                std::printf("turn seen at %.2f s; ", *clip.turnSeenAt);
+            } else {
+                std::printf("turn never seen; ");
+            }
+        }
+        if (clip.keptAt) {
+            ++kept;
+            std::printf("front kept at %.2f s (%.2f s after the stage went on)\n", *clip.keptAt,
+                        *clip.keptAt - *clip.stageOnAt);
+        } else {
+            std::printf("no front kept\n");
+        }
+    }
+    std::printf("fronts kept: %d of %zu clips\n", kept, run.fronts.size());
+}
+
 const char* acceptWord(ClipReads::Accept accept) {
     switch (accept) {
     case ClipReads::Accept::Never:
@@ -1044,7 +1117,9 @@ int usage() {
         "reading the MRZ, with --replay or --midv (the MRZ models beside --model):\n"
         "       --read every|paced [--reader-threads <n>] [--truth <file>] [--midv-templates <folder>]\n"
         "       [--band-stats] [--negatives <folder of pages with no MRZ>]\n"
-        "--truth's file: its lines that are not blank, two of 44, two of 36 or three of 30\n");
+        "--truth's file: its lines that are not blank, two of 44, two of 36 or three of 30\n"
+        "a TD1 card's front stage, with --replay: --front turned (a clip of the front, as opened in the\n"
+        "turn-over) or --front awaiting with --read (the stage on at the back's accept, as on a camera)\n");
     return 2;
 }
 
@@ -1107,6 +1182,11 @@ std::optional<Options> parse(int argc, char** argv) {
             options.midvTemplates = *v;
         } else if (arg == "--negatives") {
             options.negatives = *v;
+        } else if (arg == "--front") {
+            if (*v != "turned" && *v != "awaiting") {
+                return std::nullopt;
+            }
+            options.front = *v;
         } else {
             return std::nullopt;
         }
@@ -1124,6 +1204,14 @@ std::optional<Options> parse(int argc, char** argv) {
     }
     if (!options.read && reading) {
         std::fprintf(stderr, "--truth, --midv-templates, --band-stats and --negatives need --read\n");
+        return std::nullopt;
+    }
+    if (options.front && !options.replay) {
+        std::fprintf(stderr, "--front works with --replay only\n");
+        return std::nullopt;
+    }
+    if (options.front && *options.front == "awaiting" && !options.read) {
+        std::fprintf(stderr, "--front awaiting needs --read: the stage goes on at the back's accept\n");
         return std::nullopt;
     }
     return options;
@@ -1170,6 +1258,9 @@ int main(int argc, char** argv) {
     report(run);
     if (options->read) {
         reportReading(*options, run, scorer.log());
+    }
+    if (options->front) {
+        reportFront(*options, run);
     }
     return 0;
 }
