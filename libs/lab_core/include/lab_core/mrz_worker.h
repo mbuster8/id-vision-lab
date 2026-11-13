@@ -69,6 +69,10 @@ public:
     void submit(MrzJob job);
     // The reads finished since the last take, oldest first.
     std::vector<MrzDone> take();
+    // Drops the job waiting and the reads not taken, now, with their frames; a read in progress whose job's
+    // reset count is below `resetCount` is dropped when it ends. For a reset, which no process() may follow
+    // to take them (Stop, Discard).
+    void forget(std::uint64_t resetCount);
     // Manual: runs the job waiting. Whether there was one.
     bool pump();
     // Set once the reader could not be made: why, in fixed words ("model missing", "ONNX Runtime refused
@@ -88,6 +92,7 @@ private:
     std::condition_variable m_wake;
     std::optional<MrzJob> m_waiting;
     std::vector<MrzDone> m_done;
+    std::uint64_t m_keepFrom = 0; // reads of a lower reset count are dropped (forget)
     bool m_working = false;
     bool m_quit = false;
     bool m_tried = false; // the reader was made, or failed to be

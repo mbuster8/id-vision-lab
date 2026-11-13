@@ -18,8 +18,8 @@ struct CaptureSection {
 
 // What is known about a captured frame besides its pixels.
 struct CaptureInfo {
-    std::string source;                            // the camera's or the file's name
-    std::vector<std::string> findings;             // the processor's, for this frame
+    std::string source{};                          // the camera's or the file's name
+    std::vector<std::string> findings{};           // the processor's, for this frame
     std::vector<visual_debug::Overlay> overlays{}; // the processor's: where it found what it found
     std::vector<CaptureSection> sections{}; // written after the rest; a name the capture uses is refused
 };

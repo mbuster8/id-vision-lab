@@ -42,6 +42,8 @@ add_library(document_lab_ui STATIC
     scan_words.h
     scanned_card.cpp
     scanned_card.h
+    turn_over_bar.cpp
+    turn_over_bar.h
     uvc_descriptor.cpp
     uvc_descriptor.h)
 target_include_directories(document_lab_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -170,6 +170,31 @@ TEST(MrzParse, VisaIsNotAPassport) {
     EXPECT_FALSE(mrz->passport());
 }
 
+// A specimen with another document code: no check digit covers the code, so it stays valid.
+std::vector<std::string> withCode(std::vector<std::string> lines, std::string_view code) {
+    lines[0].replace(0, 2, code);
+    return lines;
+}
+
+// A4.1's D1: passports (TD3 `P`) and identity documents (TD1, TD2 `I`, `A`, `C`) are read; visas and every
+// other pairing are not. Each refused read is valid, so the refusal is the code's, never an invalid read's.
+TEST(MrzParse, SupportedDocuments) {
+    const std::vector<std::string> td3{kTd3Line1, kTd3Line2};
+    const std::vector<std::string> td2{kTd2Line1, kTd2Line2};
+    const std::vector<std::string> td1{kTd1Line1, kTd1Line2, kTd1Line3};
+    for (const auto& lines : {td3, td2, td1, withCode(td1, "AC"), withCode(td1, "C<"), withCode(td2, "A<")}) {
+        const std::optional<Mrz> mrz = parseMrz(lines);
+        ASSERT_TRUE(mrz && mrz->valid()) << lines[0];
+        EXPECT_TRUE(mrz->supported()) << lines[0];
+    }
+    for (const auto& lines : {withCode(td3, "V<"), withCode(td2, "V<"), withCode(td1, "P<"),
+                              withCode(td3, "I<"), withCode(td1, "V<")}) {
+        const std::optional<Mrz> mrz = parseMrz(lines);
+        ASSERT_TRUE(mrz && mrz->valid()) << lines[0];
+        EXPECT_FALSE(mrz->supported()) << lines[0];
+    }
+}
+
 TEST(MrzParse, EachCheckFails) {
     struct Case {
         std::size_t at;
@@ -390,6 +415,25 @@ TEST(MrzDates, PartialBirthDate) {
     EXPECT_EQ(birth("2008<<"), date(2020, 8, 0));
     EXPECT_EQ(birth("74<<<<"), date(1974, 0, 0));
     EXPECT_EQ(birth("26<<<<"), date(2026, 0, 0)); // 1 January 2026 is not after today
+    EXPECT_FALSE(birth("<<<<<<"));                // wholly unknown: no date to show
+}
+
+// Deep review F6: Doc 9303 writes an unknown date of birth's parts as fillers. Wholly unknown is well formed,
+// so such a document can be accepted; an unknown year before a known month or day is not.
+TEST(MrzParse, UnknownBirthDate) {
+    std::string unknown = kTd3Line2;
+    unknown.replace(13, 6, "<<<<<<");
+    const std::optional<Mrz> whole = parseMrz({kTd3Line1, checkedTd3(unknown)});
+    ASSERT_TRUE(whole);
+    EXPECT_TRUE(whole->wellFormed);
+    EXPECT_TRUE(whole->valid());
+
+    std::string yearOnly = kTd3Line2;
+    yearOnly.replace(13, 6, "<<0812");
+    const std::optional<Mrz> odd = parseMrz({kTd3Line1, checkedTd3(yearOnly)});
+    ASSERT_TRUE(odd);
+    EXPECT_FALSE(odd->wellFormed);
+    EXPECT_FALSE(odd->valid());
 }
 
 // The encoder for the property test: every check digit computed with checkDigit.
@@ -443,6 +487,132 @@ TEST(MrzParse, DigitFieldCorruptionNeverValidAndWrong) {
                     << "valid and wrong: " << line2 << " from " << lines[1];
             }
         }
+    }
+}
+
+// --- Deep review F9: TD1's and TD2's paths the specimens do not reach
+
+// A TD2 line 2 with every check digit recomputed; the number's check left alone when `longNumber` (it is in
+// the optional data, already right).
+std::string checkedTd2(std::string line, bool longNumber = false) {
+    if (!longNumber) {
+        line[9] = digitOf(line.substr(0, 9));
+    }
+    line[19] = digitOf(line.substr(13, 6));
+    line[27] = digitOf(line.substr(21, 6));
+    line[35] = digitOf(line.substr(0, 10) + line.substr(13, 7) + line.substr(21, 14));
+    return line;
+}
+
+// A TD1 card's line 2 with its check digits recomputed for `line1`; the number's check is line 1's own.
+std::string checkedTd1(const std::string& line1, std::string line2) {
+    line2[6] = digitOf(line2.substr(0, 6));
+    line2[14] = digitOf(line2.substr(8, 6));
+    line2[29] = digitOf(line1.substr(5, 25) + line2.substr(0, 7) + line2.substr(8, 7) + line2.substr(18, 11));
+    return line2;
+}
+
+TEST(MrzParse, LongDocumentNumberTd2) {
+    std::string optional = "3";
+    optional += digitOf("D231458903");
+    std::string line2 = "D23145890<UTO7408122F1204159" + padded(optional, 7) + "?";
+    line2 = checkedTd2(line2, true);
+    const std::optional<Mrz> mrz = parseMrz({kTd2Line1, line2});
+    ASSERT_TRUE(mrz);
+    EXPECT_EQ(mrz->documentNumber, "D231458903");
+    EXPECT_EQ(mrz->optionalData, "");
+    EXPECT_TRUE(passed(*mrz, MrzCheck::DocumentNumber));
+    EXPECT_TRUE(mrz->valid());
+}
+
+// A long number followed by more optional data, and TD1's two optional fields, joined by a space.
+TEST(MrzParse, Td1OptionalFields) {
+    std::string run = "34";
+    run += digitOf("D2314589034");
+    const std::string line1 = padded("I<UTOD23145890<" + run + "<AB12", 30);
+    const std::string line2 = checkedTd1(line1, "7408122F1204159UTO" + padded("XY9", 11) + "?");
+    const std::optional<Mrz> mrz = parseMrz({line1, line2, kTd1Line3});
+    ASSERT_TRUE(mrz);
+    EXPECT_EQ(mrz->documentNumber, "D2314589034");
+    EXPECT_EQ(mrz->optionalData, "AB12 XY9");
+    EXPECT_TRUE(mrz->valid());
+}
+
+// A TD1 card or a TD2 document, every check digit computed with checkDigit: a nine-character number, optional
+// data of a random length (none, some, or all of it).
+std::vector<std::string> encodeTd1(std::mt19937& rng) {
+    constexpr std::string_view kDigits = "0123456789";
+    constexpr std::string_view kAlphanumerics = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const std::string number = randomOf(rng, kAlphanumerics, 9);
+    const std::string line1 =
+        "I<UTO" + number + digitOf(number) + padded(randomOf(rng, kAlphanumerics, rng() % 16), 15);
+    const std::string line2 = randomOf(rng, kDigits, 6) + "?" + (rng() % 2 == 0 ? "F" : "M") +
+                              randomOf(rng, kDigits, 6) + "?" + "UTO" +
+                              padded(randomOf(rng, kAlphanumerics, rng() % 12), 11) + "?";
+    return {line1, checkedTd1(line1, line2), kTd1Line3};
+}
+
+std::vector<std::string> encodeTd2(std::mt19937& rng) {
+    constexpr std::string_view kDigits = "0123456789";
+    constexpr std::string_view kAlphanumerics = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const std::string line2 = randomOf(rng, kAlphanumerics, 9) + "?" + "UTO" + randomOf(rng, kDigits, 6) +
+                              "?" + (rng() % 2 == 0 ? "F" : "M") + randomOf(rng, kDigits, 6) + "?" +
+                              padded(randomOf(rng, kAlphanumerics, rng() % 8), 7) + "?";
+    return {kTd2Line1, checkedTd2(line2)};
+}
+
+// As DigitFieldCorruptionNeverValidAndWrong, for TD1's and TD2's digit-only places. One exception, the
+// formats' own: the number's check place read as '<' with optional data after it is the sign of a long
+// number, and when the true digit was 0 (as '<' counts) the read can pass as one. Only agreement guards that:
+// three identical reads of a '0' as '<'.
+void corruptEach(const std::vector<std::string>& lines, std::size_t line,
+                 const std::vector<std::size_t>& positions, std::size_t checkPlace) {
+    constexpr std::string_view kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<";
+    const std::optional<Mrz> original = parseMrz(lines);
+    ASSERT_TRUE(original && original->valid()) << lines[0] << " / " << lines[1];
+    for (const std::size_t at : positions) {
+        for (const char c : kAlphabet) {
+            if (c == lines[line][at]) {
+                continue;
+            }
+            std::vector<std::string> changed = lines;
+            changed[line][at] = c;
+            const std::optional<Mrz> read = parseMrz(changed);
+            ASSERT_TRUE(read);
+            const bool longNumberAmbiguity = at == checkPlace && c == '<' && lines[line][at] == '0';
+            EXPECT_TRUE(!read->valid() || read->text() == original->text() || longNumberAmbiguity)
+                << "valid and wrong: " << changed[line] << " from " << lines[line];
+        }
+    }
+}
+
+TEST(MrzParse, Td1DigitFieldCorruptionNeverValidAndWrong) {
+    std::mt19937 rng(2026);
+    std::vector<std::size_t> line2Places{29};
+    for (std::size_t i = 0; i <= 6; ++i) {
+        line2Places.push_back(i);
+    }
+    for (std::size_t i = 8; i <= 14; ++i) {
+        line2Places.push_back(i);
+    }
+    for (int n = 0; n < 50; ++n) {
+        const std::vector<std::string> lines = encodeTd1(rng);
+        corruptEach(lines, 0, {14}, 14);
+        corruptEach(lines, 1, line2Places, 99);
+    }
+}
+
+TEST(MrzParse, Td2DigitFieldCorruptionNeverValidAndWrong) {
+    std::mt19937 rng(2026);
+    std::vector<std::size_t> places{9, 35};
+    for (std::size_t i = 13; i <= 19; ++i) {
+        places.push_back(i);
+    }
+    for (std::size_t i = 21; i <= 27; ++i) {
+        places.push_back(i);
+    }
+    for (int n = 0; n < 50; ++n) {
+        corruptEach(encodeTd2(rng), 1, places, 9);
     }
 }
 

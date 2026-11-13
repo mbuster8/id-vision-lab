@@ -5,9 +5,9 @@
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
 A lab for reading identity documents with a camera, on this computer, and a visual debugger for OpenCV that shows
-every step of your own code. The **Document Lab** finds a passport's data page in a camera's frames or a recording,
-judges whether it can be read, tells the user what to change, and reads the machine-readable zone (MRZ) of a
-passport; reading the chip comes next. The **Visual Debug Viewer** shows any image or camera frame your OpenCV program sends it, with the
+every step of your own code. The **Document Lab** finds a passport's data page or an ID card in a camera's frames or
+a recording, judges whether it can be read, tells the user what to change, and reads the machine-readable zone
+(MRZ) of a passport or an ID card; reading the chip comes next. The **Visual Debug Viewer** shows any image or camera frame your OpenCV program sends it, with the
 original value of every pixel.
 
 This started as my bachelor's thesis in 2013, a visual debugger for Qt 4 and OpenCV 2.4 on Ubuntu. In 2026 I
@@ -34,7 +34,7 @@ brought it back, ported to Qt 6 and OpenCV 5, tested, documented, and grown into
 
 | Program | What it is for |
 |---|---|
-| **Document Lab** | The workbench for document-reading code: a camera or a replayed video, image, folder or recording through a processor, with guidance, focus on the document, reading a passport's MRZ, recording, capture and streaming to the viewer ([Running the Document Lab](docs/user-guide.md#running-the-document-lab)) |
+| **Document Lab** | The workbench for document-reading code: a camera or a replayed video, image, folder or recording through a processor, with guidance, focus on the document, reading a passport's or an ID card's MRZ, recording, capture and streaming to the viewer ([Running the Document Lab](docs/user-guide.md#running-the-document-lab)) |
 | **Visual Debug Viewer** | Shows every image and live frame sent to it: zoom, history, pixel values, display ranges, HDR, overlays ([Running the viewer](docs/user-guide.md#running-the-viewer)) |
 | **Visual Debug Example Sender** | A small Qt app that opens an image and sends it, to show how a GUI program uses the library ([Running the example sender](docs/user-guide.md#running-the-example-sender)) |
 | `live_sender` | Streams a camera, a video file, a phone's HDR video or a test pattern to the viewer as live channels ([Running live_sender](docs/user-guide.md#running-live_sender)) |
@@ -54,8 +54,9 @@ the same zoomable canvas as the viewer's, with what the processor found drawn ov
 It replays every frame in order and goes to any frame of a video, records frames losslessly as PNG folders,
 captures one at full resolution, and streams its frames to the viewer, or sends it one, when asked, showing
 whether the viewer is there. Its processors find edges, a simple outline of a light four-sided shape, or a
-passport's data page, whose MRZ the Document processor reads once three reads of different frames agree, then
-keeps the frame for review, to save or send only when asked.
+passport's data page or an ID card, whose MRZ the Document processor reads once three reads of different frames
+agree (a TD1 card's front is kept too, after it is turned over), then keeps the frame for review, to save or send
+only when asked.
 
 The **Document** processor guides the user to a page the next steps can read. DocsaidLab's DocAligner LC100
 (Apache-2.0), a small page model run on ONNX Runtime, finds the page's corners; six checks (in view, size, flat,
@@ -141,8 +142,8 @@ open build/debug/apps/document_lab/document_lab.app
 ```
 
 Start it with `open` (or from Finder), so that macOS asks for camera access for the lab. Choose **Document** as
-the processor, press **Start** and hold a passport open at its photo page to the camera, or **Open File…** a
-video.
+the processor, press **Start** and hold a passport open at its photo page, or an ID card with its MRZ showing, to
+the camera, or **Open File…** a video.
 
 **The Visual Debug Viewer:**
 
@@ -286,9 +287,9 @@ sanitizers on macOS; the CI badge above shows the latest result.
 ## Roadmap
 
 Done: the viewer with live channels, HDR and overlays; the Document Lab with replay, recording and capture; the
-Document processor's guidance; focus on the document; reading and checking a passport's MRZ, with review. Next,
-as [ADR-004](docs/ADR/ADR-004-document-reading.md) sets out: reading the chip (ICAO 9303: BAC, PACE, Passive and
-Active Authentication) through a PC/SC reader, ID cards' MRZ, and the photo zone on the flattened page.
+Document processor's guidance; focus on the document; reading and checking a passport's or an ID card's MRZ, with
+review. Next, as [ADR-004](docs/ADR/ADR-004-document-reading.md) sets out: reading the chip (ICAO 9303: BAC, PACE,
+Passive and Active Authentication) through a PC/SC reader, and the photo zone on the flattened page.
 
 ## Documentation
 

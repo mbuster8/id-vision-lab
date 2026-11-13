@@ -106,6 +106,8 @@ id_vision_lab_add_test_executable(doc_vision_tests
         doc_vision/mrz_agreement_test.cpp
         doc_vision/mrz_reader_test.cpp
         doc_vision/mrz_test.cpp
+        doc_vision/mrz_truth.h
+        doc_vision/mrz_truth_test.cpp
         doc_vision/onnx_model_test.cpp
         doc_vision/page_detector_test.cpp
         doc_vision/page_geometry_test.cpp
@@ -136,7 +138,9 @@ id_vision_lab_copy_runtime_dlls(doc_vision_eval)
 id_vision_lab_add_test_executable(lab_core_tests
     SOURCES
         lab_core/card_frame.h
+        lab_core/document_kind_test.cpp
         lab_core/document_outline_test.cpp
+        lab_core/document_processor_front_test.cpp
         lab_core/document_processor_mrz_test.cpp
         lab_core/document_processor_test.cpp
         lab_core/engine_test.cpp
@@ -148,6 +152,7 @@ id_vision_lab_add_test_executable(lab_core_tests
         lab_core/mrz_privacy_test.cpp
         lab_core/mrz_worker_test.cpp
         lab_core/processors_test.cpp
+        lab_core/reading_fixture.h
         lab_core/scripted_finder.h
         lab_core/result_sender_test.cpp
         lab_core/viewer_link_test.cpp

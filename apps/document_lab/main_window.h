@@ -19,11 +19,13 @@
 #include <visual_debug/image_sender.h>
 
 #include <QDate>
+#include <QDateTime>
 #include <QList>
 #include <QMainWindow>
 #include <QSet>
 #include <QString>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -54,6 +56,7 @@ class GateValuesBox;
 class ReviewBar;
 class ReviewPanel;
 class ScannedCard;
+class TurnOverBar;
 
 using Clock = std::chrono::steady_clock;
 
@@ -96,6 +99,8 @@ struct LabDependencies {
     QString modelFolder;                      // empty: defaultModelFolder(), beside the program
     std::function<Clock::time_point()> clock; // null: steady_clock::now
     std::function<QDate()> today;             // Review's expiry warning; null: QDate::currentDate()
+    // Names recordings, captures and saves; null: QDateTime::currentDateTime().
+    std::function<QDateTime()> currentTime;
 };
 
 // The Document Lab: a camera or a replay, run through a processor on the engine's thread, the result drawn on
@@ -138,6 +143,7 @@ private:
     void updateShowEntries(const lab_core::LabResult& result);
     void forgetShowEntries();
     void showResults(const lab_core::LabResult& result);
+    void showFindings(const std::vector<lab_core::Finding>& findings, const std::string& processorError = {});
     void colourResults();
     void display(ImageView::KeepView keep);
     void applyPicture(LiveResult result);
@@ -159,9 +165,25 @@ private:
 
     // A4's scan (spec §3.1): Scanned or Review shows the kept scan, and the camera or the replay is paused.
     bool scanShowing() const;
+    // A4.1: a scan is held in TurnOver too, while the card's front is looked for on live frames.
+    bool scanHeld() const;
     void accept(std::shared_ptr<const lab_core::MrzScan> scan);
+    void frontKept(std::shared_ptr<const lab_core::FrontShot> front);
     void applyScanEvent(ScanEvent event); // the user's: Skip the chip, Scan again, Discard, Scan another
-    void resumeScanning();                // frames come again, to a processor that has forgotten the scan
+    void applyStep(const ScanStep& step); // the step's state, scan, pause, front stage and resume
+    void pauseFor(Pause pause);
+    void resumeScanning(); // frames come again, to a processor that has forgotten the scan
+    // A4.1's D11: another source opened, or a camera started, in TurnOver keeps the back and looks for the
+    // front there; anywhere else it ends the run and its scan. Whether the turn-over carries on.
+    bool endRunForNewSource();
+    void carryTurnOverOn();
+    // The results the window still holds lose their scan and front, so a scan gone back from leaves no
+    // passport or card frame in memory, also on a replay that stays paused or has ended (A4.1, spec §6.9).
+    void forgetScanInResults();
+    // A4.1's two-sided Review: the side's frame (the back's when no front), showing a side, Send's outcome.
+    const frame_io::Frame& reviewFrame(CardSide side) const;
+    void showReviewSide(CardSide side);
+    void applySendOutcome();
     // Stop, another camera, format, source or processor end the scan as Discard does; `runContinues` plays a
     // replay the accept paused.
     void dropScan(bool runContinues);
@@ -171,13 +193,21 @@ private:
     // Review (spec §3.4): its bar, its panel in the results' place, the pill and the gate values.
     void showReview(bool shown);
     // Review's overlays: as its check boxes say, or `everything` (a save keeps them all).
-    std::vector<visual_debug::Overlay> reviewOverlays(bool everything) const;
+    // A side's overlays: the front's outline and corners only, its band having no meaning (A4.1).
+    std::vector<visual_debug::Overlay> reviewOverlays(bool everything, CardSide side = CardSide::Back) const;
     viewer_core::ImageTags reviewTags() const; // the canvas's: the outline and the band as guides
     void saveScan();
-    void savedScan(std::uint64_t review, const std::filesystem::path& file, const std::string& error);
+    // The file a save wrote for one side, or why it could not; no side for a passport or a TD2 (A4.1).
+    struct SavedSide {
+        std::optional<CardSide> side;
+        std::filesystem::path file;
+        std::string error;
+    };
+    void savedScan(std::uint64_t review, const std::vector<SavedSide>& sides);
     void sendScan();
     void updateSend(const lab_core::ViewerLink::State& link);
     doc_vision::MrzDate today() const;
+    QString timeStamp() const; // the local time, as recordings', captures' and saves' names begin
     void chooseShow(int index);
     std::string currentShow() const;
     Clock::time_point now() const;
@@ -284,7 +314,8 @@ private:
     GateChips* m_chips = nullptr;
     ScannedCard* m_scannedCard = nullptr;
     ReviewBar* m_reviewBar = nullptr;
-    QWidget* m_reviewMarks = nullptr; // the pill and the gate values, top left over the canvas
+    TurnOverBar* m_turnOverBar = nullptr; // A4.1
+    QWidget* m_reviewMarks = nullptr;     // the pill and the gate values, top left over the canvas
     QLabel* m_reviewPill = nullptr;
     GateValuesBox* m_gateValues = nullptr;
     QStackedWidget* m_sidePanel = nullptr; // the results, or Review's panel
@@ -341,15 +372,34 @@ private:
     // reset) never bring it back. Weak, so a scan gone back from leaves no passport frame in memory; compared
     // by owner, which an expired pointer keeps.
     std::weak_ptr<const lab_core::MrzScan> m_handledScan;
-    bool m_cameraPaused = false;     // frames are not handed to the engine; the session stays open
-    bool m_replayWasPlaying = false; // the accept paused a playing replay: going on plays it again
-    bool m_cameraLost = false;       // the camera failed while the scan showed: going on starts it again
+    // A4.1: a TD1 card's front, kept after its back; handled as the scan is.
+    std::shared_ptr<const lab_core::FrontShot> m_front;
+    std::weak_ptr<const lab_core::FrontShot> m_handledFront;
+    bool m_frontSource = false; // in TurnOver, the run is a source opened for the front (D11)
+    // The source each side's frame came from, as a save names it: after D11's carry-on they differ.
+    std::string m_scanSourceName;
+    std::string m_frontSourceName;
+    bool m_frontSkipped = false; // Skip the front was chosen
+    // A state entered without a key (an accept, a front kept) takes Enter and Esc only from this time on, so
+    // a press meant for the step before never lands on the next (A4.1, spec §6.5).
+    std::optional<Clock::time_point> m_keysFrom;
+    // A4.1's two-sided Review (spec §6.7): the side on the canvas, and Send's outcome per side.
+    CardSide m_reviewSide = CardSide::Back;
+    std::array<int, 2> m_sendOutcomes{}; // ReviewPanel::Outcome per side, Back first
+    std::array<QString, 2> m_sendFailures;
+    std::optional<CardSide> m_sendingSide; // the side whose still is on its way
+    bool m_cameraPaused = false;           // frames are not handed to the engine; the session stays open
+    bool m_replayWasPlaying = false;       // the accept paused a playing replay: going on plays it again
+    bool m_cameraLost = false; // the camera failed while the scan showed: going on starts it again
     std::vector<lab_core::Finding> m_scanFindings; // the accept's rows (04's), which a save keeps
     bool m_reviewShown = false;
     QList<int> m_sizesBeforeReview;   // the splitter's, given back on leaving Review
     std::uint64_t m_reviewNumber = 0; // a save that ends after its Review was left changes nothing
-    bool m_scanSaved = false;
-    bool m_scanSaving = false;                   // a save is being written: Enter and Save start no other
+    bool m_scanSaved = false;         // every side written
+    bool m_scanSaving = false;        // a save is being written: Enter and Save start no other
+    // A4.1 (spec §6.8): the stamp the Review's first Save took, which a retry reuses, and each side written.
+    std::optional<std::string> m_saveStamp;
+    std::array<bool, 2> m_sideSaved{};           // Back first
     std::optional<std::uint64_t> m_sendingStill; // Review's still, until the link says it ended
 
     // Destroyed in this order, from the bottom: the link's thread, the engine's and the converter's stop

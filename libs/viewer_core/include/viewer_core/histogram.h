@@ -15,9 +15,9 @@ namespace viewer_core {
 // The whole frame's finite minimum and maximum, and how many colour values are not finite (floating point
 // only: integers have none). Taken over the whole frame, not a sample, so a lone hot pixel still counts.
 struct ValueExtent {
-    std::optional<DisplayRange> all;     // every channel, alpha included: what autoRange takes
-    std::optional<DisplayRange> colours; // the colour channels only (alpha left out): what the axis spans
-    std::size_t nonFinite = 0;           // colour channels only, as the histogram's bins
+    std::optional<DisplayRange> all{};     // every channel, alpha included: what autoRange takes
+    std::optional<DisplayRange> colours{}; // the colour channels only (alpha left out): what the axis spans
+    std::size_t nonFinite = 0;             // colour channels only, as the histogram's bins
     bool operator==(const ValueExtent&) const = default;
 };
 
@@ -27,8 +27,8 @@ ValueExtent valueExtent(const cv::Mat& image);
 // What maps to black and to white in the picture, and for HDR the top of the scale.
 struct RangeMarkers {
     DisplayRange range;
-    std::optional<double> scaleTop; // HDR only: hdrScaleTop
-    bool hdr = false;               // a drag moves HDR's black and white instead of making Fixed
+    std::optional<double> scaleTop{}; // HDR only: hdrScaleTop
+    bool hdr = false;                 // a drag moves HDR's black and white instead of making Fixed
     bool operator==(const RangeMarkers&) const = default;
 };
 
@@ -53,10 +53,11 @@ struct Histogram {
     DisplayRange axis{0, 1};   // what the strip draws: the bins fill it exactly
     DisplayRange values{0, 1}; // what a drag can reach: data, markers and margin; whole codes for integers
     int depth = CV_8U;         // integer depths have whole-code bins and snap values to codes
-    double binWidth = 1.0 / kHistogramBins;         // in values
-    std::vector<std::vector<std::uint32_t>> counts; // per colour channel, alpha left out, in OpenCV's order;
-                                                    // all the same length; empty when nothing is finite
-    int step = 1;                                   // every step-th pixel across and down was counted
+    double binWidth = 1.0 / kHistogramBins; // in values
+    std::vector<std::vector<std::uint32_t>>
+        counts{};              // per colour channel, alpha left out, in OpenCV's order;
+                               // all the same length; empty when nothing is finite
+    int step = 1;              // every step-th pixel across and down was counted
     std::size_t samples = 0;   // pixels counted; 0 only for a histogram of nothing, as Histogram{} is
     std::size_t nonFinite = 0; // the whole frame's, from the extent
 };

@@ -243,6 +243,49 @@ TEST(ReviewPanel, BackgroundFollowsAnAppearanceSwitch) {
     EXPECT_EQ(image.pixelColor(8, 8), light); // in the content's padding, above the title
 }
 
+// A4.1, spec §6.7: a TD1 card's Review has a Back | Front switch; on the front, the band has no meaning.
+TEST(ReviewBar, SwitchOnlyWithAFront) {
+    ReviewBar bar;
+    bar.resize(900, 40);
+    bar.show();
+    auto* back = bar.findChild<QPushButton*>("backSideButton");
+    auto* front = bar.findChild<QPushButton*>("frontSideButton");
+    ASSERT_TRUE(back && front);
+    EXPECT_FALSE(front->isVisibleTo(&bar));
+    bar.setHasFront(true);
+    EXPECT_TRUE(front->isVisibleTo(&bar));
+    EXPECT_EQ(bar.side(), document_lab::CardSide::Back);
+    QSignalSpy changed(&bar, &ReviewBar::sideChanged);
+
+    front->click();
+
+    EXPECT_EQ(bar.side(), document_lab::CardSide::Front);
+    EXPECT_EQ(changed.count(), 1);
+    EXPECT_FALSE(bar.findChild<QCheckBox*>("bandBox")->isEnabled());
+    EXPECT_FALSE(bar.overlays().band);
+    bar.reset();
+    EXPECT_EQ(bar.side(), document_lab::CardSide::Back);
+    EXPECT_TRUE(bar.findChild<QCheckBox*>("bandBox")->isEnabled());
+}
+
+// TD1 and TD2 have optional data where TD3 has a personal number, and no check digit over it.
+TEST(ReviewPanel, RowsForTd1) {
+    ReviewPanel panel;
+    lab_core::MrzScan scan;
+    const auto mrz = doc_vision::parseMrz({"I<UTOD231458907<<<<<<<<<<<<<<<", "7408122F1204159UTO<<<<<<<<<<<6",
+                                           "ERIKSSON<<ANNA<MARIA<<<<<<<<<<"});
+    ASSERT_TRUE(mrz && mrz->valid());
+    scan.mrz = *mrz;
+
+    panel.setScan(scan, kToday);
+    EXPECT_EQ(textOf(panel, "personalNumberLabel"), "Optional data");
+    EXPECT_EQ(textOf(panel, "personalNumberCheck"), "");
+    EXPECT_EQ(textOf(panel, "documentNumberValue"), "D23145890");
+
+    panel.setScan(specimenScan(), kToday);
+    EXPECT_EQ(textOf(panel, "personalNumberLabel"), "Personal no.");
+}
+
 TEST(ReviewBar, DefaultsAndToggles) {
     ReviewBar bar;
     EXPECT_EQ(textOf(bar, "reviewBarTitle"), "Captured frame");

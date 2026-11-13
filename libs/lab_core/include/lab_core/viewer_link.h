@@ -49,8 +49,11 @@ public:
     void setEndpoint(std::string endpoint);
     // Sent in order, as an ordinary image into the viewer's history. At most kMaxStills wait; a further one,
     // or one with no endpoint, is refused and counted. Returns the still's number (1, 2, …), by which
-    // State::lastStillNumber says when it has ended.
-    std::uint64_t sendStill(cv::Mat image, std::string name, visual_debug::ImageDescription description);
+    // State::lastStillNumber says when it has ended. `refused`, when given, is set to why it was refused at
+    // once, or emptied: an older still's answer may replace lastStillNumber before the caller reads the
+    // state.
+    std::uint64_t sendStill(cv::Mat image, std::string name, visual_debug::ImageDescription description,
+                            std::string* refused = nullptr);
     // Drops the stills waiting and stops pinging; returns at once. A request in progress finishes.
     void stop();
     // Nothing in progress, nothing waiting and no ping due: after stop(), the link can be destroyed at once.

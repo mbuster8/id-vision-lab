@@ -68,10 +68,10 @@ struct EngineStatus {
 };
 
 struct EngineHooks {
-    std::function<void()> resultReady;      // a result entered the empty slot
-    std::function<void()> statusChanged;    // the state, the message or the recording changed
-    std::function<Clock::time_point()> now; // null: Clock::now
-    std::function<void()> retiringSender;   // tests throw here, as a full memory would while a sender retires
+    std::function<void()> resultReady{};      // a result entered the empty slot
+    std::function<void()> statusChanged{};    // the state, the message or the recording changed
+    std::function<Clock::time_point()> now{}; // null: Clock::now
+    std::function<void()> retiringSender{}; // tests throw here, as a full memory would while a sender retires
 };
 
 // Moves frames from a source through the processor to the window, the recorder and the sender, on one
@@ -126,8 +126,11 @@ public:
     // again.
     void setProcessor(std::unique_ptr<FrameProcessor> processor);
     // The processor's reset() and nothing else (A4's Scan again, Discard and Scan another): no new
-    // generation, so a recording in progress and a camera run's focus go on.
+    // generation, so a recording in progress and a camera run's focus go on. The last result, kept for a
+    // sender set while nothing runs, and a result waiting in the slot lose their scan and front (A4.1).
     void resetProcessor();
+    // A4.1: the processor's setFrontStage(on), as resetProcessor() posts reset(): no new generation.
+    void setFrontStage(bool on);
     // Records the frames processed from now on. A restart, a seek, a loop, another source and stop() also
     // stop the recording; its counts are those since this call.
     void startRecording(std::unique_ptr<frame_io::RecordingWriter> writer);
@@ -178,7 +181,7 @@ private:
     // made after another source, a stop or a restart is posted behind that command, so an older doSeek still
     // in the mailbox ahead of it must leave it alone.
     struct SeekRequest {
-        std::optional<std::uint64_t> absolute;
+        std::optional<std::uint64_t> absolute{};
         std::int64_t relative = 0;
         std::uint64_t number = 0;
     };

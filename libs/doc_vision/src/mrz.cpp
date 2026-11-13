@@ -84,12 +84,17 @@ bool lettersOrFiller(std::string_view field) {
 // caught here or not at all.
 bool isSex(char c) { return c == 'F' || c == 'M' || c == 'X' || c == kFiller; }
 
-// A birth date's six characters: the year's two digits, then the month and the day, each two digits or `<<`.
+// A birth date's six characters: the year's two digits, then the month and the day, each two digits or `<<`;
+// or all six `<`, a date of birth wholly unknown (Doc 9303 writes unknown parts as fillers). An unknown year
+// before a known month or day is not well formed.
 bool birthWellFormed(std::string_view date) {
     const auto pair = [&](std::size_t at) {
         return (isDigit(date[at]) && isDigit(date[at + 1])) ||
                (date[at] == kFiller && date[at + 1] == kFiller);
     };
+    if (date == "<<<<<<") {
+        return true;
+    }
     return date.size() == 6 && isDigit(date[0]) && isDigit(date[1]) && pair(2) && pair(4);
 }
 
@@ -323,6 +328,15 @@ bool Mrz::passport() const {
     return format == MrzFormat::Td3 && !documentCode.empty() && documentCode[0] == 'P';
 }
 
+bool Mrz::supported() const {
+    if (passport()) {
+        return true;
+    }
+    const bool identityFormat = format == MrzFormat::Td1 || format == MrzFormat::Td2;
+    return identityFormat && !documentCode.empty() &&
+           (documentCode[0] == 'I' || documentCode[0] == 'A' || documentCode[0] == 'C');
+}
+
 std::string Mrz::text() const {
     std::string out;
     for (const std::string& line : lines) {
@@ -387,8 +401,8 @@ std::optional<Mrz> parseMrz(const std::vector<std::string>& lines) {
 
 std::optional<MrzDate> birthDateOf(const Mrz& mrz, MrzDate today) {
     const std::string_view text(mrz.birthDate);
-    if (text.size() != 6 || !birthWellFormed(text)) {
-        return std::nullopt;
+    if (text.size() != 6 || !birthWellFormed(text) || text[0] == kFiller) {
+        return std::nullopt; // wholly unknown: no date to give
     }
     const int yy = *twoDigits(text, 0);
     // `<<` is unknown (0); "00" is not a month or a day. An unknown month makes the day unknown too.

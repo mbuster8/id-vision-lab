@@ -242,6 +242,10 @@ void Engine::setProcessor(std::unique_ptr<FrameProcessor> processor) {
     post([this, processor = held(std::move(processor))] { doSetProcessor(std::move(*processor)); });
 }
 
+void Engine::setFrontStage(bool on) {
+    post([this, on] { m_processor->setFrontStage(on); });
+}
+
 void Engine::resetProcessor() {
     post([this] { resetProcessorNow(); });
 }
@@ -1204,6 +1208,19 @@ void Engine::resetProcessorNow() {
     } catch (...) {
         const std::lock_guard lock(m_mutex);
         ++m_status.processorErrors;
+    }
+    // A scan gone back from leaves no passport or card frame here either (A4.1, spec §6.9): on a replay that
+    // stays paused, no newer result replaces these.
+    if (m_lastResult && m_lastResult->processed.guidance) {
+        m_lastResult->processed.guidance->scan.reset();
+        m_lastResult->processed.guidance->front.reset();
+    }
+    std::shared_ptr<const MrzScan> scan; // the slot's, released without the lock
+    std::shared_ptr<const FrontShot> front;
+    const std::lock_guard lock(m_mutex);
+    if (m_slot && m_slot->processed.guidance) {
+        scan = std::move(m_slot->processed.guidance->scan);
+        front = std::move(m_slot->processed.guidance->front);
     }
 }
 

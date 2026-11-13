@@ -8,6 +8,12 @@ class QPaintEvent;
 class QPushButton;
 class QScrollArea;
 
+// Declared, not included: lab_core/document_kind.h brings doc_vision/mrz.h, whose <compare> is then the first
+// standard header Qt 6.4's moc meets here, and it cannot parse GCC 13's <concepts> behind it (Ubuntu 24.04).
+namespace lab_core {
+enum class DocumentKind;
+} // namespace lab_core
+
 namespace document_lab {
 
 // Screen 04 (A4, spec §3.3): over the canvas, the captured frame dimmed and a card that says the passport is
@@ -19,6 +25,9 @@ class ScannedCard : public QWidget {
 
 public:
     explicit ScannedCard(QWidget* parent = nullptr);
+
+    // A4.1: the words and the drawing for what the accepted MRZ says the document is; a passport's until set.
+    void setKind(lab_core::DocumentKind kind);
 
 signals:
     void skipChip();

@@ -66,7 +66,14 @@ std::filesystem::path writeCapture(const std::filesystem::path& folder, const st
     // A finding or a value that is not UTF-8 is written with U+FFFD in its place rather than thrown on.
     const std::string text =
         described.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
-    if (!writeOwnerOnly(png, bytes, error) || !writeOwnerOnly(json, text, error)) {
+    if (!writeOwnerOnly(png, bytes, error)) {
+        return {};
+    }
+    if (!writeOwnerOnly(json, text, error)) {
+        // A capture is its pair: a picture left alone would be one the caller was told was not saved, and a
+        // retry would write beside it under another name.
+        std::error_code ignored;
+        std::filesystem::remove(png, ignored);
         return {};
     }
     return png;

@@ -220,8 +220,9 @@ With `--replay` or `--midv`, `--read every` also reads the MRZ of every frame th
 one, for each clip's accept (right, wrong or never against the truth), the reads made, the share valid and the
 valid reads that are not the truth; `--read paced` plays the frames at their own times with the reader on its own
 thread, as the lab runs it, for the time to accept and the processor's time a frame while the reader is busy. The
-MRZ models are looked for beside `--model`. `--truth <file>` gives the MRZ a replayed clip shows (its first two
-lines), compared inside and never printed; `--midv-templates <MIDV-2020>/templates` takes each MIDV clip's from its
+MRZ models are looked for beside `--model`. `--truth <file>` gives the MRZ a replayed clip shows (its lines that
+are not blank: two of 44 for a passport, two of 36 for a TD2 document, three of 30 for a TD1 card's back),
+compared inside and never printed; `--midv-templates <MIDV-2020>/templates` takes each MIDV clip's from its
 template, and reads clips 00, 04, …, 96. `--reader-threads <n>` sets the reader's threads, `--band-stats` prints
 the spread of the band's measures over the reads, and `--negatives <folder>` reads pages with no MRZ (a MIDV-2020
 `photo/images/<type>` folder of ID card fronts is flattened by its annotations) for the same spread:
@@ -231,6 +232,11 @@ build/release/tests/doc_vision_eval --model <the model> --midv <MIDV-2020>/clips
     --midv-templates <MIDV-2020>/templates --read every --band-stats \
     aze_passport grc_passport lva_passport srb_passport
 ```
+
+A TD1 card's front stage runs on replays too. `--front turned` plays each clip with the stage on, as a clip of the
+front opened during the turn-over; `--front awaiting`, with `--read`, turns it on at the back's accept and plays
+on, as a camera does, to see whether turning the card counts as the turn. Each prints, per clip, when the turn was
+seen and when a front would be kept.
 
 ## Running the tests
 

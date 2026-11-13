@@ -1453,7 +1453,7 @@ TEST(LabWindow, OtherFolderShowsTheReminder) {
     button(lab, "chooseLabFolderButton")->click();
 
     EXPECT_TRUE(lab.status().contains(
-        QStringLiteral("Recordings may show real passports; avoid synced or shared folders.")))
+        QStringLiteral("Recordings may show real passports or ID cards; avoid synced or shared folders.")))
         << lab.status().toStdString();
     lab.replay(framesOf(test_support::cardFrame()));
     lab.pump();
@@ -1707,7 +1707,7 @@ TEST(LabWindow, AnotherComputerIsNotPingedUntilConfirmed) {
 
     ASSERT_EQ(questions.size(), 1);
     EXPECT_TRUE(questions[0].contains(QStringLiteral("192.0.2.1")));
-    EXPECT_TRUE(questions[0].contains(QStringLiteral("real passports")));
+    EXPECT_TRUE(questions[0].contains(QStringLiteral("real passports or ID cards"))); // A4.1
     EXPECT_EQ(lab.linkEndpoints.back(), remote.toStdString());
     EXPECT_EQ(viewerState(lab), QStringLiteral("available"));
     EXPECT_TRUE(lab.status().contains(QStringLiteral("sending to 192.0.2.1"))) << lab.status().toStdString();
@@ -1893,6 +1893,7 @@ struct GuidanceScript {
     std::size_t next = 0;
     int made = 0;
     int resets = 0;
+    std::vector<bool> frontStages; // A4.1: setFrontStage's calls, in order
 };
 
 class ScriptedDocumentProcessor : public lab_core::FrameProcessor {
@@ -1907,6 +1908,7 @@ public:
         return script.results[std::min(script.next++, script.results.size() - 1)];
     }
     void reset() override { ++m_script->resets; }
+    void setFrontStage(bool on) override { m_script->frontStages.push_back(on); }
 
 private:
     std::shared_ptr<GuidanceScript> m_script;
@@ -1937,6 +1939,8 @@ struct Guided {
     bool readerAvailable = true; // false: "model missing"
     bool band = false;           // the MRZ band among the overlays, after the outline
     std::shared_ptr<const lab_core::MrzScan> scan{};
+    std::optional<lab_core::FrontStage> frontStage{}; // A4.1
+    std::shared_ptr<const lab_core::FrontShot> front{};
 };
 
 // A result as the Document processor gives it for a shown hint: the chips (the hint's gate ✗), the outline as
@@ -1995,6 +1999,8 @@ lab_core::ProcessorResult guided(const Guided& wanted) {
                                   .colour = visual_debug::kOverlayGreen});
     }
     guidance.scan = wanted.scan;
+    guidance.frontStage = wanted.frontStage;
+    guidance.front = wanted.front;
     result.findings = {{"Sharpness", "41 (min 200)", lab_core::Finding::Tone::Bad}};
     result.guidance = guidance;
     return result;
@@ -2689,7 +2695,7 @@ TEST(LabWindow, HintTwelveOverEleven) {
     lab.pump();
 
     EXPECT_EQ(bannerLine(lab), QStringLiteral("Can't read the lines at the bottom"));
-    EXPECT_EQ(smallLine(lab), QStringLiteral("check for glare or fingers; only passports are read for now"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("check for glare or fingers"));
     EXPECT_EQ(banner(lab)->progress(), std::nullopt);
     EXPECT_NE(dashedOn(lab), nullptr);
     EXPECT_TRUE(lab.status().contains(QStringLiteral("State: reading"))) << lab.status().toStdString();
@@ -2908,6 +2914,7 @@ TEST(LabWindow, EnterSkipsTheChipEscScansAgain) {
     ASSERT_TRUE(scannedShown(lab));
     const int resets = script->resets;
     const std::size_t processed = script->next;
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QTest::keyClick(lab.canvas(), Qt::Key_Escape);
     lab.pump();
@@ -2918,6 +2925,7 @@ TEST(LabWindow, EnterSkipsTheChipEscScansAgain) {
     EXPECT_FALSE(banner(lab)->isHidden()); // the banner is back
     lab.pump(2);                           // the old scan once more, then Good, then the new scan
     ASSERT_TRUE(scannedShown(lab));
+    lab.advance(400ms);
 
     QTest::keyClick(lab.canvas(), Qt::Key_Return);
 
@@ -2949,6 +2957,7 @@ TEST(LabWindow, HandledScanDoesNotComeBack) {
     lab.replay(framesOf(test_support::cardFrame(), 6));
     lab.pump();
     ASSERT_TRUE(scannedShown(lab));
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QTest::keyClick(lab.canvas(), Qt::Key_Escape);
     lab.pump(3);
@@ -3274,6 +3283,8 @@ TEST(LabWindow, SaveWritesTheMrzSection) {
     EXPECT_EQ(json["mrz"]["line 1"], kSpecimen[0]);
     EXPECT_EQ(json["mrz"]["line 2"], kSpecimen[1]);
     EXPECT_NE(json["overlays"].dump().find("MRZ band"), std::string::npos) << json["overlays"].dump();
+    EXPECT_FALSE(json.contains("card")) << "A4.1: a passport has no sides";
+    EXPECT_EQ(jsons[0].filename().string().find(" back"), std::string::npos) << jsons[0];
     for (const std::string text : {"ERIKSSON", "ANNA", "L898902C3", "ZE184226B"}) {
         EXPECT_EQ(json["findings"].dump().find(text), std::string::npos) << json["findings"].dump();
     }
@@ -3291,6 +3302,21 @@ TEST(LabWindow, EnterSaves) {
 
     EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
     EXPECT_TRUE(shownIn(lab, reviewPanel(lab)));
+}
+
+// Deep review F4: with no viewer address, Review's Send says why it sends nothing.
+TEST(LabWindow, SendWithNoAddressSaysSo) {
+    Lab lab(scanning());
+    intoReview(lab);
+    lab.window->findChild<QLineEdit*>("endpointEdit")->clear();
+
+    panelButton(lab, "sendButton")->click();
+
+    const QLabel* failure = reviewPanel(lab)->findChild<QLabel*>("sendFailure");
+    ASSERT_NE(failure, nullptr);
+    EXPECT_TRUE(failure->isVisibleTo(lab.window.get()));
+    EXPECT_EQ(failure->text(), QStringLiteral("No viewer address: type one in the Viewer row."));
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled());
 }
 
 TEST(LabWindow, SendThroughTheLink) {
@@ -3503,6 +3529,7 @@ TEST(LabWindow, HeldEnterDoesNotSave) {
     lab.replay(framesOf(test_support::cardFrame(), 5));
     lab.pump();
     ASSERT_TRUE(scannedShown(lab));
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(lab.canvas(), &press);
@@ -3579,6 +3606,7 @@ TEST(LabWindow, ScanGoneBackFromIsFreed) {
     lab.pump();
     ASSERT_TRUE(scannedShown(lab));
     ASSERT_FALSE(watch.expired());
+    lab.advance(400ms); // past the key guard after an accept (A4.1)
 
     QTest::keyClick(lab.canvas(), Qt::Key_Escape);
     lab.pump(3);
@@ -3677,6 +3705,866 @@ TEST(LabWindow, PrivacyStatusAndStills) {
     json.erase("mrz");
     EXPECT_EQ(mrzIn(json.dump()), "") << json.dump();
     EXPECT_EQ(mrzIn(capturesOf(lab, ".png").at(0).filename().string()), "") << "the picture's name";
+}
+
+// Deep review F10: Review left, its panel's hidden labels keep none of the document's MRZ.
+TEST(LabWindow, ReviewLeftKeepsNoMrzInItsPanel) {
+    Lab lab(scanning());
+    intoReview(lab);
+    ASSERT_EQ(reviewPanel(lab)->findChild<QLabel*>("surnameValue")->text(), QStringLiteral("ERIKSSON"));
+
+    panelButton(lab, "discardButton")->click();
+
+    for (const QLabel* label : reviewPanel(lab)->findChildren<QLabel*>()) {
+        EXPECT_EQ(mrzIn(label->text().toStdString()), "") << label->objectName().toStdString();
+    }
+}
+
+// --- A4.1: ID cards, and a TD1 card's turn-over
+// ------------------------------------------------------------------------------------------------
+
+// ICAO's TD1 card (its back) and TD2 document, as scanOf makes a passport's scan.
+std::shared_ptr<const lab_core::MrzScan> idScanOf(const std::vector<std::string>& lines,
+                                                  int frameNumber = 7) {
+    auto scan = std::make_shared<lab_core::MrzScan>(*scanOf(frameNumber));
+    const std::optional<doc_vision::Mrz> mrz = doc_vision::parseMrz(lines);
+    EXPECT_TRUE(mrz && mrz->valid());
+    if (mrz) {
+        scan->mrz = *mrz;
+    }
+    return scan;
+}
+const std::vector<std::string> kTd1Card{"I<UTOD231458907<<<<<<<<<<<<<<<", "7408122F1204159UTO<<<<<<<<<<<6",
+                                        "ERIKSSON<<ANNA<MARIA<<<<<<<<<<"};
+const std::vector<std::string> kTd2Card{"I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<",
+                                        "D231458907UTO7408122F1204159<<<<<<<6"};
+
+std::shared_ptr<const lab_core::FrontShot> frontOf(int frameNumber = 9) {
+    auto front = std::make_shared<lab_core::FrontShot>();
+    front->frame = test_support::listFrame(static_cast<std::uint64_t>(frameNumber), 0ms,
+                                           cv::Mat(300, 400, CV_8UC3, cv::Scalar(160, 90, 40)));
+    front->quad = {{{30, 40}, {370, 40}, {370, 250}, {30, 250}}};
+    front->gates = {{"Fill", "58 %", lab_core::Finding::Tone::Good},
+                    {"Sharpness", "380 (min 200)", lab_core::Finding::Tone::Good}};
+    return front;
+}
+
+// A result in the front stage, as the Document processor gives it after a TD1 card's back was accepted.
+lab_core::ProcessorResult turnOverOf(std::shared_ptr<const lab_core::MrzScan> scan,
+                                     lab_core::FrontStage stage, Hint shown = Hint::Good,
+                                     std::shared_ptr<const lab_core::FrontShot> front = nullptr) {
+    return guided({.shown = shown, .scan = std::move(scan), .frontStage = stage, .front = std::move(front)});
+}
+
+QWidget* turnOverBar(const Lab& lab) { return lab.window->findChild<QWidget*>("turnOverBar"); }
+bool turnOverShown(const Lab& lab) {
+    const QWidget* bar = turnOverBar(lab);
+    return bar != nullptr && bar->isVisibleTo(lab.window.get());
+}
+QPushButton* turnOverButton(const Lab& lab, const char* name) {
+    return turnOverBar(lab) != nullptr ? turnOverBar(lab)->findChild<QPushButton*>(name) : nullptr;
+}
+QString scannedTitle(const Lab& lab) {
+    const auto* title =
+        scannedCard(lab) != nullptr ? scannedCard(lab)->findChild<QLabel*>("scannedTitle") : nullptr;
+    return title != nullptr ? title->text() : QString();
+}
+
+// A camera run whose first frame accepts a TD1 card's back, the next ones as `then` says.
+std::shared_ptr<GuidanceScript> td1Script(std::vector<lab_core::ProcessorResult> then) {
+    std::vector<lab_core::ProcessorResult> results{acceptOf(idScanOf(kTd1Card))};
+    results.insert(results.end(), then.begin(), then.end());
+    return scriptOf(std::move(results));
+}
+
+void startDocumentCamera(Lab& lab) {
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    startStop(lab)->click();
+    cameraFrames(lab, 1);
+}
+
+// Spec §6.5, §6.6: a TD1 card's back goes to TurnOver, not Scanned. The camera's frames keep coming and are
+// drawn, the processor's front stage is turned on, and Capture and Send Frame are off.
+TEST(LabWindow, Td1AcceptGoesToTurnOver) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+    const std::uint64_t before = lab.window->canvasCountsForTests().received;
+    cameraFrames(lab, 2);
+    EXPECT_GT(lab.window->canvasCountsForTests().received, before);
+    EXPECT_EQ(script->frontStages,
+              std::vector<bool>{true}); // posted with the accept, run by the engine since
+    EXPECT_FALSE(button(lab, "captureButton")->isEnabled());
+    EXPECT_FALSE(button(lab, "sendFrameButton")->isEnabled());
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("State: turn over"))) << lab.status().toStdString();
+}
+
+// Spec §6.3: "Turn the card over" while the stage awaits the turn, whatever the hint; then the front's hints.
+TEST(LabWindow, TurnOverBannerWaitsForTheTurn) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn, Hint::Good),
+                                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::NoPage),
+                                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    cameraFrames(lab, 1);
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Turn the card over"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("take it out of view, then show the side with the photo"));
+    cameraFrames(lab, 1);
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Show the document"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("the side with the photo, all of it in view"));
+    cameraFrames(lab, 1);
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Good: hold still"));
+    EXPECT_EQ(smallLine(lab), QString());
+}
+
+TEST(LabWindow, FrontKeptGoesToScanned) {
+    const auto script =
+        td1Script({turnOverOf(nullptr, lab_core::FrontStage::Looking),
+                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf())});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    cameraFrames(lab, 2);
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_EQ(scannedTitle(lab), QStringLiteral("ID card scanned"));
+    const std::uint64_t before = lab.window->canvasCountsForTests().received;
+    cameraFrames(lab, 2); // the camera is paused, as for a passport
+    EXPECT_EQ(lab.window->canvasCountsForTests().received, before);
+}
+
+TEST(LabWindow, SkipFrontGoesToScanned) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    turnOverButton(lab, "skipFrontButton")->click();
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_EQ(scannedTitle(lab), QStringLiteral("ID card scanned"));
+}
+
+TEST(LabWindow, EscInTurnOverScansAgain) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    const int resets = script->resets;
+    lab.advance(400ms); // past the key guard (Task 9)
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+    lab.pump();
+    EXPECT_EQ(script->frontStages, (std::vector<bool>{true, false}));
+    EXPECT_GT(script->resets, resets);
+}
+
+TEST(LabWindow, StopInTurnOverFreesTheBack) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    startStop(lab)->click();
+    lab.pump();
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(lab.status().contains(QStringLiteral("turn over"))) << lab.status().toStdString();
+    EXPECT_EQ(script->frontStages.back(), false);
+}
+
+TEST(LabWindow, AnotherProcessorInTurnOverEndsIt) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+}
+
+// A TD2 document's MRZ is on its front: no turn-over.
+TEST(LabWindow, Td2GoesStraightToScanned) {
+    const auto script = scriptOf({acceptOf(idScanOf(kTd2Card))});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+
+    EXPECT_TRUE(scannedShown(lab));
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_EQ(scannedTitle(lab), QStringLiteral("ID card scanned"));
+    EXPECT_TRUE(script->frontStages.empty());
+}
+
+// D11: a back accepted on a replay pauses it with its controls off; another clip opened then carries the
+// turn-over on, its controls on.
+TEST(LabWindow, FrontClipCarriesTheTurnOverOn) {
+    const auto script = td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)});
+    Lab lab(documentIs(script));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    EXPECT_EQ(lab.window->findChild<QSlider*>("positionSlider")->isEnabled(), false);
+    EXPECT_FALSE(button(lab, "playPauseButton")->isEnabled());
+
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_TRUE(button(lab, "playPauseButton")->isEnabled());
+    EXPECT_EQ(script->frontStages, std::vector<bool>{true}); // never turned off
+    turnOverButton(lab, "skipFrontButton")->click();
+    EXPECT_TRUE(scannedShown(lab)); // the back is still held
+}
+
+TEST(LabWindow, FrontClipThatFailsKeepsTheBack) {
+    Lab lab(documentIs(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.window->startReplay([](std::string& error) -> std::unique_ptr<frame_io::ReplaySource> {
+        error = "no such clip";
+        return nullptr;
+    });
+    lab.pump();
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_TRUE(lab.status().contains(QStringLiteral("no such clip"))) << lab.status().toStdString();
+    turnOverButton(lab, "skipFrontButton")->click();
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+// Spec §6.5: a state entered without a key (TurnOver on the accept, Scanned when the front is kept) ignores
+// Enter and Esc for 300 ms, so a press meant for the step before never lands on the next.
+TEST(LabWindow, KeyJustAfterAStateChangeIsIgnored) {
+    const auto script =
+        td1Script({turnOverOf(nullptr, lab_core::FrontStage::Looking),
+                   turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf())});
+    Lab lab(camerasAndDocument(script));
+    startDocumentCamera(lab);
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+    EXPECT_TRUE(turnOverShown(lab)); // too soon after the accept
+    cameraFrames(lab, 2);
+    ASSERT_TRUE(scannedShown(lab)); // the front kept, just now
+
+    lab.advance(100ms);
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    EXPECT_TRUE(scannedShown(lab));
+    lab.advance(300ms);
+    QTest::keyClick(lab.canvas(), Qt::Key_Return);
+    EXPECT_FALSE(scannedShown(lab)); // on to Review
+}
+
+// Like the Document processor: the scan on every result from its accept until reset(), the front on every
+// result from its keeping until reset() or the stage's end; the front kept on the first frame after a reset
+// while the stage is on. Both watched by the test.
+class CarriesTheScan : public lab_core::FrameProcessor {
+public:
+    CarriesTheScan(std::weak_ptr<const lab_core::MrzScan>& scan,
+                   std::weak_ptr<const lab_core::FrontShot>& front)
+        : m_watchScan(scan), m_watchFront(front) {}
+    lab_core::ProcessorResult process(const frame_io::Frame&) override {
+        if (!m_accepted) {
+            m_accepted = true;
+            m_scan = idScanOf(kTd1Card);
+            m_watchScan = m_scan;
+            return acceptOf(m_scan);
+        }
+        if (m_stage && m_turned && !m_front) {
+            m_front = frontOf();
+            m_watchFront = m_front;
+        }
+        return turnOverOf(m_scan,
+                          m_turned ? lab_core::FrontStage::Looking : lab_core::FrontStage::AwaitingTurn,
+                          Hint::Good, m_front);
+    }
+    void reset() override {
+        m_scan.reset();
+        m_front.reset();
+        m_turned = true;
+    }
+    void setFrontStage(bool on) override {
+        m_stage = on;
+        m_turned = false;
+        m_front.reset();
+    }
+
+private:
+    std::weak_ptr<const lab_core::MrzScan>& m_watchScan;
+    std::weak_ptr<const lab_core::FrontShot>& m_watchFront;
+    bool m_accepted = false;
+    bool m_stage = false;
+    bool m_turned = false;
+    std::shared_ptr<const lab_core::MrzScan> m_scan;
+    std::shared_ptr<const lab_core::FrontShot> m_front;
+};
+
+// Spec §6.9: a front gone back from leaves no card frame in memory, also on a replay that has ended, where no
+// newer result replaces the ones that carried it.
+TEST(LabWindow, FrontGoneBackFromIsFreedOnAnEndedReplay) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab([&](LabDependencies& dependencies) {
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        dependencies.makeProcessor =
+            [&](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+            if (kind != lab_core::ProcessorKind::Document) {
+                return lab_core::makeProcessor(kind);
+            }
+            return std::make_unique<CarriesTheScan>(scan, front);
+        };
+    });
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3)); // the back
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    lab.replay(framesOf(test_support::cardFrame(), 1)); // the front, one frame: it ends there
+    lab.pump(3);
+    ASSERT_TRUE(scannedShown(lab));
+    ASSERT_FALSE(front.expired());
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+
+    panelButton(lab, "discardButton")->click();
+    lab.pump(3);
+
+    EXPECT_TRUE(scan.expired());
+    EXPECT_TRUE(front.expired());
+}
+
+// The Document processor is CarriesTheScan, watched through `scan` and `front`; two cameras.
+std::function<void(LabDependencies&)> carryingTheScan(std::weak_ptr<const lab_core::MrzScan>& scan,
+                                                      std::weak_ptr<const lab_core::FrontShot>& front) {
+    return [&scan, &front](LabDependencies& dependencies) {
+        twoCameras(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        dependencies.makeProcessor =
+            [&scan, &front](lab_core::ProcessorKind kind) -> std::unique_ptr<lab_core::FrameProcessor> {
+            if (kind != lab_core::ProcessorKind::Document) {
+                return lab_core::makeProcessor(kind);
+            }
+            return std::make_unique<CarriesTheScan>(scan, front);
+        };
+    };
+}
+
+// Final review F5: Stop in TurnOver leaves no card frame in the processor either (spec §6.9).
+TEST(LabWindow, StopInTurnOverFreesTheBackInTheProcessor) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    ASSERT_FALSE(scan.expired());
+
+    startStop(lab)->click();
+    lab.pump();
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_TRUE(scan.expired());
+}
+
+TEST(LabWindow, AnotherProcessorInTurnOverFreesTheBack) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 3));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.choose("processorCombo", QStringLiteral("Edges"));
+    lab.pump();
+
+    EXPECT_TRUE(scan.expired());
+}
+
+// Final review F2: a camera started again in TurnOver still looks at the side it looked at, the back: its new
+// run's reset is no turn, so the back is not kept as the front.
+TEST(LabWindow, CameraStartedAgainInTurnOverAwaitsTheTurn) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    lab.backend->fail(QStringLiteral("unplugged"));
+    ASSERT_TRUE(turnOverShown(lab));
+
+    startStop(lab)->click();
+    cameraFrames(lab, 2);
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(front.expired());
+}
+
+TEST(LabWindow, AnotherCameraInTurnOverAwaitsTheTurn) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.choose("cameraCombo", QStringLiteral("C920"));
+    cameraFrames(lab, 2);
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(front.expired());
+}
+
+// Final review F6: Scanned after the turn-over lists the accept's rows (Screen 04's), not the front stage's
+// page rows, whether the front was kept or skipped.
+lab_core::ProcessorResult withPageRows(lab_core::ProcessorResult result) {
+    result.findings = {{"Fill", "58 %", lab_core::Finding::Tone::Good}};
+    return result;
+}
+
+TEST(LabWindow, ScannedAfterTheFrontListsTheAcceptsRows) {
+    Lab lab(camerasAndDocument(td1Script(
+        {withPageRows(turnOverOf(nullptr, lab_core::FrontStage::Looking)),
+         withPageRows(turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf()))})));
+    startDocumentCamera(lab);
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(lab.results().contains(QStringLiteral("Fill: 58 %")))
+        << lab.results().join('|').toStdString();
+
+    cameraFrames(lab, 1);
+
+    ASSERT_TRUE(scannedShown(lab));
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("MRZ: accepted, 3 of 3")))
+        << lab.results().join('|').toStdString();
+    EXPECT_FALSE(lab.results().contains(QStringLiteral("Fill: 58 %")));
+}
+
+TEST(LabWindow, ScannedAfterSkippingTheFrontListsTheAcceptsRows) {
+    Lab lab(
+        camerasAndDocument(td1Script({withPageRows(turnOverOf(nullptr, lab_core::FrontStage::Looking))})));
+    startDocumentCamera(lab);
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(lab.results().contains(QStringLiteral("Fill: 58 %")));
+
+    turnOverButton(lab, "skipFrontButton")->click();
+
+    ASSERT_TRUE(scannedShown(lab));
+    EXPECT_TRUE(lab.results().contains(QStringLiteral("MRZ: accepted, 3 of 3")))
+        << lab.results().join('|').toStdString();
+}
+
+// Final review F8: awaiting the turn, the turn's words win over a focus search's "Hold still" (spec §6.3).
+TEST(LabWindow, AwaitingTheTurnOutranksFocusing) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    clickCanvas(lab);
+    cameraFrames(lab, 1);
+
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("Turn the card over"));
+}
+
+// Deep review F2: Scan again after a camera failure frees the scan in the processor too, also when the camera
+// cannot start again (no new run resets it).
+TEST(LabWindow, ScanAgainAfterACameraFailureFreesTheScan) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    turnOverButton(lab, "skipFrontButton")->click();
+    ASSERT_TRUE(scannedShown(lab));
+    lab.backend->fail(QStringLiteral("unplugged"));
+    lab.backend->permission = false; // the camera does not start again
+
+    cardButton(lab, "scanAgainButton")->click();
+    lab.pump();
+
+    EXPECT_FALSE(scannedShown(lab));
+    EXPECT_TRUE(scan.expired());
+}
+
+// Review Focus 3, with Esc: a front's clip that fails to open leaves the back held, and Esc scans again.
+TEST(LabWindow, FrontClipThatFailsThenEscScansAgain) {
+    Lab lab(documentIs(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    lab.choose("processorCombo", QStringLiteral("Document"));
+    lab.replay(framesOf(test_support::cardFrame(), 5));
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    lab.window->startReplay([](std::string& error) -> std::unique_ptr<frame_io::ReplaySource> {
+        error = "no such clip";
+        return nullptr;
+    });
+    lab.pump();
+    ASSERT_TRUE(turnOverShown(lab));
+    lab.advance(400ms); // past the key guard
+
+    QTest::keyClick(lab.canvas(), Qt::Key_Escape);
+
+    EXPECT_FALSE(turnOverShown(lab));
+    EXPECT_FALSE(scannedShown(lab));
+}
+
+// A camera run that keeps a TD1 card's back, then its front, and is in Review.
+void intoTwoSidedReview(Lab& lab) {
+    startDocumentCamera(lab);
+    cameraFrames(lab, 1);
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+}
+
+std::function<void(LabDependencies&)> twoSides() {
+    return [](LabDependencies& dependencies) {
+        camerasAndDocument(td1Script(
+            {turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, frontOf())}))(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+    };
+}
+
+// Spec §6.7: Review shows one side at a time, the front with its own gate values; the pill names the card.
+TEST(LabWindow, ReviewShowsEachSide) {
+    Lab lab(twoSides());
+    intoTwoSidedReview(lab);
+    auto* front = reviewBar(lab)->findChild<QPushButton*>("frontSideButton");
+    ASSERT_TRUE(front && front->isVisibleTo(lab.window.get()));
+    EXPECT_EQ(lab.window->findChild<QLabel*>("reviewPill")->text(),
+              QStringLiteral("✓ ID card scanned · chip skipped"));
+    const auto gatesShown = [&lab](const QString& text) {
+        for (const QLabel* label : lab.window->findChildren<QLabel*>()) {
+            if (label->text() == text && label->isVisibleTo(lab.window.get())) {
+                return true;
+            }
+        }
+        return false;
+    };
+    reviewBar(lab)->findChild<QCheckBox*>("gatesBox")->click(); // the gate values box shows
+    EXPECT_TRUE(gatesShown(QStringLiteral("Fill: 62 %")));      // the back's
+
+    front->click();
+
+    EXPECT_TRUE(gatesShown(QStringLiteral("Fill: 58 %"))); // the front's
+    EXPECT_FALSE(gatesShown(QStringLiteral("Fill: 62 %")));
+}
+
+// Deep review F5: on Review's Front, zoom decides the redraw by the front's own size: a front of another size
+// than the back (another source, D11) is drawn again for the view.
+TEST(LabWindow, ZoomOnTheFrontRedrawsForTheFront) {
+    auto big = std::make_shared<lab_core::FrontShot>(*frontOf());
+    big->frame.image = fourK();
+    Lab lab([big](LabDependencies& dependencies) {
+        camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, big)}))(
+            dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+    });
+    intoTwoSidedReview(lab);
+    reviewBar(lab)->findChild<QPushButton*>("frontSideButton")->click();
+    const QPointF centre = QRectF(lab.canvas()->rect()).center();
+    zoomIn(*lab.canvas(), centre);
+    ASSERT_NE(lab.canvas()->pictureArea(), QRect(0, 0, 4000, 3000));
+    int conversions = lab.conversions;
+
+    pan(*lab.canvas(), centre, centre - QPointF(10, 0)); // within the margin drawn
+
+    EXPECT_EQ(lab.conversions, conversions);
+    conversions = lab.conversions;
+
+    pan(*lab.canvas(), centre, centre - QPointF(lab.canvas()->width() / 2.0, 0)); // out of it
+
+    EXPECT_GT(lab.conversions, conversions);
+    EXPECT_TRUE(lab.canvas()->pictureArea().contains(lab.canvas()->visibleArea()));
+}
+
+// Spec §6.7: Send sends the side on screen, each with its own outcome.
+TEST(LabWindow, SendPerSide) {
+    Lab lab(twoSides());
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_FALSE(panelButton(lab, "sendButton")->isEnabled()); // the back's Done
+    reviewBar(lab)->findChild<QPushButton*>("frontSideButton")->click();
+    EXPECT_TRUE(panelButton(lab, "sendButton")->isEnabled()); // the front not sent yet
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_FALSE(panelButton(lab, "sendButton")->isEnabled());
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    const auto calls = lab.linkSender->calls();
+    ASSERT_GE(calls.size(), 2U);
+    EXPECT_EQ(calls[calls.size() - 2].name, "lab ID card back frame 8");
+    EXPECT_EQ(calls.back().name, "lab ID card front frame 10");
+}
+
+TEST(LabWindow, CameraFailureInTurnOverKeepsTheBack) {
+    Lab lab(camerasAndDocument(td1Script({turnOverOf(nullptr, lab_core::FrontStage::AwaitingTurn)})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+
+    lab.backend->fail(QStringLiteral("unplugged"));
+
+    EXPECT_TRUE(turnOverShown(lab));
+    EXPECT_EQ(bannerLine(lab), QStringLiteral("The camera stopped"));
+    EXPECT_EQ(smallLine(lab), QStringLiteral("start it again, open the front's clip, or skip the front"));
+    turnOverButton(lab, "skipFrontButton")->click();
+    EXPECT_TRUE(scannedShown(lab));
+}
+
+// --- A4.1: Save with two sides (spec §6.8)
+
+// A TD1 card's back accepted as the processor gives it, Screen 04's rows ending with the frame captured, then
+// `front` kept (none: the turn-over waits).
+std::function<void(LabDependencies&)> savingCard(std::shared_ptr<const lab_core::FrontShot> front,
+                                                 std::function<void(LabDependencies&)> more = {}) {
+    return [front, more](LabDependencies& dependencies) {
+        lab_core::ProcessorResult accept = acceptOf(idScanOf(kTd1Card));
+        accept.findings.push_back({"Captured", "frame 8", lab_core::Finding::Tone::Plain});
+        camerasAndDocument(scriptOf(
+            {accept, turnOverOf(nullptr, lab_core::FrontStage::Looking, Hint::Good, front)}))(dependencies);
+        dependencies.today = [] { return QDate(2026, 11, 12); };
+        if (more) {
+            more(dependencies);
+        }
+    };
+}
+
+nlohmann::json captureJson(const std::filesystem::path& file) {
+    std::ifstream stream(file);
+    return nlohmann::json::parse(stream);
+}
+
+std::filesystem::path captureNamed(const Lab& lab, const std::string& part, const std::string& extension) {
+    for (const std::filesystem::path& file : capturesOf(lab, extension)) {
+        if (file.filename().string().find(part) != std::string::npos) {
+            return file;
+        }
+    }
+    return {};
+}
+
+bool findingStartsWith(const nlohmann::json& json, const std::string& start) {
+    for (const auto& finding : json["findings"]) {
+        if (finding.get<std::string>().rfind(start, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST(LabWindow, SaveWritesBothSides) {
+    Lab lab(savingCard(frontOf()));
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(capturesOf(lab, ".png").size(), 2U);
+    const std::filesystem::path backFile = captureNamed(lab, " back frame 8", ".json");
+    const std::filesystem::path frontFile = captureNamed(lab, " front frame 10", ".json");
+    ASSERT_FALSE(backFile.empty());
+    ASSERT_FALSE(frontFile.empty());
+    // The pair shares the stamp.
+    const std::string backName = backFile.filename().string();
+    const std::string frontName = frontFile.filename().string();
+    EXPECT_EQ(backName.substr(0, backName.find(" back")), frontName.substr(0, frontName.find(" front")));
+
+    const nlohmann::json back = captureJson(backFile);
+    ASSERT_TRUE(back.contains("mrz")) << back.dump();
+    EXPECT_EQ(back["mrz"]["line 3"], kTd1Card[2]);
+    EXPECT_FALSE(back["mrz"].contains("optional data check"));
+    EXPECT_EQ(back["card"]["side"], "back");
+    EXPECT_TRUE(findingStartsWith(back, "Captured")) << back["findings"].dump();
+    EXPECT_TRUE(findingStartsWith(back, "Fill: 62 %")) << back["findings"].dump();
+    EXPECT_NE(back["overlays"].dump().find("MRZ band"), std::string::npos);
+
+    const nlohmann::json front = captureJson(frontFile);
+    EXPECT_FALSE(front.contains("mrz")) << front.dump();
+    EXPECT_EQ(front["card"]["side"], "front");
+    EXPECT_FALSE(findingStartsWith(front, "Captured")) << front["findings"].dump();
+    EXPECT_TRUE(findingStartsWith(front, "Fill: 58 %")) << front["findings"].dump();
+    EXPECT_FALSE(findingStartsWith(front, "Fill: 62 %")) << front["findings"].dump();
+    const std::string overlays = front["overlays"].dump();
+    EXPECT_NE(overlays.find("Document"), std::string::npos) << overlays;
+    EXPECT_NE(overlays.find("\"4\""), std::string::npos) << overlays; // the corners
+    EXPECT_EQ(overlays.find("MRZ band"), std::string::npos) << overlays;
+
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+    EXPECT_FALSE(panelButton(lab, "saveButton")->isEnabled());
+    EXPECT_TRUE(lab.status().contains(QStringLiteral(" back frame 8.png and ")) &&
+                lab.status().contains(QStringLiteral(" front frame 10.png")))
+        << lab.status().toStdString();
+}
+
+// Review Focus 5: the disk refusing the front. Failed names it; Save again writes only it, under the same
+// stamp.
+TEST(LabWindow, SaveRetryWritesOnlyTheMissingSide) {
+    std::vector<std::string> bases;
+    bool frontFails = true;
+    QDateTime wallTime(QDate(2026, 11, 12), QTime(10, 0, 0));
+    Lab lab(savingCard(frontOf(), [&bases, &frontFails, &wallTime](LabDependencies& dependencies) {
+        dependencies.currentTime = [&wallTime] { return wallTime; };
+        dependencies.writeCapture =
+            [&bases, &frontFails](const std::filesystem::path& folder, const std::string& baseName,
+                                  const frame_io::Frame& frame, const frame_io::CaptureInfo& info,
+                                  std::string& error) -> std::filesystem::path {
+            bases.push_back(baseName);
+            if (frontFails && baseName.ends_with(" front")) {
+                error = "disk full";
+                return {};
+            }
+            return frame_io::writeCapture(folder, baseName, frame, info, error);
+        };
+    }));
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(bases.size(), 2U);
+    EXPECT_TRUE(bases[0].ends_with(" back"));
+    EXPECT_TRUE(bases[1].ends_with(" front"));
+    EXPECT_TRUE(panelButton(lab, "saveButton")->isEnabled());
+    EXPECT_EQ(reviewPanel(lab)->findChild<QLabel*>("saveFailure")->text(),
+              QStringLiteral("Could not save the front: disk full"));
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 1U);
+
+    frontFails = false;
+    wallTime = wallTime.addSecs(5); // a later second: the stamp is still the first Save's
+    panelButton(lab, "saveButton")->click();
+
+    ASSERT_EQ(bases.size(), 3U);
+    EXPECT_EQ(bases[2], "2026-11-12 10.00.00 front");
+    EXPECT_EQ(capturesOf(lab, ".png").size(), 2U);
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+TEST(LabWindow, SaveWithBothSidesFailingNamesBoth) {
+    Lab lab(savingCard(frontOf(), [](LabDependencies& dependencies) {
+        dependencies.writeCapture = [](const std::filesystem::path&, const std::string&,
+                                       const frame_io::Frame&, const frame_io::CaptureInfo&,
+                                       std::string& error) -> std::filesystem::path {
+            error = "disk full";
+            return {};
+        };
+    }));
+    intoTwoSidedReview(lab);
+
+    panelButton(lab, "saveButton")->click();
+
+    EXPECT_EQ(reviewPanel(lab)->findChild<QLabel*>("saveFailure")->text(),
+              QStringLiteral("Could not save the back and the front: disk full"));
+}
+
+TEST(LabWindow, SaveWithTheFrontSkipped) {
+    Lab lab(savingCard(nullptr));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    turnOverButton(lab, "skipFrontButton")->click();
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+
+    panelButton(lab, "saveButton")->click();
+
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    EXPECT_NE(jsons[0].filename().string().find(" back frame 8"), std::string::npos) << jsons[0];
+    EXPECT_EQ(captureJson(jsons[0])["card"]["side"], "back");
+    EXPECT_EQ(panelButton(lab, "saveButton")->text(), QStringLiteral("Saved to captures ✓"));
+}
+
+// A TD2 document's save is as a passport's: no side.
+TEST(LabWindow, SaveOfATd2HasNoSide) {
+    Lab lab(camerasAndDocument(scriptOf({acceptOf(idScanOf(kTd2Card))})));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+
+    panelButton(lab, "saveButton")->click();
+
+    const std::vector<std::filesystem::path> jsons = capturesOf(lab, ".json");
+    ASSERT_EQ(jsons.size(), 1U);
+    EXPECT_EQ(jsons[0].filename().string().find(" back"), std::string::npos) << jsons[0];
+    const nlohmann::json json = captureJson(jsons[0]);
+    EXPECT_FALSE(json.contains("card")) << json.dump();
+    EXPECT_TRUE(json.contains("mrz"));
+}
+
+std::string cardMrzIn(const std::string& text) {
+    for (const std::string& secret : {kTd1Card[0], kTd1Card[1], kTd1Card[2], std::string("ERIKSSON"),
+                                      std::string("ANNA"), std::string("D23145890")}) {
+        if (text.find(secret) != std::string::npos) {
+            return secret;
+        }
+    }
+    return {};
+}
+
+// Spec §6.9: A4's privacy with the TD1 specimen. The back's "mrz" section is the only place its MRZ is
+// written.
+TEST(LabWindow, PrivacyWithACard) {
+    Lab lab(savingCard(frontOf()));
+    intoTwoSidedReview(lab);
+    EXPECT_EQ(cardMrzIn(lab.status().toStdString()), "") << "Review";
+
+    panelButton(lab, "saveButton")->click();
+    EXPECT_EQ(cardMrzIn(lab.status().toStdString()), "") << "saved";
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    reviewBar(lab)->findChild<QPushButton*>("frontSideButton")->click();
+    panelButton(lab, "sendButton")->click();
+    lab.pump();
+    EXPECT_EQ(cardMrzIn(lab.status().toStdString()), "") << "sent";
+
+    ASSERT_NE(lab.linkSender, nullptr);
+    for (const test_support::RecordingSender::Call& call : lab.linkSender->calls()) {
+        EXPECT_EQ(cardMrzIn(call.name), "") << "the still's name";
+    }
+    const std::vector<std::filesystem::path> files = capturesOf(lab, ".json");
+    ASSERT_EQ(files.size(), 2U);
+    for (const std::filesystem::path& file : files) {
+        EXPECT_EQ(cardMrzIn(file.filename().string()), "") << "the capture's name";
+        nlohmann::json json = captureJson(file);
+        json.erase("mrz");
+        EXPECT_EQ(cardMrzIn(json.dump()), "") << json.dump();
+    }
+    for (const std::filesystem::path& file : capturesOf(lab, ".png")) {
+        EXPECT_EQ(cardMrzIn(file.filename().string()), "") << "the picture's name";
+    }
+}
+
+// Final review F1: each side's capture names the source its frame came from (D11: the back's camera, the
+// front's clip).
+TEST(LabWindow, SaveNamesEachSidesOwnSource) {
+    std::weak_ptr<const lab_core::MrzScan> scan;
+    std::weak_ptr<const lab_core::FrontShot> front;
+    Lab lab(carryingTheScan(scan, front));
+    startDocumentCamera(lab);
+    ASSERT_TRUE(turnOverShown(lab));
+    lab.backend->fail(QStringLiteral("unplugged"));
+    lab.replay(framesOf(test_support::cardFrame(), 1)); // the front's clip
+    lab.pump(3);
+    ASSERT_TRUE(scannedShown(lab));
+    cardButton(lab, "skipChipButton")->click();
+    ASSERT_TRUE(shownIn(lab, reviewPanel(lab)));
+
+    panelButton(lab, "saveButton")->click();
+
+    const std::filesystem::path backFile = captureNamed(lab, " back frame", ".json");
+    const std::filesystem::path frontFile = captureNamed(lab, " front frame", ".json");
+    ASSERT_FALSE(backFile.empty());
+    ASSERT_FALSE(frontFile.empty());
+    const std::string backSource = captureJson(backFile)["source"].get<std::string>();
+    EXPECT_EQ(backSource.rfind("FaceTime HD Camera", 0), 0U) << backSource;
+    EXPECT_EQ(captureJson(frontFile)["source"], "list");
 }
 
 } // namespace

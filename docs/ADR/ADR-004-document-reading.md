@@ -85,7 +85,8 @@ Options considered, by concern (measured figures are from that spike):
    per-character combination, weights or estimated results. The reads that agree are of different frames: one
    read a frame (A4).
    A4 reads passports only (TD3, document code `P`; the owner, 12 November): a valid TD1 or TD2 read counts for
-   nothing, and ID cards come in A4.1.
+   nothing, and ID cards come in A4.1. A4.1 accepts them too: a TD3 with code `P`, or a TD1 or TD2 with a code
+   starting `I`, `A` or `C` (`Mrz::supported()`); a visa (`V`), and a code that does not fit its format, never.
 10. **Faces come in A3.2**, with libfacedetection (BSD-3-Clause, its weights compiled in).
 11. **Not used:** Apple Vision as an engine, Tesseract, VLMs and LLMs.
 
@@ -109,11 +110,12 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
 
 14. **The hints, first that applies wins**, checked on every frame. On 11 November, after A3.3's hand check, the
     owner had "page" become "document" in what the lab says, since an ID card has no page; words for a passport
-    alone wait until the MRZ says what the document is (A4). The screens above keep the earlier words.
+    alone wait until the MRZ says what the document is (A4; for ID cards, A4.1 below). The screens above keep the
+    earlier words.
 
     | # | When | Banner (big line · smaller line) | Step |
     |---|---|---|---|
-    | 1 | No page found | Show the document · the side with the photo, all of it in view | A3 |
+    | 1 | No page found | Show the document · the side with the lines at the bottom, all of it in view (A3: the side with the photo) | A3, A4.1 |
     | 2 | Cut by the frame's edge | ✗ Move back · the whole document must be in view | A3 |
     | 2b | Cut by the frame's edge, but small enough to fit | ✗ Move the document to the middle · the whole document must be in view | A3 |
     | 3 | Too far | ✗ Move closer | A3 |
@@ -127,11 +129,13 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
     | 8 | Too dark | ✗ Too dark · add more light | A3 |
     | 9 | Too bright | ✗ Too bright · move out of direct light | A3 |
     | 10 | Every gate passes | ✓ Good: hold still (A4 adds "Reading the lines at the bottom · 2 of 3") | A3, A4 |
-    | 11 | Gates pass, no MRZ band | ✗ Keep your fingers off the two lines at the bottom | A4 |
-    | 12 | Gates pass, no accept after 5 s | ✗ Can't read the lines at the bottom · check for glare or fingers; only passports are read for now | A4 |
+    | 11 | Gates pass, no MRZ band | ✗ Keep your fingers off the lines at the bottom (A4: the two lines) | A4, A4.1 |
+    | 12 | Gates pass, no accept after 5 s | ✗ Can't read the lines at the bottom · check for glare or fingers (A4 added "; only passports are read for now") | A4, A4.1 |
 
-    Hints 11 and 12 are checked 12 first (A4): an ID card's front never has a band, so with 11 first the small
-    line of 12, which says that only passports are read, would never show. Row 12's small line is wider than the
+    Hints 11 and 12 are checked 12 first (A4): a page with no MRZ in view, such as an ID card's front, never has a
+    band, so with 11 first it would ask for fingers to move for ever and 12 would never say that the lines cannot
+    be read. In A4 the reason was also that 12's small line said only passports are
+    read; A4.1 reads ID cards, and the order stays for the first reason. Row 12's small line is wider than the
     hints picture's: the lab cannot tell an ID card's front from a passport whose MRZ is covered (the owner, 12
     November).
 
@@ -186,6 +190,31 @@ and the cards; the window's own rows of controls stay as ADR-003 built them.
     ![Reading the chip, dark](../images/scan-flow/05-reading-chip-dark.png)
 
     ![Review, dark](../images/scan-flow/06-review-dark.png)
+
+### A4.1: ID cards (the owner, 12 November 2026)
+
+A4.1 reads ID cards' MRZ: a TD1 card's on its back (three lines of 30) and a TD2 document's on its front (two of
+36). It amends the scan flow above; the pictures stay as the record of what was agreed for passports.
+
+- **14, the words.** Hints 1, 11 and 12 are worded for both kinds, as in the table. Once the MRZ is accepted the
+  words follow its format: a TD3 is a passport, a TD1 or TD2 an ID card, in the Scanned card, Review's pill, the
+  results' Format row ("TD1 ID card") and the stills' names (`lab ID card back frame N`).
+- **17, Scanned after the turn-over.** A TD1 card's accept leads first to a turn-over step: a bar says "✓ Back
+  scanned" with Skip the front and Scan again, and the banner "Turn the card over · take it out of view, then show
+  the side with the photo". The camera keeps running through it, since the card is turned in front of it; a
+  replay pauses, and another clip opened then carries the turn-over on (D11). The Document processor reads nothing
+  in this stage: the first frame after the card has been out of view (more than a third of a second, or a new
+  clip; a camera started again still looks at the back, so it waits for the turn again) on which "Good: hold
+  still" shows and every gate passes is kept as the front. Then the Scanned card says
+  "ID card scanned", with a card drawn on the reader. A TD2 document goes straight to Scanned. Skip the front
+  goes to Scanned without one.
+- **18, Review's two sides.** With a front, Review's bar has a Back | Front switch: the front shows its outline,
+  corners and gate values, the band having no meaning there. Save writes both sides under one time stamp (the back
+  with the MRZ, each with a `card` section naming its side), and a retry writes only the side not yet written;
+  Send sends the side on screen, each side with its own outcome.
+- **20, the keys.** In the turn-over, Enter is Skip the front and Esc is Scan again. A state entered without a key
+  (the turn-over after an accept, Scanned after an accept or a front kept) ignores Enter and Esc for 300 ms, so a
+  press meant for the step before never lands on the next; a key held down acts once.
 
 ## Consequences
 

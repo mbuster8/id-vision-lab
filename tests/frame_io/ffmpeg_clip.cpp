@@ -102,7 +102,7 @@ struct Settings {
     AVColorSpace matrix = AVCOL_SPC_UNSPECIFIED;
     AVColorTransferCharacteristic transfer = AVCOL_TRC_UNSPECIFIED;
     AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
-    std::optional<double> rotation;
+    std::optional<double> rotation{};
     int fps = 30;
     int gop = 12;
     int bFrames = 0;

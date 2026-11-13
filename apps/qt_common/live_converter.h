@@ -48,8 +48,8 @@ struct LiveJob {
 struct LiveResult {
     LiveJob job;                                        // its frame released: the window needs only its size
     QSize imageSize;                                    // the frame's
-    QImage picture;                                     // shares the converted pixels
-    std::optional<viewer_core::Histogram> histogram;    // when the job asked for it
+    QImage picture{};                                   // shares the converted pixels
+    std::optional<viewer_core::Histogram> histogram{};  // when the job asked for it
     std::optional<viewer_core::RangeMarkers> markers{}; // with it
 };
 

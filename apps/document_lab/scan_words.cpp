@@ -24,9 +24,10 @@ BannerContent bannerFor(doc_vision::Hint hint) {
     switch (hint) {
     case Hint::NoPage:
         // "Document", not "page": an ID card has no page (the owner, A3.3); the passport's own words wait
-        // for the MRZ to say what the document is (A4).
+        // for the MRZ to say what the document is (A4). The side with the MRZ: a passport's data page and an
+        // ID card's back alike (A4.1's D3).
         return {doc_vision::Tone::Neutral, true, tr("Show the document"),
-                tr("the side with the photo, all of it in view")};
+                tr("the side with the lines at the bottom, all of it in view")};
     case Hint::CutByEdge:
         return bad("Move back", "the whole document must be in view");
     case Hint::MoveToMiddle:
@@ -46,11 +47,9 @@ BannerContent bannerFor(doc_vision::Hint hint) {
     case Hint::TooBright:
         return bad("Too bright", "move out of direct light");
     case Hint::NoMrzBand:
-        return bad("Keep your fingers off the two lines at the bottom");
+        return bad("Keep your fingers off the lines at the bottom"); // two on a passport, three on a TD1 card
     case Hint::CannotReadMrz:
-        // Wider than screen 07's (the owner, A4's D2): an ID card's front has no MRZ to read.
-        return bad("Can't read the lines at the bottom",
-                   "check for glare or fingers; only passports are read for now");
+        return bad("Can't read the lines at the bottom", "check for glare or fingers"); // A4.1's D4 B
     case Hint::Good:
         break;
     }
@@ -67,6 +66,25 @@ BannerContent bannerFor(FocusBanner banner) {
         return bad("This camera can't make the document sharp", "Try more light, or another camera");
     }
     return {doc_vision::Tone::Neutral, false, tr("Hold still: focusing"), {}};
+}
+
+BannerContent bannerFor(TurnOverBanner banner) {
+    switch (banner) {
+    case TurnOverBanner::AwaitingTurn:
+        break;
+    case TurnOverBanner::CameraStopped:
+        return bad("The camera stopped", "start it again, open the front's clip, or skip the front");
+    }
+    return {doc_vision::Tone::Neutral, true, tr("Turn the card over"),
+            tr("take it out of view, then show the side with the photo")};
+}
+
+BannerContent frontBannerFor(doc_vision::Hint hint) {
+    BannerContent content = bannerFor(hint);
+    if (hint == doc_vision::Hint::NoPage) {
+        content.smallLine = tr("the side with the photo, all of it in view");
+    }
+    return content;
 }
 
 BannerContent bannerFor(WindowState state, const QString& detail) {
@@ -124,8 +142,21 @@ QString expiredWarning(const doc_vision::MrzDate& expiry) {
         .arg(mrzDate({}, expiry));
 }
 
-QString stillName(std::uint64_t frameNumber) {
-    return QStringLiteral("lab passport frame %1").arg(frameNumber + 1);
+QString stillName(lab_core::DocumentKind kind, std::optional<CardSide> side, std::uint64_t frameNumber) {
+    QString document =
+        kind == lab_core::DocumentKind::Passport ? QStringLiteral("passport") : QStringLiteral("ID card");
+    if (side) {
+        document += *side == CardSide::Back ? QStringLiteral(" back") : QStringLiteral(" front");
+    }
+    return QStringLiteral("lab %1 frame %2").arg(document).arg(frameNumber + 1);
+}
+
+QString reviewPill(lab_core::DocumentKind kind, bool frontSkipped) {
+    if (kind == lab_core::DocumentKind::Passport) {
+        return tr("✓ Passport scanned · chip skipped");
+    }
+    return frontSkipped ? tr("✓ ID card scanned · front and chip skipped")
+                        : tr("✓ ID card scanned · chip skipped");
 }
 
 QString chipLabel(doc_vision::Gate gate) {
