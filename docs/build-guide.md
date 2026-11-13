@@ -233,6 +233,11 @@ build/release/tests/doc_vision_eval --model <the model> --midv <MIDV-2020>/clips
     aze_passport grc_passport lva_passport srb_passport
 ```
 
+A TD1 card's front stage runs on replays too. `--front turned` plays each clip with the stage on, as a clip of the
+front opened during the turn-over; `--front awaiting`, with `--read`, turns it on at the back's accept and plays
+on, as a camera does, to see whether turning the card counts as the turn. Each prints, per clip, when the turn was
+seen and when a front would be kept.
+
 ## Running the tests
 
 ```sh
