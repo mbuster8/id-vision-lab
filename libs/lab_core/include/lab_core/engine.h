@@ -68,10 +68,10 @@ struct EngineStatus {
 };
 
 struct EngineHooks {
-    std::function<void()> resultReady;      // a result entered the empty slot
-    std::function<void()> statusChanged;    // the state, the message or the recording changed
-    std::function<Clock::time_point()> now; // null: Clock::now
-    std::function<void()> retiringSender;   // tests throw here, as a full memory would while a sender retires
+    std::function<void()> resultReady{};      // a result entered the empty slot
+    std::function<void()> statusChanged{};    // the state, the message or the recording changed
+    std::function<Clock::time_point()> now{}; // null: Clock::now
+    std::function<void()> retiringSender{}; // tests throw here, as a full memory would while a sender retires
 };
 
 // Moves frames from a source through the processor to the window, the recorder and the sender, on one
@@ -181,7 +181,7 @@ private:
     // made after another source, a stop or a restart is posted behind that command, so an older doSeek still
     // in the mailbox ahead of it must leave it alone.
     struct SeekRequest {
-        std::optional<std::uint64_t> absolute;
+        std::optional<std::uint64_t> absolute{};
         std::int64_t relative = 0;
         std::uint64_t number = 0;
     };

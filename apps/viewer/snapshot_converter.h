@@ -24,7 +24,7 @@ struct SnapshotJob {
 
 struct SnapshotResult {
     SnapshotJob job;
-    cv::Mat display; // the history's picture of it (historyDisplay); empty if it could not be made
+    cv::Mat display{}; // the history's picture of it (historyDisplay); empty if it could not be made
 };
 
 // The history's picture of the job's original, as ImageHistory::add would make it.
